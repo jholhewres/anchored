@@ -3,84 +3,80 @@
 > Persistent cross-tool memory for AI coding agents. Single binary. Zero dependencies.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=for-the-badge&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=for-the-badge&logo=go)]
+[![Release](https://img.shields.io/github/v/release/jholhewres/anchored?style=for-the-badge)](https://github.com/jholhewres/anchored/releases)
 
 Anchored is an MCP memory server that gives Claude Code, Cursor, OpenCode, and any MCP-compatible tool a shared, persistent memory. Install once — all your tools read, write, and search the same knowledge base.
 
 No API keys. No daemon. All embeddings run locally.
 
----
-
 ## Install
 
+From [GitHub Releases](https://github.com/jholhewres/anchored/releases):
+
 ```bash
-curl -fsSL https://github.com/jholhewres/anchored/install.sh | bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/jholhewres/anchored/main/install/install.sh | bash
 ```
 
-From source (Go 1.24+):
+From source:
+
 ```bash
 git clone https://github.com/jholhewres/anchored.git
-cd anchored && make build && ./bin/anchored init
+cd anchored && make build
+sudo cp bin/anchored /usr/local/bin/
 ```
+
+First run auto-downloads the embedding model (~33MB) and creates `~/.anchored/`.
 
 ## Setup
 
-```bash
-anchored init          # auto-detects Claude Code, Cursor, OpenCode and registers MCP
-anchored import --all  # imports existing sessions and memories
+Add Anchored as an MCP server to your tool:
+
+**Claude Code** (`.claude/settings.json`):
+```json
+{
+  "mcpServers": {
+    "anchored": {
+      "command": "anchored"
+    }
+  }
+}
 ```
 
-That's it. Open any tool — Anchored is available.
+**Cursor** / **OpenCode** — add the same MCP config in your tool's settings.
 
-## Usage
+## Tools
 
-### From your AI tool (via MCP)
-
-Anchored registers as MCP tools automatically. Your agent can:
-
-- `anchored_context` — load relevant memory for the current project
-- `anchored_search` — search across all memories (semantic + keyword)
-- `anchored_save` — persist a fact, decision, or preference
-- `anchored_list` — list memories by category or project
-- `anchored_forget` — remove outdated memories
-- `kg_query` / `kg_add` — query and build a knowledge graph
-
-### From the terminal
-
-```bash
-anchored search "deploy gateway"       # search memories
-anchored save "API runs on :8080"      # save a fact
-anchored list --category decision      # list decisions
-anchored context                      # show context for current directory
-anchored stats                        # memory overview
-anchored import claude-code           # import from a specific source
-anchored identity edit                 # edit your preferences
-```
-
-## What it imports
-
-| Source | Extracts |
+| Tool | Description |
 |---|---|
-| Claude Code | JSONL sessions, `memory/` files, `CLAUDE.md` |
-| OpenCode | `opencode.db` sessions, messages, todos |
-| Cursor | `.cursor/rules/` |
-| DevClaw | `data/memory.db` full memory + knowledge graph |
-| Any directory | Markdown, code, docs |
+| `anchored_context` | Load relevant memory for the current project |
+| `anchored_search` | Search across all memories (semantic + keyword) |
+| `anchored_save` | Persist a fact, decision, or preference |
+| `anchored_list` | List memories by category or project |
+| `anchored_forget` | Remove a memory |
+| `anchored_stats` | Memory overview |
+| `kg_query` | Query the knowledge graph |
+| `kg_add` | Add a relationship to the knowledge graph |
 
-All content is sanitized (secrets removed) before storage.
+## How it works
 
-## What you end up with
+- **Hybrid search** — RRF fusion of vector similarity (ONNX, multilingual) and BM25 (FTS5)
+- **Memory stack** — L0 identity + L1 project context + L2 on-demand, budget-enforced
+- **Knowledge graph** — bitemporal triples with functional predicates and alias resolution
+- **Content sanitization** — regex-based secret redaction before storage
+
+## Storage
 
 ```
 ~/.anchored/
-├── bin/anchored           # the binary
 ├── data/
-│   ├── anchored.db        # SQLite (FTS5 + vectors + knowledge graph)
+│   ├── anchored.db        # SQLite (FTS5 + embedding cache + knowledge graph)
 │   └── onnx/              # local embedding model (~33MB)
 └── config.yaml
 ```
 
-No daemon. No ports. The binary runs on demand via MCP STDIO — your tool manages the lifecycle.
+No daemon. No ports. The binary runs on demand via MCP STDIO.
 
 ## Docs
 
