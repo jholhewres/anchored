@@ -23,7 +23,7 @@ const (
 	onnxModelName      = "all-MiniLM-L6-v2"
 	onnxModelDims      = 384
 	onnxMaxSeqLen      = 128
-	onnxRuntimeVersion = "1.24.1"
+	onnxRuntimeVersion = "1.25.1"
 
 	onnxRuntimeURLTemplate = "https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-%s-%s-%s.tgz"
 	onnxModelBaseURL       = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx"
