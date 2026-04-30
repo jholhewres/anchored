@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+REPO="jholhewres/anchored"
 INSTALL_DIR="$HOME/.anchored"
 BIN_DIR="$INSTALL_DIR/bin"
 DATA_DIR="$INSTALL_DIR/data"
@@ -19,15 +19,20 @@ case "$ARCH" in
     *)              echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
-BINARY_URL="https://github.com/jholhewres/anchored/releases/download/v${VERSION}/anchored-${OS}-${ARCH}"
+LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+if [ -z "$LATEST" ]; then
+    echo "Failed to determine latest version" >&2; exit 1
+fi
+
+ARCHIVE="anchored_${LATEST}_${OS}_${ARCH}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/v${LATEST}/${ARCHIVE}"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
-echo "Installing anchored v${VERSION} to $BIN_DIR..."
-
-curl -fsSL "$BINARY_URL" -o "$BIN_DIR/anchored" || {
-    echo "Download failed. Building from source..." >&2
-    echo "Install Go 1.24+ and run: go install github.com/jholhewres/anchored/cmd/anchored@v${VERSION}" >&2
+echo "Installing anchored v${LATEST} (${OS}/${ARCH})..."
+curl -fsSL "$URL" | tar xz -C "$BIN_DIR" anchored || {
+    echo "Download failed." >&2
+    echo "Install Go 1.24+ and run: git clone https://github.com/${REPO}.git && cd anchored && make build" >&2
     exit 1
 }
 
@@ -36,15 +41,10 @@ chmod +x "$BIN_DIR/anchored"
 for rc in .bashrc .zshrc .profile .bash_profile; do
     rcfile="$HOME/$rc"
     [ -f "$rcfile" ] || continue
-
     if ! grep -q 'anchored/bin' "$rcfile" 2>/dev/null; then
         echo "" >> "$rcfile"
         echo "# Anchored memory server" >> "$rcfile"
         echo 'export PATH="$HOME/.anchored/bin:$PATH"' >> "$rcfile"
-    fi
-
-    if ! grep -q 'alias anchored=' "$rcfile" 2>/dev/null; then
-        echo "alias anchored='$HOME/.anchored/bin/anchored'" >> "$rcfile"
     fi
 done
 
@@ -75,11 +75,10 @@ stack:
 EOF
 
 echo ""
-echo "✓ Anchored v${VERSION} installed to $BIN_DIR/anchored"
-echo "✓ Config written to $INSTALL_DIR/config.yaml"
+echo "Installed anchored v${LATEST} to $BIN_DIR/anchored"
+echo "Config written to $INSTALL_DIR/config.yaml"
 echo ""
-echo "Open a new terminal (or run: source ~/.bashrc) then use:"
-echo "  anchored serve --stdio"
+echo "Open a new terminal (or run: source ~/.bashrc)"
 echo ""
-echo "To register with your AI tools:"
-echo "  anchored init --tool all"
+echo "Add to your MCP config:"
+echo '  { "mcpServers": { "anchored": { "command": "anchored" } } }'
