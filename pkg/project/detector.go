@@ -10,10 +10,10 @@ import (
 )
 
 type Project struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	SourceTool string `json:"source_tool,omitempty"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Path       string  `json:"path"`
+	SourceTool *string `json:"source_tool,omitempty"`
 }
 
 type Detector struct {

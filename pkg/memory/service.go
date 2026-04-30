@@ -152,6 +152,60 @@ func (s *Service) StoreDB() *sql.DB {
 	return s.store.DB()
 }
 
+func (s *Service) SaveMemory(ctx context.Context, content, category, source string, cwd string) error {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+
+	if s.sanitizer != nil {
+		content = s.sanitizer.Sanitize(content)
+	}
+
+	if category == "" {
+		category = Categorize(content)
+	}
+
+	var projectID *string
+	if cwd != "" {
+		proj, err := s.projDet.Detect(cwd)
+		if err != nil {
+			s.logger.Warn("project detection failed", "error", err)
+		} else if proj != nil {
+			projectID = &proj.ID
+		}
+	}
+
+	m := Memory{
+		Content:   content,
+		Category:  category,
+		Source:    source,
+		ProjectID: projectID,
+		Keywords:  ExtractKeywords(content),
+	}
+
+	if err := s.store.Save(ctx, m); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+
+	if s.embedder != nil && s.cache != nil {
+		go func(content string) {
+			embedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			vecs, err := s.embedder.Embed(embedCtx, []string{content})
+			if err != nil || len(vecs) == 0 {
+				s.logger.Warn("embedding failed for cached memory", "error", err)
+				return
+			}
+			if err := s.cache.Put(embedCtx, content, s.embedder.Model(), vecs[0], true); err != nil {
+				s.logger.Warn("failed to cache embedding", "error", err)
+			}
+		}(m.Content)
+	}
+
+	return nil
+}
+
 func (s *Service) Close() {
 	if s.embedder != nil {
 		s.embedder.Close()
