@@ -84,9 +84,9 @@ No daemon. No ports. The binary runs on demand via MCP STDIO — your tool manag
 
 ## Docs
 
-- [Architecture](docs/architecture.md) — system design, memory stack, SQLite schema
+- [Design](docs/design.md) — memory stack, hybrid search, knowledge graph, quantization
+- [Architecture](docs/architecture.md) — project structure and implementation details
 - [Import Sources](docs/import-sources.md) — how each tool's data is parsed
-- [Embedding Model](docs/embedding-model.md) — why paraphrase-multilingual-MiniLM-L12-v2
 
 ## License
 
