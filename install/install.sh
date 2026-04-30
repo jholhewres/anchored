@@ -165,7 +165,7 @@ info "Detected memory sources:"
 echo ""
 for i in "${!detected[@]}"; do
     IFS='|' read -r name detail path <<< "${detected[$i]}"
-    echo -e "  $((i+1)). ${BOLD}${name}${RESET} — ${detail}"
+    printf "  %d. ${BOLD}%s${RESET} — %s\n" "$((i+1))" "$name" "$detail"
 done
 echo ""
 
