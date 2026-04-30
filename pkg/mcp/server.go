@@ -1,0 +1,371 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+
+	"github.com/jholhewres/anchored/pkg/kg"
+	"github.com/jholhewres/anchored/pkg/memory"
+)
+
+type Server struct {
+	mem     *memory.Service
+	kg      *kg.KG
+	stack   StackRenderer
+	logger  *slog.Logger
+	version string
+}
+
+func NewServer(mem *memory.Service, kg *kg.KG, stack StackRenderer, version string, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{mem: mem, kg: kg, stack: stack, logger: logger, version: version}
+}
+
+type StackRenderer interface {
+	Render() string
+}
+
+func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
+	req, err := ParseRequest(data)
+	if err != nil {
+		return MarshalResponse(NewErrorResponse(nil, NewError(-32700, err.Error())))
+	}
+
+	switch req.Method {
+	case "initialize":
+		return s.handleInitialize(req.ID, req.Params)
+	case "notifications/initialized":
+		return nil
+	case "tools/list":
+		return s.handleToolsList(req.ID)
+	case "tools/call":
+		return s.handleToolsCall(ctx, req.ID, req.Params)
+	case "resources/list":
+		return s.handleResourcesList(req.ID)
+	case "resources/read":
+		return s.handleResourcesRead(ctx, req.ID, req.Params)
+	case "ping":
+		return MarshalResponse(NewResponse(req.ID, map[string]string{}))
+	default:
+		return MarshalResponse(NewErrorResponse(req.ID, NewError(-32601, fmt.Sprintf("unknown method: %s", req.Method))))
+	}
+}
+
+func (s *Server) handleInitialize(id json.RawMessage, params json.RawMessage) []byte {
+	result := InitializeResult{
+		ProtocolVersion: MCPVersion,
+		ServerInfo: ServerInfo{
+			Name:    "anchored",
+			Version: s.version,
+		},
+		Instructions: "Anchored provides persistent cross-tool memory. Call anchored_context at conversation start. Use anchored_save to store facts and anchored_search to retrieve them. Never save secrets.",
+	}
+	result.Capabilities.Tools.ListChanged = false
+	result.Capabilities.Resources.Subscribe = false
+	result.Capabilities.Resources.ListChanged = false
+
+	return MarshalResponse(NewResponse(id, result))
+}
+
+func (s *Server) handleToolsList(id json.RawMessage) []byte {
+	tools := ToolDefinitions()
+	SortTools(tools)
+	return MarshalResponse(NewResponse(id, map[string]any{"tools": tools}))
+}
+
+func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params json.RawMessage) []byte {
+	var p struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return MarshalResponse(NewErrorResponse(id, InvalidParams("invalid params")))
+	}
+
+	result, err := s.callTool(ctx, p.Name, p.Arguments)
+	if err != nil {
+		return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+	}
+
+	return MarshalResponse(NewResponse(id, map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": result},
+		},
+	}))
+}
+
+func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	switch name {
+	case "anchored_context":
+		return s.toolContext(ctx, args)
+	case "anchored_search":
+		return s.toolSearch(ctx, args)
+	case "anchored_save":
+		return s.toolSave(ctx, args)
+	case "anchored_list":
+		return s.toolList(ctx, args)
+	case "anchored_forget":
+		return s.toolForget(ctx, args)
+	case "anchored_stats":
+		return s.toolStats(ctx)
+	case "kg_query":
+		return s.toolKGQuery(ctx, args)
+	case "kg_add":
+		return s.toolKGAdd(ctx, args)
+	default:
+		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+}
+
+func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		CWD string `json:"cwd"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		p.CWD = "."
+	}
+
+	if s.stack != nil {
+		rendered := s.stack.Render()
+		if rendered != "" {
+			return rendered, nil
+		}
+	}
+
+	return "No memory context available yet. Save memories with anchored_save.", nil
+}
+
+func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Query      string `json:"query"`
+		Category   string `json:"category"`
+		MaxResults int    `json:"max_results"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	results, err := s.mem.Search(ctx, p.Query, memory.SearchOptions{
+		MaxResults: p.MaxResults,
+		Category:   p.Category,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if len(results) == 0 {
+		return "No matching memories found.", nil
+	}
+
+	var lines []string
+	for i, r := range results {
+		lines = append(lines, fmt.Sprintf("%d. [%s] %.3f — %s", i+1, r.Memory.Category, r.Score, r.Memory.Content))
+	}
+
+	return fmt.Sprintf("Found %d memories:\n\n%s", len(results), joinLines(lines)), nil
+}
+
+func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Content  string `json:"content"`
+		Category string `json:"category"`
+		CWD      string `json:"cwd"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	if p.CWD == "" {
+		p.CWD = "."
+	}
+
+	m, err := s.mem.Save(ctx, p.Content, p.Category, "mcp", p.CWD)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Saved [%s] memory %s", m.Category, m.ID), nil
+}
+
+func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Category string `json:"category"`
+		Limit    int    `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	memories, err := s.mem.List(ctx, memory.ListOptions{
+		Category: p.Category,
+		Limit:    p.Limit,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if len(memories) == 0 {
+		return "No memories found.", nil
+	}
+
+	var lines []string
+	for i, m := range memories {
+		lines = append(lines, fmt.Sprintf("%d. [%s] %s — %s", i+1, m.Category, m.CreatedAt.Format("2006-01-02 15:04"), m.Content))
+	}
+
+	return fmt.Sprintf("Showing %d memories:\n\n%s", len(memories), joinLines(lines)), nil
+}
+
+func (s *Server) toolForget(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	if err := s.mem.Forget(ctx, p.ID); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Deleted memory %s", p.ID), nil
+}
+
+func (s *Server) toolStats(ctx context.Context) (string, error) {
+	stats, err := s.mem.Stats(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Total memories: %d", stats.TotalMemories))
+
+	if len(stats.ByCategory) > 0 {
+		lines = append(lines, "\nBy category:")
+		for cat, count := range stats.ByCategory {
+			lines = append(lines, fmt.Sprintf("  %s: %d", cat, count))
+		}
+	}
+
+	if len(stats.ByProject) > 0 {
+		lines = append(lines, "\nBy project:")
+		for proj, count := range stats.ByProject {
+			lines = append(lines, fmt.Sprintf("  %s: %d", proj, count))
+		}
+	}
+
+	return joinLines(lines), nil
+}
+
+func (s *Server) toolKGQuery(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.kg == nil {
+		return "Knowledge graph not available.", nil
+	}
+
+	var p struct {
+		Entity string `json:"entity"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	triples, err := s.kg.Query(ctx, p.Entity, nil)
+	if err != nil {
+		return "", err
+	}
+
+	if len(triples) == 0 {
+		return fmt.Sprintf("No relationships found for \"%s\".", p.Entity), nil
+	}
+
+	var lines []string
+	for _, t := range triples {
+		lines = append(lines, fmt.Sprintf("• %s — %s → %s", t.Subject, t.Predicate, t.Object))
+	}
+
+	return joinLines(lines), nil
+}
+
+func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.kg == nil {
+		return "Knowledge graph not available.", nil
+	}
+
+	var p struct {
+		Subject   string `json:"subject"`
+		Predicate string `json:"predicate"`
+		Object    string `json:"object"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	triple, err := s.kg.AddTriple(ctx, p.Subject, p.Predicate, p.Object, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Added relationship: %s — %s → %s (id: %s)", triple.Subject, triple.Predicate, triple.Object, triple.ID), nil
+}
+
+func (s *Server) handleResourcesList(id json.RawMessage) []byte {
+	resources := ResourceDefinitions()
+	return MarshalResponse(NewResponse(id, map[string]any{"resources": resources}))
+}
+
+func (s *Server) handleResourcesRead(ctx context.Context, id json.RawMessage, params json.RawMessage) []byte {
+	var p struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return MarshalResponse(NewErrorResponse(id, InvalidParams("invalid params")))
+	}
+
+	var content string
+	switch p.URI {
+	case "anchored://memory/stats":
+		stats, err := s.mem.Stats(ctx)
+		if err != nil {
+			return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+		}
+		content = fmt.Sprintf("Total: %d\nCategories: %v\nProjects: %v",
+			stats.TotalMemories, stats.ByCategory, stats.ByProject)
+	case "anchored://memory/recent":
+		memories, err := s.mem.List(ctx, memory.ListOptions{Limit: 10})
+		if err != nil {
+			return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+		}
+		if len(memories) == 0 {
+			content = "No memories yet."
+		} else {
+			var lines []string
+			for _, m := range memories {
+				lines = append(lines, fmt.Sprintf("[%s] %s", m.Category, m.Content))
+			}
+			content = joinLines(lines)
+		}
+	default:
+		return MarshalResponse(NewErrorResponse(id, NewError(-32601, fmt.Sprintf("unknown resource: %s", p.URI))))
+	}
+
+	return MarshalResponse(NewResponse(id, map[string]any{
+		"contents": []map[string]any{
+			{"uri": p.URI, "mimeType": "text/plain", "text": content},
+		},
+	}))
+}
+
+func joinLines(lines []string) string {
+	result := ""
+	for i, line := range lines {
+		if i > 0 {
+			result += "\n"
+		}
+		result += line
+	}
+	return result
+}
