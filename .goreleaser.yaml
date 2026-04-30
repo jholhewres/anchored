@@ -1,0 +1,69 @@
+version: 2
+
+builds:
+  - id: anchored
+    main: ./cmd/anchored
+    binary: anchored
+    env:
+      - CGO_ENABLED=1
+      - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    overrides:
+      - goos: linux
+        goarch: arm64
+        env:
+          - CC=aarch64-linux-gnu-gcc
+
+  - id: anchored-windows
+    main: ./cmd/anchored
+    binary: anchored
+    env:
+      - CGO_ENABLED=1
+      - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
+      - CC=x86_64-w64-mingw32-gcc
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    goos:
+      - windows
+    goarch:
+      - amd64
+
+archives:
+  - id: unix
+    builds:
+      - anchored
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: windows
+    builds:
+      - anchored-windows
+    format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: jholhewres
+    name: anchored
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
