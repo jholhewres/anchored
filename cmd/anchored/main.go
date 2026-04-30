@@ -185,8 +185,8 @@ type serviceStoreAdapter struct {
 	svc *memory.Service
 }
 
-func (a *serviceStoreAdapter) SaveMemory(ctx context.Context, content, category, source string, cwd string) error {
-	return a.svc.SaveMemory(ctx, content, category, source, cwd)
+func (a *serviceStoreAdapter) SaveRaw(ctx context.Context, content, category, source string, cwd string) error {
+	return a.svc.SaveRaw(ctx, content, category, source, cwd)
 }
 
 func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config, logFn *slog.Logger) error {

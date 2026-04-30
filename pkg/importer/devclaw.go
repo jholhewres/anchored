@@ -54,7 +54,7 @@ func (i *DevClawImporter) Import(ctx context.Context, store ImportStore) ImportR
 			continue
 		}
 		result.Found++
-		if err := store.SaveMemory(ctx, text, "fact", "devclaw", ""); err != nil {
+		if err := store.SaveRaw(ctx, text, "fact", "devclaw", ""); err != nil {
 			result.Errors++
 			continue
 		}

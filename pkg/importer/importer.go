@@ -20,7 +20,7 @@ type Source interface {
 }
 
 type ImportStore interface {
-	SaveMemory(ctx context.Context, content, category, source string, cwd string) error
+	SaveRaw(ctx context.Context, content, category, source string, cwd string) error
 }
 
 func RunAll(ctx context.Context, sources []Source, store ImportStore, logger *slog.Logger) []ImportResult {

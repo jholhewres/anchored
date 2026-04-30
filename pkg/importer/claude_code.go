@@ -134,7 +134,7 @@ func (i *ClaudeCodeImporter) importJSONL(ctx context.Context, store ImportStore,
 				"assistant": "technical",
 			}[entry.Message.Role]
 
-			if err := store.SaveMemory(ctx, content, category, "claude-code", cwd); err != nil {
+			if err := store.SaveRaw(ctx, content, category, "claude-code", cwd); err != nil {
 				if i.log != nil {
 					i.log("skip message", "error", err)
 				}
