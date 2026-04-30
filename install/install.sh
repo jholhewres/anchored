@@ -18,6 +18,8 @@ ok()    { echo -e "${GREEN}$1${RESET}"; }
 warn()  { echo -e "${YELLOW}$1${RESET}"; }
 err()   { echo -e "${RED}$1${RESET}" >&2; }
 
+TTY="/dev/tty"
+
 prompt_yes_no() {
     local msg="$1" default="${2:-Y}"
     local yn
@@ -27,8 +29,8 @@ prompt_yes_no() {
         yn="[y/N]"
     fi
     while true; do
-        echo -ne "${BOLD}${msg}${RESET} ${yn} "
-        read -r answer
+        echo -ne "${BOLD}${msg}${RESET} ${yn} " > "$TTY"
+        read -r answer < "$TTY"
         answer="${answer:-$default}"
         case "$answer" in
             [Yy]*) return 0 ;;
@@ -163,12 +165,12 @@ info "Detected memory sources:"
 echo ""
 for i in "${!detected[@]}"; do
     IFS='|' read -r name detail path <<< "${detected[$i]}"
-    echo "  $((i+1)). ${BOLD}${name}${RESET} — ${detail}"
+    echo -e "  $((i+1)). ${BOLD}${name}${RESET} — ${detail}"
 done
 echo ""
 
-echo -ne "${BOLD}Which sources to import?${RESET} (comma-separated numbers, or 'all'): "
-read -r selection
+echo -ne "${BOLD}Which sources to import?${RESET} (comma-separated numbers, or 'all'): " > "$TTY"
+read -r selection < "$TTY"
 
 if [[ "$selection" == "all" || "$selection" == "a" ]]; then
     sources=("claude-code" "devclaw" "cursor" "opencode")
