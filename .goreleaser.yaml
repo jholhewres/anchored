@@ -7,6 +7,7 @@ builds:
     env:
       - CGO_ENABLED=1
       - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
+      - CGO_LDFLAGS=-lm
     ldflags:
       - -s -w -X main.Version={{.Version}}
     goos:
