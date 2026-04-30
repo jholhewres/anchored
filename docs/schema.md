@@ -32,7 +32,7 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
 -- Embedding cache (avoid re-computing)
 CREATE TABLE embedding_cache (
     text_hash TEXT NOT NULL,
-    model TEXT NOT NULL DEFAULT 'bge-small-en-v1.5',
+    model TEXT NOT NULL DEFAULT 'paraphrase-multilingual-MiniLM-L12-v2',
     embedding BLOB NOT NULL,         -- Quantized uint8
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (text_hash, model)

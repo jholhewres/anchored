@@ -159,7 +159,7 @@ Text input
 WordPiece tokenizer (vocab.txt, 512 max tokens)
     │
     ▼
-ONNX Runtime inference (bge-small-en-v1.5)
+ONNX Runtime inference (paraphrase-multilingual-MiniLM-L12-v2)
     │
     ▼
 Float32 vector (384 dims)
@@ -228,7 +228,7 @@ Multiple tools can spawn `anchored serve --stdio` simultaneously. SQLite WAL ser
 |---|---|---|
 | Language | Go | Static binary, cross-compile, devclaw proven |
 | Embeddings | ONNX local only | Privacy, zero API keys, instant |
-| Model | bge-small-en-v1.5 | +23% retrieval over MiniLM-L6, same 384 dims |
+| Model | paraphrase-multilingual-MiniLM-L12-v2 | Multilingual (50+ langs), PT+EN retrieval parity, same 384 dims |
 | Quantization | uint8 | 4x memory reduction, ≥0.98 correlation |
 | Storage | SQLite WAL | Concurrent, zero-config, battle-tested in devclaw |
 | Transport | MCP STDIO | Universal protocol, no daemon needed |

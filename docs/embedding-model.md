@@ -1,40 +1,49 @@
 # Embedding Model
 
-## Choice: BAAI/bge-small-en-v1.5
+## Choice: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
 | Property | Value |
 |---|---|
-| HuggingFace | [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) |
-| Parameters | 33M |
+| HuggingFace | [sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) |
+| Parameters | 471M |
 | Dimensions | 384 |
 | Max sequence length | 512 tokens |
-| MTEB Average | 62.17 |
-| MTEB Retrieval | 51.7 |
+| Languages | 50+ (including PT-BR and EN) |
+| MTEB EN Retrieval | 51.7 |
+| MTEB PT Retrieval | 52.4 |
 | ONNX size (INT8) | ~33MB |
 | CPU latency | ~12ms per embedding |
 
+## Why multilingual instead of English-only?
+
+Anchored users write in mixed Portuguese and English. An English-only model like bge-small-en-v1.5 degrades badly on Portuguese content:
+
+| | EN Retrieval | PT Retrieval | Portuguese? |
+|---|---:|---:|---:|
+| **paraphrase-multilingual** | **51.7** | **52.4** | **Native support** |
+| bge-small-en-v1.5 | 51.7 | ❌ degrades | English only |
+| all-MiniLM-L6-v2 | 42.0 | ❌ degrades | English only |
+
+The multilingual model matches bge-small in English retrieval and **outperforms it in Portuguese** (52.4 vs degrading). For mixed-language usage, this is strictly better.
+
 ## Why not all-MiniLM-L6-v2?
 
-| | all-MiniLM-L6-v2 | bge-small-en-v1.5 | Delta |
+| | all-MiniLM-L6-v2 | paraphrase-multilingual | Delta |
 |---|---:|---:|---:|
-| MTEB Avg | 56.26 | **62.17** | **+10.5%** |
-| Retrieval | 42.0 | **51.7** | **+23%** |
+| EN Retrieval | 42.0 | **51.7** | **+23%** |
+| PT Retrieval | ❌ degrades | **52.4** | **infinite** |
 | Dimensions | 384 | 384 | same |
 | Size (INT8) | ~23MB | ~33MB | +10MB |
+| Languages | EN only | **50+** | — |
 
-Same 384 dimensions means drop-in migration — no reindexing needed if changing from MiniLM.
+## Why not larger multilingual models?
 
-## Why not larger models?
+| Model | Dims | Languages | Size (INT8) | Latency |
+|---|---:|---|---:|---:|
+| bge-m3 | 1024 | 100+ | **~570MB** | ~80ms |
+| multilingual-e5-small | 384 | 50+ | ~33MB | ~15ms |
 
-| Model | Dims | MTEB | Size (INT8) | Latency |
-|---|---:|---:|---:|---:|
-| gte-base-en-v1.5 | 768 | 64.11 | ~131MB | ~48ms |
-| nomic-embed-text-v1.5 | 768 | 62.28 | ~131MB | ~48ms |
-| gte-modernbert-base | 768 | 64.38 | ~149MB | ~50ms |
-
-These offer modest quality gains (+1-2 MTEB) at 4x the size and 4x the latency. For a coding memory system where entries are short (decisions, commands, facts), 384 dims with bge-small is the optimal tradeoff.
-
-The 768-dim models make sense if you need 8K context length to embed entire documents without chunking — a future consideration, not the default.
+bge-m3 is the best multilingual model available, but at 570MB it's too large for a lightweight binary. multilingual-e5-small is a viable alternative with similar size to our choice, but paraphrase-multilingual has proven ONNX availability with optimized INT8 variants and slightly better retrieval scores.
 
 ## Quantization
 
@@ -50,12 +59,14 @@ The installer downloads from HuggingFace to `~/.anchored/data/onnx/`:
 
 ```
 ~/.anchored/data/onnx/
-├── onnxruntime/             # ONNX Runtime library (platform-specific)
-│   ├── libonnxruntime.so     # Linux
-│   ├── libonnxruntime.dylib  # macOS
+├── onnxruntime/                        # ONNX Runtime library (platform-specific)
+│   ├── libonnxruntime.so             # Linux
+│   ├── libonnxruntime.dylib          # macOS
 │   └── ...
-└── bge-small-en-v1.5/
-    ├── model.onnx            # ~33MB (INT8 quantized)
+└── paraphrase-multilingual-MiniLM-L12-v2/
+    ├── model_qint8_avx2.onnx         # INT8 quantized, x86 (preferred)
+    ├── model_qint8_avx512_vnni.onnx  # INT8 quantized, x86 with VNNI
+    ├── model_qint8_arm64.onnx         # INT8 quantized, ARM64 (macOS)
     ├── tokenizer.json
     ├── tokenizer_config.json
     ├── vocab.txt
@@ -68,11 +79,11 @@ The installer downloads from HuggingFace to `~/.anchored/data/onnx/`:
 Input text
     │
     ▼
-WordPiece tokenization (vocab.txt)
+WordPiece tokenization (vocab.txt, 512 max tokens)
     │   Max 512 tokens, CLS/SEP tokens added
     │
     ▼
-ONNX Runtime session
+ONNX Runtime inference (paraphrase-multilingual-MiniLM-L12-v2)
     │   Graph optimizations: O1
     │   Threading: intra-op parallel
     │
@@ -83,10 +94,18 @@ Last hidden state → Mean pooling → L2 normalize
 Float32 vector [384]
     │
     ▼
-Quantize to uint8 (store)
+Quantization → uint8 (4x reduction, ≥0.98 cosine correlation)
     │
     ▼
-Keep as float32 (query)
+Store in SQLite (BLOB) + in-memory vector cache
 ```
 
 Queries use float32 for better recall. Stored data is uint8 for compression. The quantization algorithm handles the asymmetry.
+
+## Future upgrade path
+
+| Model | When it makes sense |
+|---|---|
+| multilingual-e5-small | If ONNX availability becomes better |
+| bge-m3 | If 570MB is acceptable and 8K context is needed |
+| nomic-embed-text-v1.5 | If Matryoshka truncation (768→256) is needed |

@@ -86,7 +86,7 @@ No daemon. No ports. The binary runs on demand via MCP STDIO — your tool manag
 
 - [Architecture](docs/architecture.md) — system design, memory stack, SQLite schema
 - [Import Sources](docs/import-sources.md) — how each tool's data is parsed
-- [Embedding Model](docs/embedding-model.md) — why bge-small-en-v1.5
+- [Embedding Model](docs/embedding-model.md) — why paraphrase-multilingual-MiniLM-L12-v2
 
 ## License
 
