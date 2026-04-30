@@ -362,10 +362,10 @@ func extractLibFromTgz(tgzPath, destPath string) error {
 		}
 
 		name := hdr.Name
-		if !strings.Contains(name, "/lib/libonnxruntime") {
+		if !strings.Contains(name, "/lib/") {
 			continue
 		}
-		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+		if !strings.HasPrefix(filepath.Base(name), "libonnxruntime.so") {
 			continue
 		}
 		if hdr.Typeflag != tar.TypeReg {
