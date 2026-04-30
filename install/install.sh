@@ -90,7 +90,7 @@ memory:
   database_path: ~/.anchored/data/anchored.db
 embedding:
   provider: onnx
-  model: paraphrase-multilingual-MiniLM-L12-v2
+  model: all-MiniLM-L6-v2
   model_dir: ~/.anchored/data/onnx
   quantize: true
   dimensions: 384

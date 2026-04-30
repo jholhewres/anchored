@@ -28,7 +28,7 @@ func initSchema() string {
 		)`,
 		`CREATE TABLE IF NOT EXISTS embedding_cache (
 			text_hash TEXT NOT NULL,
-			model TEXT NOT NULL DEFAULT 'paraphrase-multilingual-MiniLM-L12-v2',
+			model TEXT NOT NULL DEFAULT 'all-MiniLM-L6-v2',
 			embedding BLOB NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (text_hash, model)

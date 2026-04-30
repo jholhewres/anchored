@@ -59,7 +59,7 @@ func Defaults() *Config {
 		},
 		Embedding: EmbeddingConfig{
 			Provider:   "onnx",
-			Model:      "paraphrase-multilingual-MiniLM-L12-v2",
+			Model:      "all-MiniLM-L6-v2",
 			ModelDir:   "~/.anchored/data/onnx",
 			Quantize:   true,
 			Dimensions: 384,

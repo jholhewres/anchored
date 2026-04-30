@@ -20,7 +20,7 @@ import (
 	"github.com/jholhewres/anchored/pkg/stack"
 )
 
-const Version = "0.1.2"
+const Version = "0.1.3"
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {

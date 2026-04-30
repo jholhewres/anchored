@@ -20,13 +20,14 @@ import (
 )
 
 const (
-	onnxModelName      = "paraphrase-multilingual-MiniLM-L12-v2"
+	onnxModelName      = "all-MiniLM-L6-v2"
 	onnxModelDims      = 384
 	onnxMaxSeqLen      = 128
 	onnxRuntimeVersion = "1.24.1"
 
 	onnxRuntimeURLTemplate = "https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-%s-%s-%s.tgz"
-	onnxModelBaseURL       = "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main"
+	onnxModelBaseURL       = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx"
+	onnxVocabURL           = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/vocab.txt"
 )
 
 type ONNXEmbedder struct {
@@ -274,8 +275,7 @@ func ensureONNXModel(paths *ONNXPaths, logger *slog.Logger) error {
 	}
 
 	if !fileExists(paths.VocabFile) {
-		vocabURL := onnxModelBaseURL + "/vocab.txt"
-		if err := downloadFile(vocabURL, paths.VocabFile, logger); err != nil {
+		if err := downloadFile(onnxVocabURL, paths.VocabFile, logger); err != nil {
 			return fmt.Errorf("download vocab: %w", err)
 		}
 	}
