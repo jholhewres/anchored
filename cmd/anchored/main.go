@@ -20,25 +20,33 @@ import (
 	"github.com/jholhewres/anchored/pkg/stack"
 )
 
-const Version = "0.1.5"
+const Version = "0.1.7"
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
-		fmt.Fprintf(os.Stderr, "anchored %s — persistent cross-tool memory for AI coding agents\n\n", Version)
-		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  anchored                  Start MCP server (STDIO)\n")
-		fmt.Fprintf(os.Stderr, "  anchored import [sources] Import memories from detected sources\n")
-		fmt.Fprintf(os.Stderr, "  anchored --version        Print version\n")
-		fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")
-		os.Exit(0)
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "--version", "-v":
+			fmt.Printf("anchored %s\n", Version)
+			os.Exit(0)
+		case "--help", "-h":
+			printUsage()
+			os.Exit(0)
+		}
 	}
 
-	switch os.Args[1] {
-	case "import":
-		runImport(os.Args[2:])
-	default:
-		runServe()
-	}
+	runServe()
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "anchored %s — persistent cross-tool memory for AI coding agents\n\n", Version)
+	fmt.Fprintf(os.Stderr, "Usage:\n")
+	fmt.Fprintf(os.Stderr, "  anchored                  Start MCP server (STDIO)\n")
+	fmt.Fprintf(os.Stderr, "  anchored import [sources] Import memories from detected sources\n")
+	fmt.Fprintf(os.Stderr, "  anchored --version        Print version\n")
+	fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")
 }
 
 func runImport(args []string) {
@@ -142,17 +150,9 @@ func buildSources(home string, selected []string, logFn func(string, ...any)) []
 }
 
 func runServe() {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	configPath := fs.String("config", "", "path to config file (default: ~/.anchored/config.yaml)")
-	showVersion := fs.Bool("version", false, "print version and exit")
-	fs.Parse(os.Args[1:])
+	logger := slog.Default()
 
-	if *showVersion {
-		fmt.Printf("anchored %s\n", Version)
-		os.Exit(0)
-	}
-
-	cfg, err := loadConfig(*configPath)
+	cfg, err := loadConfig("")
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -162,8 +162,6 @@ func runServe() {
 		slog.Error("failed to create directories", "error", err)
 		os.Exit(1)
 	}
-
-	logger := slog.Default()
 
 	memSvc, err := memory.NewService(cfg, logger)
 	if err != nil {
