@@ -82,3 +82,32 @@ func float32SliceToBytes(vec []float32) []byte {
 	}
 	return buf
 }
+
+const LegacyModelName = "all-MiniLM-L6-v2"
+
+func (c *EmbeddingCache) MigrateFromLegacy(currentModel string) int64 {
+	var count int64
+	err := c.db.QueryRow(
+		"SELECT COUNT(*) FROM embedding_cache WHERE model = ?",
+		LegacyModelName,
+	).Scan(&count)
+	if err != nil || count == 0 {
+		return 0
+	}
+
+	res, err := c.db.Exec(
+		"DELETE FROM embedding_cache WHERE model = ?",
+		LegacyModelName,
+	)
+	if err != nil {
+		c.logger.Warn("failed to migrate legacy embedding cache", "error", err)
+		return 0
+	}
+	deleted, _ := res.RowsAffected()
+	c.logger.Info("Model updated. Re-generating embeddings in background...",
+		"deleted_cache_entries", deleted,
+		"old_model", LegacyModelName,
+		"new_model", currentModel,
+	)
+	return deleted
+}

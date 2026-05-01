@@ -5,24 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/jholhewres/anchored/pkg/capture"
 	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
+	"github.com/jholhewres/anchored/pkg/session"
 )
 
 type Server struct {
-	mem     *memory.Service
-	kg      *kg.KG
-	stack   StackRenderer
-	logger  *slog.Logger
-	version string
+	mem      *memory.Service
+	kg       *kg.KG
+	stack    StackRenderer
+	sessions *session.Manager
+	capture  *capture.AutoCaptureManager
+	logger   *slog.Logger
+	version  string
 }
 
-func NewServer(mem *memory.Service, kg *kg.KG, stack StackRenderer, version string, logger *slog.Logger) *Server {
+func NewServer(mem *memory.Service, kg *kg.KG, stack StackRenderer, sessions *session.Manager, captureMgr *capture.AutoCaptureManager, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{mem: mem, kg: kg, stack: stack, logger: logger, version: version}
+	return &Server{mem: mem, kg: kg, stack: stack, sessions: sessions, capture: captureMgr, logger: logger, version: version}
 }
 
 type StackRenderer interface {
@@ -110,12 +115,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolList(ctx, args)
 	case "anchored_forget":
 		return s.toolForget(ctx, args)
+	case "anchored_update":
+		return s.toolUpdate(ctx, args)
 	case "anchored_stats":
 		return s.toolStats(ctx)
 	case "kg_query":
 		return s.toolKGQuery(ctx, args)
 	case "kg_add":
 		return s.toolKGAdd(ctx, args)
+	case "anchored_session_end":
+		return s.toolSessionEnd(ctx, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -123,10 +132,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 
 func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		CWD string `json:"cwd"`
+		CWD       string `json:"cwd"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		p.CWD = "."
+	}
+
+	// Track session activity
+	if s.sessions != nil && p.SessionID != "" {
+		_ = s.sessions.RecordActivity(ctx, p.SessionID)
 	}
 
 	if s.stack != nil {
@@ -142,6 +157,7 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Query      string `json:"query"`
+		CWD        string `json:"cwd"`
 		Category   string `json:"category"`
 		MaxResults int    `json:"max_results"`
 	}
@@ -149,9 +165,17 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
+	var projectID, boostProjectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+		boostProjectID = projectID
+	}
+
 	results, err := s.mem.Search(ctx, p.Query, memory.SearchOptions{
-		MaxResults: p.MaxResults,
-		Category:   p.Category,
+		MaxResults:    p.MaxResults,
+		Category:      p.Category,
+		ProjectID:     projectID,
+		BoostProjectID: boostProjectID,
 	})
 	if err != nil {
 		return "", err
@@ -161,9 +185,14 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 		return "No matching memories found.", nil
 	}
 
+	globalMode := p.CWD == ""
 	var lines []string
 	for i, r := range results {
-		lines = append(lines, fmt.Sprintf("%d. [%s] %.3f — %s", i+1, r.Memory.Category, r.Score, r.Memory.Content))
+		line := fmt.Sprintf("%d. [%s] %.3f — %s", i+1, r.Memory.Category, r.Score, r.Memory.Content)
+		if globalMode && r.Memory.ProjectID != nil && *r.Memory.ProjectID != "" {
+			line = fmt.Sprintf("%d. [project:%s] [%s] %.3f — %s", i+1, *r.Memory.ProjectID, r.Memory.Category, r.Score, r.Memory.Content)
+		}
+		lines = append(lines, line)
 	}
 
 	return fmt.Sprintf("Found %d memories:\n\n%s", len(results), joinLines(lines)), nil
@@ -193,6 +222,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 
 func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
+		CWD      string `json:"cwd"`
 		Category string `json:"category"`
 		Limit    int    `json:"limit"`
 	}
@@ -200,9 +230,15 @@ func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
 	memories, err := s.mem.List(ctx, memory.ListOptions{
-		Category: p.Category,
-		Limit:    p.Limit,
+		Category:  p.Category,
+		Limit:     p.Limit,
+		ProjectID: projectID,
 	})
 	if err != nil {
 		return "", err
@@ -222,17 +258,48 @@ func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, er
 
 func (s *Server) toolForget(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		ID string `json:"id"`
+		ID  string `json:"id"`
+		Hard bool  `json:"hard"`
+		CWD string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	if err := s.mem.Forget(ctx, p.ID); err != nil {
+	_ = p.CWD
+
+	if p.Hard {
+		if err := s.mem.Forget(ctx, p.ID); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Permanently deleted memory %s", p.ID), nil
+	}
+
+	if err := s.mem.SoftForget(ctx, p.ID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Soft-deleted memory %s", p.ID), nil
+}
+
+func (s *Server) toolUpdate(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		ID       string `json:"id"`
+		Content  string `json:"content"`
+		Category string `json:"category"`
+		CWD      string `json:"cwd"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	_ = p.CWD
+
+	m, err := s.mem.Update(ctx, p.ID, p.Content, p.Category)
+	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("Deleted memory %s", p.ID), nil
+	return fmt.Sprintf("Updated [%s] memory %s", m.Category, m.ID), nil
 }
 
 func (s *Server) toolStats(ctx context.Context) (string, error) {
@@ -258,7 +325,52 @@ func (s *Server) toolStats(ctx context.Context) (string, error) {
 		}
 	}
 
+	if s.sessions != nil {
+		total, active, err := s.sessions.SessionStats(ctx)
+		if err == nil {
+			lines = append(lines, fmt.Sprintf("\nSessions: %d total, %d active", total, active))
+		}
+	}
+
 	return joinLines(lines), nil
+}
+
+func (s *Server) toolSessionEnd(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.sessions == nil {
+		return "Session tracking not available.", nil
+	}
+
+	var p struct {
+		SessionID string `json:"session_id"`
+		Summary   string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	if p.SessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+
+	if err := s.sessions.EndSession(ctx, p.SessionID); err != nil {
+		return "", err
+	}
+
+	if s.capture != nil && p.Summary != "" {
+		_ = s.capture.CaptureSession(ctx, p.SessionID, []capture.ToolCall{
+			{Tool: "session_end", Input: p.Summary, Timestamp: time.Now()},
+		}, ".")
+	}
+
+	if p.Summary != "" {
+		_, err := s.mem.Save(ctx, p.Summary, "summary", "session_end", ".")
+		if err != nil {
+			return fmt.Sprintf("Session %s ended (summary save failed: %v)", p.SessionID, err), nil
+		}
+		return fmt.Sprintf("Session %s ended with summary saved.", p.SessionID), nil
+	}
+
+	return fmt.Sprintf("Session %s ended.", p.SessionID), nil
 }
 
 func (s *Server) toolKGQuery(ctx context.Context, args json.RawMessage) (string, error) {
@@ -268,12 +380,18 @@ func (s *Server) toolKGQuery(ctx context.Context, args json.RawMessage) (string,
 
 	var p struct {
 		Entity string `json:"entity"`
+		CWD    string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	triples, err := s.kg.Query(ctx, p.Entity, nil)
+	var projectID *string
+	if pid := s.mem.ResolveProject(p.CWD); pid != "" {
+		projectID = &pid
+	}
+
+	triples, err := s.kg.Query(ctx, p.Entity, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -299,12 +417,18 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 		Subject   string `json:"subject"`
 		Predicate string `json:"predicate"`
 		Object    string `json:"object"`
+		CWD       string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	triple, err := s.kg.AddTriple(ctx, p.Subject, p.Predicate, p.Object, nil)
+	var projectID *string
+	if pid := s.mem.ResolveProject(p.CWD); pid != "" {
+		projectID = &pid
+	}
+
+	triple, err := s.kg.AddTriple(ctx, p.Subject, p.Predicate, p.Object, projectID)
 	if err != nil {
 		return "", err
 	}

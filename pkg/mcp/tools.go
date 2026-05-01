@@ -16,6 +16,10 @@ func ToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "Current working directory for project detection",
 					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "Optional session ID for tracking",
+					},
 				},
 				"required": []string{"cwd"},
 			},
@@ -29,6 +33,10 @@ func ToolDefinitions() []Tool {
 					"query": map[string]any{
 						"type":        "string",
 						"description": "Natural language search query",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project-scoped search. When omitted, searches globally across all projects.",
 					},
 					"category": map[string]any{
 						"type":        "string",
@@ -72,6 +80,10 @@ func ToolDefinitions() []Tool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project-scoped listing. When omitted, lists from all projects.",
+					},
 					"category": map[string]any{
 						"type":        "string",
 						"description": "Filter by category",
@@ -84,14 +96,49 @@ func ToolDefinitions() []Tool {
 			},
 		},
 		{
+			Name:        "anchored_update",
+			Description: "Update an existing memory in-place. Preserves ID, project, and source. Re-embeds if content changed. Use to correct or evolve facts without losing context.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "The memory ID to update",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "New content (optional — only update if provided)",
+					},
+					"category": map[string]any{
+						"type":        "string",
+						"description": "New category (optional — only update if provided)",
+						"enum":        []string{"fact", "preference", "decision", "event", "learning", "plan"},
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+		{
 			Name:        "anchored_forget",
-			Description: "Remove a specific memory by ID. Use when information is outdated or incorrect.",
+			Description: "Remove a specific memory by ID. Soft-deletes by default (recoverable). Set hard=true for permanent deletion.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id": map[string]any{
 						"type":        "string",
 						"description": "The memory ID to delete",
+					},
+					"hard": map[string]any{
+						"type":        "boolean",
+						"description": "Permanently delete (default: false, soft delete)",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project context",
 					},
 				},
 				"required": []string{"id"},
@@ -106,6 +153,24 @@ func ToolDefinitions() []Tool {
 			},
 		},
 		{
+			Name:        "anchored_session_end",
+			Description: "End a tracked session. Call when a conversation ends to properly close the session.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "The session ID to end",
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Optional session summary to save as a memory",
+					},
+				},
+				"required": []string{"session_id"},
+			},
+		},
+		{
 			Name:        "kg_query",
 			Description: "Query the knowledge graph. Find entities (projects, services, people, APIs) and their relationships.",
 			InputSchema: map[string]any{
@@ -114,6 +179,10 @@ func ToolDefinitions() []Tool {
 					"entity": map[string]any{
 						"type":        "string",
 						"description": "Entity name to query",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project-scoped query",
 					},
 				},
 				"required": []string{"entity"},
@@ -136,6 +205,10 @@ func ToolDefinitions() []Tool {
 					"object": map[string]any{
 						"type":        "string",
 						"description": "Object entity name",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project-scoped relationship",
 					},
 				},
 				"required": []string{"subject", "predicate", "object"},

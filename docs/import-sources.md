@@ -6,10 +6,12 @@ Anchored imports memories from existing AI coding tools and stores them in a uni
 
 ### Claude Code
 
+**Status:** Complete
+
 **Location:** `~/.claude/projects/{path-hash}/`
 
-Path hash = project path with `/` → `-` and leading `/` stripped.
-Example: `/home/jhol/Workspace/private/devclaw` → `-home-jhol-Workspace-private-devclaw`
+Path hash = project path with `/` to `-` and leading `/` stripped.
+Example: `/home/jhol/Workspace/private/devclaw` to `-home-jhol-Workspace-private-devclaw`
 
 **What exists there:**
 ```
@@ -60,16 +62,19 @@ Example: `/home/jhol/Workspace/private/devclaw` → `-home-jhol-Workspace-privat
 
 **Import strategy:**
 1. Scan all `{path-hash}/*.jsonl` files
-2. Group lines by `sessionId` → one session
-3. Map `cwd` → project (git root detection)
+2. Group lines by `sessionId` to form one session
+3. Map `cwd` to project (git root detection)
 4. Filter `type: "user"` and `type: "assistant"` messages with text content
 5. Extract from each session:
+   - **Summaries** — first assistant message per session used as summary
    - **Decisions** — patterns: "vamos", "decidimos", "implementar", "refatorar"
    - **Commands** — `tool_use` with `name: "Bash"` or `name: "Write"`
    - **Files modified** — `tool_use` with `name: "Edit"` or `name: "Write"`
    - **Errors found** — error patterns in tool_result content
 6. Parse `memory/*.md` files (YAML frontmatter: name, description, type)
 7. Parse `CLAUDE.md` files (project-level and global `~/.claude/CLAUDE.md`)
+
+The parser handles multi-line JSON objects (JSONL where one logical entry spans multiple lines), robust error recovery, and mixed content types.
 
 **MCP registration:** `~/.claude/mcp.json` (global) or `.mcp.json` (per-project)
 ```json
@@ -86,6 +91,8 @@ Example: `/home/jhol/Workspace/private/devclaw` → `-home-jhol-Workspace-privat
 ---
 
 ### OpenCode
+
+**Status:** Complete
 
 **Location:** `~/.local/share/opencode/opencode.db`
 **Config:** `~/.local/share/opencode/opencode.json`
@@ -111,8 +118,11 @@ todo          (session_id, content, status, priority, position, time_created, ti
 **Import strategy:**
 1. `JOIN session s ON part.session_id = s.id JOIN project p ON s.project_id = p.id`
 2. Filter parts where `type = "text"` with non-empty `text`
-3. Map `s.directory` → project
+3. Map `s.directory` to project (fallback to `project.worktree`)
 4. Import todos as `plan` category memories
+5. Auto-categorize text parts using regex patterns
+
+Opens the database in read-only mode (`?_mode=ro`) for safety.
 
 **MCP registration:** `~/.config/opencode/opencode.json`
 ```json
@@ -129,6 +139,8 @@ todo          (session_id, content, status, priority, position, time_created, ti
 ---
 
 ### Cursor
+
+**Status:** Complete
 
 **Location:** `~/.cursor/`
 
@@ -147,9 +159,11 @@ Rule content here...
 ```
 
 **Import strategy:**
-1. Parse YAML frontmatter (description, globs)
+1. Parse YAML frontmatter (description, globs) using line-by-line splitting
 2. Map to project based on file location
 3. Store as `preference` category
+4. Handle edge cases: no frontmatter (entire content is body), malformed frontmatter (skip)
+5. JSON array values in globs parsed via `json.Unmarshal`
 
 **MCP registration:** `~/.cursor/mcp.json`
 ```json
@@ -166,6 +180,8 @@ Rule content here...
 ---
 
 ### DevClaw
+
+**Status:** Stub (basic import available)
 
 **Location:** `{project}/data/memory.db` + `{project}/data/memory/`
 
@@ -202,27 +218,27 @@ All sources share the same post-processing pipeline:
 
 ```
 Raw content from source
-    │
-    ▼
-Content sanitizer ──→ Remove API keys, tokens, passwords, SSH keys
-    │
-    ▼
-Auto-categorizer ──→ fact | preference | decision | event | learning | plan
-    │                 (regex patterns, PT/EN)
-    │
-    ▼
-Project resolver ──→ CWD or file path → project (git root)
-    │
-    ▼
-ONNX embedding ──→ bge-small-en-v1.5 → uint8 quantized vector
-    │
-    ▼
-SQLite store ──→ memories table + FTS5 index + embedding cache
-    │
-    ▼
-KG extractor ──→ Pattern-based entity and relationship extraction
-    │
-    ▼
+    |
+    v
+Content sanitizer --→ Remove API keys, tokens, passwords, SSH keys
+    |
+    v
+Auto-categorizer --→ fact | preference | decision | event | learning | plan
+    |                 (regex patterns, PT/EN)
+    |
+    v
+Project resolver --→ CWD or file path → project (git root)
+    |
+    v
+ONNX embedding --→ paraphrase-multilingual-MiniLM-L12-v2 → uint8 quantized vector
+    |
+    v
+SQLite store --→ memories table + FTS5 index + vector cache
+    |
+    v
+KG extractor --→ Pattern-based entity and relationship extraction (max 5 triples/save)
+    |
+    v
 Done. Memory is searchable from all tools.
 ```
 
@@ -239,9 +255,11 @@ CREATE TABLE imports (
 );
 ```
 
-Detection varies by source:
-- **Claude Code**: file modification time of JSONL files
-- **OpenCode**: max `time_updated` in sessions
-- **Cursor**: file modification time of .mdc files
-- **DevClaw**: max row `created_at` in memories table
+Delta sync varies by source:
+- **Claude Code**: file modification time of JSONL files vs `finished_at`
+- **OpenCode**: max `time_updated` in sessions vs `finished_at`
+- **Cursor**: file modification time of .mdc files vs `finished_at`
+- **DevClaw**: max row `created_at` in memories table vs `finished_at`
 - **Directory**: SHA-256 hash comparison
+
+Use `--force` to bypass delta sync and re-import everything.

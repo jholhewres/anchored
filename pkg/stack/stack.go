@@ -6,10 +6,21 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const defaultBudget = 3600
+
+type StackMetrics struct {
+	LayerBytesL0  int64
+	LayerBytesL1  int64
+	LayerBytesL2  int64
+	L1CacheHits   int64
+	L1CacheMisses int64
+	TotalRenders  int64
+}
 
 type LayerOutput struct {
 	Label   string
@@ -18,11 +29,15 @@ type LayerOutput struct {
 }
 
 type Stack struct {
-	identity  *IdentityLayer
-	project   *ProjectLayer
-	ondemand  *OnDemandLayer
-	budget    int
-	logger    *slog.Logger
+	identity     *IdentityLayer
+	project      *ProjectLayer
+	ondemand     *OnDemandLayer
+	budget       int
+	logger       *slog.Logger
+	layerBytesL0 atomic.Int64
+	layerBytesL1 atomic.Int64
+	layerBytesL2 atomic.Int64
+	totalRenders atomic.Int64
 }
 
 func NewStack(identity *IdentityLayer, project *ProjectLayer, ondemand *OnDemandLayer, budget int, logger *slog.Logger) *Stack {
@@ -48,31 +63,40 @@ const (
 )
 
 func (s *Stack) Render() string {
+	s.totalRenders.Add(1)
+
 	type indexedLayer struct {
-		output  LayerOutput
+		output   LayerOutput
 		priority int
 	}
 
 	var layers []indexedLayer
+	var bytesL0, bytesL1, bytesL2 int
 
 	l0 := s.identity.Render()
 	if l0 != "" {
 		layers = append(layers, indexedLayer{LayerOutput{Label: "identity", Content: l0, Bytes: len(l0)}, layerPriorityIdentity})
+		bytesL0 = len(l0)
 	}
+	s.layerBytesL0.Store(int64(bytesL0))
 
 	if s.project != nil {
 		l1 := s.project.Render()
 		if l1 != "" {
 			layers = append(layers, indexedLayer{LayerOutput{Label: "project", Content: l1, Bytes: len(l1)}, layerPriorityProject})
+			bytesL1 = len(l1)
 		}
 	}
+	s.layerBytesL1.Store(int64(bytesL1))
 
 	if s.ondemand != nil {
-		l2 := s.ondemand.Render()
+		l2 := s.ondemand.Render("", "")
 		if l2 != "" {
 			layers = append(layers, indexedLayer{LayerOutput{Label: "ondemand", Content: l2, Bytes: len(l2)}, layerPriorityOnDemand})
+			bytesL2 = len(l2)
 		}
 	}
+	s.layerBytesL2.Store(int64(bytesL2))
 
 	sort.Slice(layers, func(i, j int) bool {
 		return layers[i].priority < layers[j].priority
@@ -101,7 +125,23 @@ func (s *Stack) Render() string {
 		return ""
 	}
 
+	s.logger.Debug("stack render", "l0", bytesL0, "l1", bytesL1, "l2", bytesL2, "total", bytesL0+bytesL1+bytesL2)
+
 	return fmt.Sprintf("## Anchored Memory\n\n%s", strings.Join(parts, "\n\n"))
+}
+
+func (s *Stack) Metrics() StackMetrics {
+	m := StackMetrics{
+		LayerBytesL0: s.layerBytesL0.Load(),
+		LayerBytesL1: s.layerBytesL1.Load(),
+		LayerBytesL2: s.layerBytesL2.Load(),
+		TotalRenders: s.totalRenders.Load(),
+	}
+	if s.project != nil && s.project.essential != nil {
+		m.L1CacheHits = s.project.essential.CacheHits()
+		m.L1CacheMisses = s.project.essential.CacheMisses()
+	}
+	return m
 }
 
 func truncateToBytes(s string, maxBytes int) string {
@@ -123,6 +163,9 @@ type IdentityLayer struct {
 	content string
 	modTime time.Time
 	done    chan struct{}
+	mu      sync.Mutex
+	started bool
+	stopped bool
 }
 
 func NewIdentityLayer(path string, logger *slog.Logger, budget int) *IdentityLayer {
@@ -136,6 +179,14 @@ func NewIdentityLayer(path string, logger *slog.Logger, budget int) *IdentityLay
 }
 
 func (l *IdentityLayer) Start() error {
+	l.mu.Lock()
+	if l.started {
+		l.mu.Unlock()
+		return nil
+	}
+	l.started = true
+	l.mu.Unlock()
+
 	if err := l.reload(); err != nil {
 		l.logger.Warn("identity: initial load failed", "error", err)
 	}
@@ -144,6 +195,14 @@ func (l *IdentityLayer) Start() error {
 }
 
 func (l *IdentityLayer) Stop() {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		return
+	}
+	l.stopped = true
+	l.mu.Unlock()
+
 	close(l.done)
 }
 
@@ -197,35 +256,36 @@ func (l *IdentityLayer) pollLoop() {
 }
 
 type ProjectLayer struct {
+	essential  *EssentialLayer
+	projectID  string
 	getStoryFn func() string
-	stale     time.Duration
 }
 
-func NewProjectLayer(getStoryFn func() string, stale time.Duration) *ProjectLayer {
-	if stale <= 0 {
-		stale = 6 * time.Hour
+func NewProjectLayer(getStoryFn func() string) *ProjectLayer {
+	return &ProjectLayer{getStoryFn: getStoryFn}
+}
+
+func NewProjectLayerWithEssential(store DBAccessor, projectID string, logger *slog.Logger) *ProjectLayer {
+	return &ProjectLayer{
+		essential: NewEssentialLayer(store, logger),
+		projectID: projectID,
 	}
-	return &ProjectLayer{getStoryFn: getStoryFn, stale: stale}
 }
 
 func (l *ProjectLayer) Render() string {
-	if l.getStoryFn == nil {
-		return ""
+	if l.essential != nil {
+		return l.essential.Render(l.projectID)
 	}
-	return l.getStoryFn()
-}
-
-type OnDemandLayer struct {
-	getRelevantFn func() string
-}
-
-func NewOnDemandLayer(getRelevantFn func() string) *OnDemandLayer {
-	return &OnDemandLayer{getRelevantFn: getRelevantFn}
-}
-
-func (l *OnDemandLayer) Render() string {
-	if l.getRelevantFn == nil {
-		return ""
+	if l.getStoryFn != nil {
+		return l.getStoryFn()
 	}
-	return l.getRelevantFn()
+	return ""
 }
+
+func (l *ProjectLayer) Invalidate() {
+	if l.essential != nil {
+		l.essential.Invalidate(l.projectID)
+	}
+}
+
+

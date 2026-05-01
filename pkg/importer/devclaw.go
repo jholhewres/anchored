@@ -3,7 +3,6 @@ package importer
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -18,6 +17,7 @@ func NewDevClawImporter(dbPath string, log func(string, ...any)) *DevClawImporte
 }
 
 func (i *DevClawImporter) Name() string { return "devclaw" }
+func (i *DevClawImporter) Path() string { return i.dbPath }
 
 func (i *DevClawImporter) Detect() bool {
 	db, err := sql.Open("sqlite3", i.dbPath)
@@ -64,8 +64,4 @@ func (i *DevClawImporter) Import(ctx context.Context, store ImportStore) ImportR
 	return result
 }
 
-func countTable(db *sql.DB, table string) int {
-	var count int
-	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
-	return count
-}
+

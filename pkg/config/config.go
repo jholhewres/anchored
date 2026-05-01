@@ -15,6 +15,21 @@ type Config struct {
 	Search    SearchConfig    `yaml:"search"`
 	Sanitizer SanitizerConfig `yaml:"sanitizer"`
 	Stack     StackConfig     `yaml:"stack"`
+	Indexer   IndexerConfig   `yaml:"indexer"`
+	Dream     DreamConfig     `yaml:"dream"`
+}
+
+type DreamConfig struct {
+	Aggressiveness      string  `yaml:"aggressiveness"`
+	DedupThreshold      float64 `yaml:"dedup_threshold"`
+	MaxDeletionsPerRun  int     `yaml:"max_deletions_per_run"`
+	ContradictionAction string  `yaml:"contradiction_action"`
+}
+
+type IndexerConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Paths    []string `yaml:"paths"`
+	Interval string   `yaml:"interval"`
 }
 
 type MemoryConfig struct {
@@ -59,7 +74,7 @@ func Defaults() *Config {
 		},
 		Embedding: EmbeddingConfig{
 			Provider:   "onnx",
-			Model:      "all-MiniLM-L6-v2",
+			Model:      "paraphrase-multilingual-MiniLM-L12-v2",
 			ModelDir:   "~/.anchored/data/onnx",
 			Quantize:   true,
 			Dimensions: 384,
@@ -76,6 +91,12 @@ func Defaults() *Config {
 			BudgetBytes:  3600,
 			L1CacheTTL:   "6h",
 			L2MaxResults: 5,
+		},
+		Dream: DreamConfig{
+			Aggressiveness:      "moderate",
+			DedupThreshold:      0.75,
+			MaxDeletionsPerRun:  50,
+			ContradictionAction: "flag",
 		},
 	}
 }
