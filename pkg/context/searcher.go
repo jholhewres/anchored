@@ -12,7 +12,7 @@ const defaultMaxResults = 20
 
 // chunkSearcher abstracts the Store to allow parallel development and test doubles.
 type chunkSearcher interface {
-	SearchChunks(ctx context.Context, query string, maxResults int, contentType, source string) ([]ContentSearchResult, error)
+	SearchChunks(ctx context.Context, query string, maxResults int, contentType, source, projectID string) ([]ContentSearchResult, error)
 }
 
 type Searcher struct {
@@ -30,7 +30,7 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 	}
 
 	fetchN := opts.MaxResults * 2
-	raw, err := s.store.SearchChunks(ctx, query, fetchN, opts.ContentType, opts.Source)
+	raw, err := s.store.SearchChunks(ctx, query, fetchN, opts.ContentType, opts.Source, opts.ProjectID)
 	if err != nil {
 		return nil, err
 	}

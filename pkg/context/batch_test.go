@@ -22,6 +22,9 @@ func newBatchTestEnv(t *testing.T) (*BatchExecutor, *sql.DB) {
 	if _, err := db.Exec(MigrationSQL); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	if _, err := db.Exec(MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
 
 	store := NewStore(db, nil)
 	if err := store.PrepareStatements(); err != nil {
@@ -42,7 +45,7 @@ func TestBatchExecutor_SingleCommand(t *testing.T) {
 
 	result, err := be.ExecuteBatch(ctx, []BatchCommand{
 		{Label: "echo", Command: "print('hello from batch')", Language: "python"},
-	}, nil, "sess-batch-1", "")
+	}, nil, "sess-batch-1", "", "")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -72,7 +75,7 @@ func TestBatchExecutor_MultiCommand(t *testing.T) {
 		{Label: "echo1", Command: "print('first')", Language: "python"},
 		{Label: "echo2", Command: "print('second')", Language: "python"},
 		{Label: "echo3", Command: "print('third')", Language: "python"},
-	}, nil, "sess-batch-2", "")
+	}, nil, "sess-batch-2", "", "")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestBatchExecutor_FailedCommandContinues(t *testing.T) {
 		{Label: "good", Command: "print('before fail')", Language: "python"},
 		{Label: "bad", Command: "import sys; sys.exit(42)", Language: "python"},
 		{Label: "after", Command: "print('after fail')", Language: "python"},
-	}, nil, "sess-batch-3", "")
+	}, nil, "sess-batch-3", "", "")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -139,7 +142,7 @@ func TestBatchExecutor_WithSearch(t *testing.T) {
 	}
 	queries := []string{"databaselayer"}
 
-	result, err := be.ExecuteBatch(ctx, cmds, queries, "sess-batch-4", "")
+	result, err := be.ExecuteBatch(ctx, cmds, queries, "sess-batch-4", "", "")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -159,7 +162,7 @@ func TestBatchExecutor_EmptyCommands(t *testing.T) {
 	be, _ := newBatchTestEnv(t)
 	ctx := context.Background()
 
-	result, err := be.ExecuteBatch(ctx, nil, nil, "sess-batch-5", "")
+	result, err := be.ExecuteBatch(ctx, nil, nil, "sess-batch-5", "", "")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}

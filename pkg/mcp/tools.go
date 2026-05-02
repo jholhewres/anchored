@@ -238,6 +238,10 @@ func ToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "What you're looking for in the output. When provided and output is large (>5KB), indexes output and returns only matching sections.",
 					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
+					},
 				},
 				"required": []string{"language", "code"},
 			},
@@ -269,6 +273,10 @@ func ToolDefinitions() []Tool {
 					"intent": map[string]any{
 						"type":        "string",
 						"description": "What you're looking for in the output.",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
 					},
 				},
 				"required": []string{"path", "language", "code"},
@@ -307,6 +315,10 @@ func ToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "What you're looking for in the output. Use specific technical terms.",
 					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
+					},
 				},
 				"required": []string{"commands", "queries"},
 			},
@@ -328,6 +340,10 @@ func ToolDefinitions() []Tool {
 					"source": map[string]any{
 						"type":        "string",
 						"description": "Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
 					},
 				},
 				"required": []string{"source"},
@@ -353,6 +369,10 @@ func ToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "Filter to a specific indexed source (partial match).",
 					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
+					},
 				},
 				"required": []string{"queries"},
 			},
@@ -371,7 +391,10 @@ func ToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "Label for the indexed content (e.g., 'React useEffect docs', 'Supabase Auth API')",
 					},
-	
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory for project scoping",
+					},
 				},
 				"required": []string{"url"},
 			},

@@ -110,32 +110,33 @@ func (o *Optimizer) ExecuteFile(ctx context.Context, path string, language strin
 }
 
 // IndexContent chunks markdown content and indexes it. Returns a sourceGroupID.
-func (o *Optimizer) IndexContent(ctx context.Context, content string, source string, label string, contentType string) (string, error) {
-	return o.indexer.IndexContent(ctx, content, source, label, "", contentType)
+func (o *Optimizer) IndexContent(ctx context.Context, content string, source string, label string, contentType string, projectID string) (string, error) {
+	return o.indexer.IndexContent(ctx, content, source, label, "", contentType, projectID)
 }
 
 // IndexRaw indexes non-markdown content. Returns a sourceGroupID.
-func (o *Optimizer) IndexRaw(ctx context.Context, content string, source string, label string) (string, error) {
-	return o.indexer.IndexRaw(ctx, content, source, label, "")
+func (o *Optimizer) IndexRaw(ctx context.Context, content string, source string, label string, projectID string) (string, error) {
+	return o.indexer.IndexRaw(ctx, content, source, label, "", projectID)
 }
 
 // Search searches indexed content.
-func (o *Optimizer) Search(ctx context.Context, query string, maxResults int, contentType string, source string) ([]ContentSearchResult, error) {
+func (o *Optimizer) Search(ctx context.Context, query string, maxResults int, contentType string, source string, projectID string) ([]ContentSearchResult, error) {
 	return o.searcher.Search(ctx, query, SearchOpts{
 		MaxResults:  maxResults,
 		ContentType: contentType,
 		Source:      source,
+		ProjectID:   projectID,
 	})
 }
 
 // FetchAndIndex fetches a URL, converts to markdown, and indexes the content.
-func (o *Optimizer) FetchAndIndex(ctx context.Context, url string, source string) (*FetchResult, error) {
+func (o *Optimizer) FetchAndIndex(ctx context.Context, url string, source string, projectID string) (*FetchResult, error) {
 	result, err := o.fetcher.FetchAndConvert(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
 
-	if _, err := o.indexer.IndexContent(ctx, result.Markdown, source, url, "", "prose"); err != nil {
+	if _, err := o.indexer.IndexContent(ctx, result.Markdown, source, url, "", "prose", projectID); err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
 
@@ -144,8 +145,8 @@ func (o *Optimizer) FetchAndIndex(ctx context.Context, url string, source string
 
 // ExecuteBatch runs multiple commands sequentially, indexes output, and
 // optionally searches the indexed content.
-func (o *Optimizer) ExecuteBatch(ctx context.Context, commands []BatchCommand, queries []string, intent string) (*BatchResult, error) {
-	return o.batch.ExecuteBatch(ctx, commands, queries, "", intent)
+func (o *Optimizer) ExecuteBatch(ctx context.Context, commands []BatchCommand, queries []string, intent string, projectID string) (*BatchResult, error) {
+	return o.batch.ExecuteBatch(ctx, commands, queries, "", intent, projectID)
 }
 
 // Store exposes the underlying Store for session event operations.

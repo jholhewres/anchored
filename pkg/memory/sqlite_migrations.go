@@ -76,6 +76,7 @@ func Migrate(db *sql.DB) error {
 			);
 		`},
 		{Name: "008_content_optimizer", Up: ctxpkg.MigrationSQL},
+		{Name: "009_content_project_id", Up: ctxpkg.MigrationSQL009},
 	}
 
 	for _, m := range migrations {

@@ -5,11 +5,12 @@ import "time"
 type Chunk struct {
 	ID          string    `json:"id"`
 	SessionID   string    `json:"session_id"`
-	Source      string    `json:"source"`       // 'execute', 'fetch', 'batch', 'index'
+	ProjectID   string    `json:"project_id"`
+	Source      string    `json:"source"`
 	Label       string    `json:"label"`
 	Content     string    `json:"content"`
 	Metadata    string    `json:"metadata,omitempty"`
-	ContentType string    `json:"content_type,omitempty"` // 'code', 'prose'
+	ContentType string    `json:"content_type,omitempty"`
 	IndexedAt   time.Time `json:"indexed_at"`
 	TTLHours    int       `json:"ttl_hours"`
 }
@@ -55,8 +56,9 @@ type FetchResult struct {
 type SessionEvent struct {
 	ID        string    `json:"id"`
 	SessionID string    `json:"session_id"`
+	ProjectID string    `json:"project_id"`
 	EventType string    `json:"event_type"`
-	Priority  int       `json:"priority"` // 1=critical, 2=high, 3=normal, 4=low
+	Priority  int       `json:"priority"`
 	ToolName  string    `json:"tool_name,omitempty"`
 	Summary   string    `json:"summary,omitempty"`
 	Metadata  string    `json:"metadata,omitempty"`
@@ -65,6 +67,7 @@ type SessionEvent struct {
 
 type SearchOpts struct {
 	MaxResults  int    `json:"max_results"`
-	ContentType string `json:"content_type,omitempty"` // 'code', 'prose'
-	Source      string `json:"source,omitempty"`       // filter by source label (partial match)
+	ContentType string `json:"content_type,omitempty"`
+	Source      string `json:"source,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
 }

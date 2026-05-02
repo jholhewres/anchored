@@ -1,5 +1,13 @@
 package ctx
 
+// Migration 009: project_id column for per-project isolation on existing databases.
+const MigrationSQL009 = `
+ALTER TABLE content_chunks ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE session_events ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON content_chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_events_project ON session_events(project_id);
+`
+
 const MigrationSQL = `
 -- Ephemeral content chunks for context optimizer
 CREATE TABLE IF NOT EXISTS content_chunks (

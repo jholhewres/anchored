@@ -58,11 +58,13 @@ func runHookPostToolUse(args []string) {
 		cwdVal = "."
 	}
 
+	projectID := svc.ResolveProject(cwdVal)
+
 	ctx := context.Background()
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO session_events (id, session_id, event_type, priority, tool_name, summary, metadata, created_at)
+		`INSERT INTO session_events (id, session_id, project_id, event_type, priority, tool_name, summary, metadata, created_at)
 		 VALUES (?, ?, 'tool_call', 3, ?, ?, ?, datetime('now'))`,
-		eventID, *sessionID, input.Tool, summary, truncateJSONMetadata(cwdVal, string(content)),
+		eventID, *sessionID, projectID, input.Tool, summary, truncateJSONMetadata(cwdVal, string(content)),
 	)
 	if err != nil {
 		outputJSON(map[string]any{"recorded": false, "error": "db error (table may not exist)"})

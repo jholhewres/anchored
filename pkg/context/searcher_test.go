@@ -14,7 +14,7 @@ type testStore struct {
 	db *sql.DB
 }
 
-func (ts *testStore) SearchChunks(ctx context.Context, query string, maxResults int, contentType, source string) ([]ContentSearchResult, error) {
+func (ts *testStore) SearchChunks(ctx context.Context, query string, maxResults int, contentType, source, projectID string) ([]ContentSearchResult, error) {
 	q := `
 		SELECT cc.id, cc.label, cc.source, cc.content, bm25(content_chunks_fts) AS score
 		FROM content_chunks_fts fts
@@ -60,9 +60,7 @@ func (ts *testStore) SearchChunks(ctx context.Context, query string, maxResults 
 func setupTestStore(t *testing.T) *testStore {
 	t.Helper()
 	db := openTestDB(t)
-	if _, err := db.Exec(MigrationSQL); err != nil {
-		t.Fatalf("migration: %v", err)
-	}
+	applyMigrations(t, db)
 	return &testStore{db: db}
 }
 

@@ -22,6 +22,9 @@ func openStoreTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(MigrationSQL); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	if _, err := db.Exec(MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
 	return db
 }
 
@@ -105,7 +108,7 @@ func TestStore_SearchChunksTrigram(t *testing.T) {
 		}
 	}
 
-	results, err := s.SearchChunks(ctx, "compilation", 10, "", "")
+	results, err := s.SearchChunks(ctx, "compilation", 10, "", "", "")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -119,7 +122,7 @@ func TestStore_SearchChunksTrigram(t *testing.T) {
 		t.Errorf("score should be positive, got %f", results[0].Score)
 	}
 
-	results, err = s.SearchChunks(ctx, "Go documentation", 10, "", "")
+	results, err = s.SearchChunks(ctx, "Go documentation", 10, "", "", "")
 	if err != nil {
 		t.Fatalf("search multi-term: %v", err)
 	}
@@ -280,7 +283,7 @@ func TestStore_ContentTypeFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	codeResults, err := s.SearchChunks(ctx, "hello", 10, "code", "")
+	codeResults, err := s.SearchChunks(ctx, "hello", 10, "code", "", "")
 	if err != nil {
 		t.Fatalf("search code: %v", err)
 	}
@@ -290,7 +293,7 @@ func TestStore_ContentTypeFilter(t *testing.T) {
 		}
 	}
 
-	proseResults, err := s.SearchChunks(ctx, "hello", 10, "prose", "")
+	proseResults, err := s.SearchChunks(ctx, "hello", 10, "prose", "", "")
 	if err != nil {
 		t.Fatalf("search prose: %v", err)
 	}
@@ -300,7 +303,7 @@ func TestStore_ContentTypeFilter(t *testing.T) {
 		}
 	}
 
-	allResults, err := s.SearchChunks(ctx, "hello", 10, "", "")
+	allResults, err := s.SearchChunks(ctx, "hello", 10, "", "", "")
 	if err != nil {
 		t.Fatalf("search all: %v", err)
 	}
@@ -350,7 +353,7 @@ func TestStore_ConcurrentInserts(t *testing.T) {
 		t.Error("expected non-zero total size after concurrent inserts")
 	}
 
-	results, err := s.SearchChunks(ctx, "chunk", n, "", "")
+	results, err := s.SearchChunks(ctx, "chunk", n, "", "", "")
 	if err != nil {
 		t.Fatalf("search after concurrent: %v", err)
 	}

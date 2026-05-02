@@ -15,13 +15,13 @@ import (
 
 // OptimizerFacade decouples pkg/mcp from pkg/context (which has a !windows build tag).
 type OptimizerFacade interface {
-	Execute(ctx context.Context, code string, language string, timeoutMs int) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
-	ExecuteFile(ctx context.Context, path string, language string, code string, timeoutMs int) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
-	IndexContent(ctx context.Context, content string, source string, label string) (string, error)
-	IndexRaw(ctx context.Context, content string, source string, label string) (string, error)
-	Search(ctx context.Context, query string, maxResults int, contentType string, source string) ([]OptimizerSearchResult, error)
-	FetchAndIndex(ctx context.Context, url string, source string) (markdown string, fetchedAt string, fromCache bool, err error)
-	ExecuteBatch(ctx context.Context, commands []OptimizerBatchCommand, queries []string, intent string) (*OptimizerBatchResult, error)
+	Execute(ctx context.Context, code string, language string, timeoutMs int, projectID string) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
+	ExecuteFile(ctx context.Context, path string, language string, code string, timeoutMs int, projectID string) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
+	IndexContent(ctx context.Context, content string, source string, label string, projectID string) (string, error)
+	IndexRaw(ctx context.Context, content string, source string, label string, projectID string) (string, error)
+	Search(ctx context.Context, query string, maxResults int, contentType string, source string, projectID string) ([]OptimizerSearchResult, error)
+	FetchAndIndex(ctx context.Context, url string, source string, projectID string) (markdown string, fetchedAt string, fromCache bool, err error)
+	ExecuteBatch(ctx context.Context, commands []OptimizerBatchCommand, queries []string, intent string, projectID string) (*OptimizerBatchResult, error)
 	Close()
 }
 
@@ -485,6 +485,7 @@ func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (stri
 		Code     string `json:"code"`
 		Timeout  int    `json:"timeout"`
 		Intent   string `json:"intent"`
+		CWD      string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
@@ -492,7 +493,13 @@ func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (stri
 	if p.Timeout == 0 {
 		p.Timeout = 30000
 	}
-	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.Execute(ctx, p.Code, p.Language, p.Timeout)
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.Execute(ctx, p.Code, p.Language, p.Timeout, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -507,8 +514,8 @@ func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (stri
 		output += "\n[output truncated]"
 	}
 	if len(output) > 5*1024 && p.Intent != "" {
-		_, _ = s.optimizer.IndexRaw(ctx, stdout, "execute", "auto-indexed")
-		hits, sErr := s.optimizer.Search(ctx, p.Intent, 5, "", "")
+		_, _ = s.optimizer.IndexRaw(ctx, stdout, "execute", "auto-indexed", projectID)
+		hits, sErr := s.optimizer.Search(ctx, p.Intent, 5, "", "", projectID)
 		if sErr == nil && len(hits) > 0 {
 			var lines []string
 			for i, r := range hits {
@@ -531,6 +538,7 @@ func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (
 		Code     string `json:"code"`
 		Timeout  int    `json:"timeout"`
 		Intent   string `json:"intent"`
+		CWD      string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
@@ -538,12 +546,16 @@ func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (
 	if p.Timeout == 0 {
 		p.Timeout = 30000
 	}
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
 	data, err := os.ReadFile(p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
-	// Write content to temp file to avoid cross-language string escaping issues.
-	// FILE_PATH points to the temp file; the user's code reads from it.
 	tmpFile, err := os.CreateTemp("", "anchored-fc-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
@@ -555,7 +567,7 @@ func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (
 	}
 	tmpFile.Close()
 	wrapped := fmt.Sprintf("FILE_PATH=%q\n%s", tmpFile.Name(), p.Code)
-	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, p.Path, p.Language, wrapped, p.Timeout)
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, p.Path, p.Language, wrapped, p.Timeout, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -585,6 +597,7 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 		Queries []string `json:"queries"`
 		Timeout int      `json:"timeout"`
 		Intent  string   `json:"intent"`
+		CWD     string   `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
@@ -592,6 +605,12 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 	if p.Timeout == 0 {
 		p.Timeout = 60000
 	}
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
 	cmds := make([]OptimizerBatchCommand, len(p.Commands))
 	for i, c := range p.Commands {
 		cmds[i] = OptimizerBatchCommand{
@@ -600,7 +619,7 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 			Language: c.Language,
 		}
 	}
-	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent)
+	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -628,12 +647,19 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		Content string `json:"content"`
 		Path    string `json:"path"`
 		Source  string `json:"source"`
+		CWD     string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
 	if p.Content != "" {
-		id, err := s.optimizer.IndexContent(ctx, p.Content, p.Source, "manual")
+		id, err := s.optimizer.IndexContent(ctx, p.Content, p.Source, "manual", projectID)
 		if err != nil {
 			return "", err
 		}
@@ -644,7 +670,7 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		if err != nil {
 			return "", fmt.Errorf("read file: %w", err)
 		}
-		id, err := s.optimizer.IndexContent(ctx, string(data), p.Source, p.Path)
+		id, err := s.optimizer.IndexContent(ctx, string(data), p.Source, p.Path, projectID)
 		if err != nil {
 			return "", err
 		}
@@ -661,6 +687,7 @@ func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (strin
 		Queries []string `json:"queries"`
 		Limit   int      `json:"limit"`
 		Source  string   `json:"source"`
+		CWD     string   `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
@@ -668,10 +695,16 @@ func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (strin
 	if p.Limit == 0 {
 		p.Limit = 3
 	}
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
 	seen := make(map[string]bool)
 	var lines []string
 	for _, q := range p.Queries {
-		hits, err := s.optimizer.Search(ctx, q, p.Limit, "", p.Source)
+		hits, err := s.optimizer.Search(ctx, q, p.Limit, "", p.Source, projectID)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("Query '%s': error — %v", q, err))
 			continue
@@ -701,6 +734,7 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 	var p struct {
 		URL    string `json:"url"`
 		Source string `json:"source"`
+		CWD    string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
@@ -708,7 +742,13 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 	if p.Source == "" {
 		p.Source = p.URL
 	}
-	markdown, fetchedAt, fromCache, err := s.optimizer.FetchAndIndex(ctx, p.URL, p.Source)
+
+	var projectID string
+	if p.CWD != "" {
+		projectID = s.mem.ResolveProject(p.CWD)
+	}
+
+	markdown, fetchedAt, fromCache, err := s.optimizer.FetchAndIndex(ctx, p.URL, p.Source, projectID)
 	if err != nil {
 		return "", err
 	}

@@ -21,6 +21,9 @@ func newIndexerTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(MigrationSQL); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	if _, err := db.Exec(MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
 	return db
 }
 
@@ -52,7 +55,7 @@ Edit the config.yaml file to match your environment.
 
 Use environment variables for overrides.
 `
-	sourceID, err := ix.IndexContent(ctx, md, "index", "docs", "sess-1", "prose")
+	sourceID, err := ix.IndexContent(ctx, md, "index", "docs", "sess-1", "prose", "")
 	if err != nil {
 		t.Fatalf("IndexContent: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestIndexer_RawContent(t *testing.T) {
 
 	output := strings.Repeat("line of shell output\n", 50)
 
-	sourceID, err := ix.IndexRaw(ctx, output, "execute", "build", "sess-2")
+	sourceID, err := ix.IndexRaw(ctx, output, "execute", "build", "sess-2", "")
 	if err != nil {
 		t.Fatalf("IndexRaw: %v", err)
 	}
@@ -127,7 +130,7 @@ func TestIndexer_DedupDetection(t *testing.T) {
 
 	content := "unique content that should be deduplicated when indexed twice"
 
-	id1, err := ix.IndexContent(ctx, content, "index", "first", "sess-1", "prose")
+	id1, err := ix.IndexContent(ctx, content, "index", "first", "sess-1", "prose", "")
 	if err != nil {
 		t.Fatalf("first IndexContent: %v", err)
 	}
@@ -135,7 +138,7 @@ func TestIndexer_DedupDetection(t *testing.T) {
 		t.Fatal("first call should return a sourceGroupID")
 	}
 
-	id2, err := ix.IndexContent(ctx, content, "index", "second", "sess-1", "prose")
+	id2, err := ix.IndexContent(ctx, content, "index", "second", "sess-1", "prose", "")
 	if err != nil {
 		t.Fatalf("second IndexContent: %v", err)
 	}
@@ -175,9 +178,9 @@ func TestIndexer_EmptyContent(t *testing.T) {
 
 			switch tt.method {
 			case "content":
-				id, err = ix.IndexContent(ctx, tt.content, "index", "test", "sess-1", "prose")
+				id, err = ix.IndexContent(ctx, tt.content, "index", "test", "sess-1", "prose", "")
 			case "raw":
-				id, err = ix.IndexRaw(ctx, tt.content, "execute", "test", "sess-1")
+				id, err = ix.IndexRaw(ctx, tt.content, "execute", "test", "sess-1", "")
 			}
 
 			if err != nil {
@@ -206,7 +209,7 @@ More details here.
 
 Content for section B.
 `
-	sourceID, err := ix.IndexContent(ctx, md, "index", "docs", "sess-1", "prose")
+	sourceID, err := ix.IndexContent(ctx, md, "index", "docs", "sess-1", "prose", "")
 	if err != nil {
 		t.Fatalf("IndexContent: %v", err)
 	}

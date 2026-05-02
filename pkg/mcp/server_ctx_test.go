@@ -26,6 +26,9 @@ func newTestServerWithOptimizer(t *testing.T) *Server {
 	if _, err := db.Exec(ctxpkg.MigrationSQL); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	if _, err := db.Exec(ctxpkg.MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
 
 	cfg := config.ContextOptimizerConfig{
 		Enabled:        true,

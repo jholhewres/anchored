@@ -41,7 +41,7 @@ func NewBatchExecutor(sandbox *Sandbox, indexer *Indexer, searcher *Searcher, lo
 //
 // If the combined output exceeds 5 KB and intent is non-empty, all output is
 // indexed but only search results matching intent terms are returned.
-func (be *BatchExecutor) ExecuteBatch(ctx context.Context, commands []BatchCommand, queries []string, sessionID string, intent string) (*BatchResult, error) {
+func (be *BatchExecutor) ExecuteBatch(ctx context.Context, commands []BatchCommand, queries []string, sessionID string, intent string, projectID string) (*BatchResult, error) {
 	results := make([]ExecuteResult, 0, len(commands))
 	var totalBytes int64
 	var combined strings.Builder
@@ -84,7 +84,7 @@ func (be *BatchExecutor) ExecuteBatch(ctx context.Context, commands []BatchComma
 
 	sourceID := ""
 	if combined.Len() > 0 {
-		id, err := be.indexer.IndexRaw(ctx, combined.String(), "batch", "batch-output", sessionID)
+		id, err := be.indexer.IndexRaw(ctx, combined.String(), "batch", "batch-output", sessionID, projectID)
 		if err != nil {
 			be.logger.Error("batch index error", "error", err)
 			return nil, err
@@ -99,7 +99,7 @@ func (be *BatchExecutor) ExecuteBatch(ctx context.Context, commands []BatchComma
 			if q == "" {
 				continue
 			}
-			hits, err := be.searcher.Search(ctx, q, SearchOpts{MaxResults: 5})
+			hits, err := be.searcher.Search(ctx, q, SearchOpts{MaxResults: 5, ProjectID: projectID})
 			if err != nil {
 				be.logger.Warn("batch search error", "query", q, "error", err)
 				continue

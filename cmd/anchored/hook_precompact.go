@@ -47,10 +47,12 @@ func runHookPreCompact(args []string) {
 	metadata := truncate(text, 4096)
 	eventID := newHookID()
 
+	projectID := svc.ResolveProject(cwdVal)
+
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO session_events (id, session_id, event_type, priority, summary, metadata, created_at)
-		 VALUES (?, ?, 'precompact_snapshot', 1, ?, ?, datetime('now'))`,
-		eventID, *sessionID, truncate(text, 500), metadata,
+		`INSERT INTO session_events (id, session_id, project_id, event_type, priority, summary, metadata, created_at)
+		 VALUES (?, ?, ?, 'precompact_snapshot', 1, ?, ?, datetime('now'))`,
+		eventID, *sessionID, projectID, truncate(text, 500), metadata,
 	)
 	if err != nil {
 		slog.Warn("failed to save session event", "error", err)

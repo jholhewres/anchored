@@ -41,7 +41,7 @@ func NewIndexer(store *Store, chunker *Chunker, db *sql.DB, defaultTTL int, logg
 
 // IndexContent chunks markdown content by headings and inserts unique chunks into the store.
 // Returns a sourceGroupID linking all chunks from this indexing operation.
-func (ix *Indexer) IndexContent(ctx context.Context, content string, source string, label string, sessionID string, contentType string) (string, error) {
+func (ix *Indexer) IndexContent(ctx context.Context, content string, source string, label string, sessionID string, contentType string, projectID string) (string, error) {
 	if content == "" {
 		return "", nil
 	}
@@ -76,6 +76,7 @@ func (ix *Indexer) IndexContent(ctx context.Context, content string, source stri
 
 		chunk := &Chunk{
 			SessionID:   sessionID,
+			ProjectID:   projectID,
 			Source:      source,
 			Label:       chunkLabel,
 			Content:     cd.Content,
@@ -95,7 +96,7 @@ func (ix *Indexer) IndexContent(ctx context.Context, content string, source stri
 
 // IndexRaw indexes non-markdown content (shell output, etc.) by splitting at newline boundaries.
 // Returns a sourceGroupID linking all chunks from this indexing operation.
-func (ix *Indexer) IndexRaw(ctx context.Context, content string, source string, label string, sessionID string) (string, error) {
+func (ix *Indexer) IndexRaw(ctx context.Context, content string, source string, label string, sessionID string, projectID string) (string, error) {
 	if content == "" {
 		return "", nil
 	}
@@ -125,6 +126,7 @@ func (ix *Indexer) IndexRaw(ctx context.Context, content string, source string, 
 
 		chunk := &Chunk{
 			SessionID:   sessionID,
+			ProjectID:   projectID,
 			Source:      source,
 			Label:       label,
 			Content:     part,

@@ -38,14 +38,14 @@ func (s *Store) PrepareStatements() error {
 	var err error
 
 	s.stmtInsertChunk, err = s.db.Prepare(`
-		INSERT INTO content_chunks (id, session_id, source, label, content, metadata, content_type, indexed_at, ttl_hours)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO content_chunks (id, session_id, project_id, source, label, content, metadata, content_type, indexed_at, ttl_hours)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare insert chunk: %w", err)
 	}
 
 	s.stmtGetChunk, err = s.db.Prepare(`
-		SELECT id, session_id, source, label, content, metadata, content_type, indexed_at, ttl_hours
+		SELECT id, session_id, project_id, source, label, content, metadata, content_type, indexed_at, ttl_hours
 		FROM content_chunks WHERE id = ?`)
 	if err != nil {
 		return fmt.Errorf("prepare get chunk: %w", err)
@@ -65,21 +65,21 @@ func (s *Store) PrepareStatements() error {
 	}
 
 	s.stmtChunksBySrc, err = s.db.Prepare(`
-		SELECT id, session_id, source, label, content, metadata, content_type, indexed_at, ttl_hours
+		SELECT id, session_id, project_id, source, label, content, metadata, content_type, indexed_at, ttl_hours
 		FROM content_chunks WHERE source = ?`)
 	if err != nil {
 		return fmt.Errorf("prepare chunks by source: %w", err)
 	}
 
 	s.stmtInsertEvent, err = s.db.Prepare(`
-		INSERT INTO session_events (id, session_id, event_type, priority, tool_name, summary, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO session_events (id, session_id, project_id, event_type, priority, tool_name, summary, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare insert event: %w", err)
 	}
 
 	s.stmtQueryEvents, err = s.db.Prepare(`
-		SELECT id, session_id, event_type, priority, tool_name, summary, metadata, created_at
+		SELECT id, session_id, project_id, event_type, priority, tool_name, summary, metadata, created_at
 		FROM session_events WHERE session_id = ?
 		ORDER BY created_at DESC LIMIT ?`)
 	if err != nil {
@@ -108,7 +108,7 @@ func (s *Store) InsertChunk(ctx context.Context, chunk *Chunk) error {
 		chunk.ID = newID()
 	}
 	_, err := s.stmtInsertChunk.ExecContext(ctx,
-		chunk.ID, chunk.SessionID, chunk.Source, chunk.Label,
+		chunk.ID, chunk.SessionID, chunk.ProjectID, chunk.Source, chunk.Label,
 		chunk.Content, chunk.Metadata, chunk.ContentType,
 		chunk.IndexedAt, chunk.TTLHours,
 	)
@@ -123,7 +123,7 @@ func (s *Store) GetChunk(ctx context.Context, id string) (*Chunk, error) {
 	row := s.stmtGetChunk.QueryRowContext(ctx, id)
 	var c Chunk
 	err := row.Scan(
-		&c.ID, &c.SessionID, &c.Source, &c.Label,
+		&c.ID, &c.SessionID, &c.ProjectID, &c.Source, &c.Label,
 		&c.Content, &c.Metadata, &c.ContentType,
 		&c.IndexedAt, &c.TTLHours,
 	)
@@ -202,7 +202,7 @@ func (s *Store) GetChunksBySource(ctx context.Context, source string) ([]Chunk, 
 	for rows.Next() {
 		var c Chunk
 		if err := rows.Scan(
-			&c.ID, &c.SessionID, &c.Source, &c.Label,
+			&c.ID, &c.SessionID, &c.ProjectID, &c.Source, &c.Label,
 			&c.Content, &c.Metadata, &c.ContentType,
 			&c.IndexedAt, &c.TTLHours,
 		); err != nil {
@@ -216,7 +216,7 @@ func (s *Store) GetChunksBySource(ctx context.Context, source string) ([]Chunk, 
 // SearchChunks performs FTS5 trigram search with optional content_type and source filters.
 // User query terms are wrapped in double quotes for trigram matching.
 // BM25 rank (negative) is normalized to a positive score: 1.0 / (1.0 + -rank).
-func (s *Store) SearchChunks(ctx context.Context, query string, maxResults int, contentType string, source string) ([]ContentSearchResult, error) {
+func (s *Store) SearchChunks(ctx context.Context, query string, maxResults int, contentType string, source string, projectID string) ([]ContentSearchResult, error) {
 	if maxResults <= 0 {
 		maxResults = 20
 	}
@@ -236,6 +236,10 @@ func (s *Store) SearchChunks(ctx context.Context, query string, maxResults int, 
 
 	args := []any{matchExpr}
 
+	if projectID != "" {
+		qb.WriteString(" AND cc.project_id = ?")
+		args = append(args, projectID)
+	}
 	if contentType != "" {
 		qb.WriteString(" AND cc.content_type = ?")
 		args = append(args, contentType)
@@ -284,7 +288,7 @@ func (s *Store) InsertEvent(ctx context.Context, event *SessionEvent) error {
 		event.ID = newID()
 	}
 	_, err := s.stmtInsertEvent.ExecContext(ctx,
-		event.ID, event.SessionID, event.EventType, event.Priority,
+		event.ID, event.SessionID, event.ProjectID, event.EventType, event.Priority,
 		event.ToolName, event.Summary, event.Metadata, event.CreatedAt,
 	)
 	if err != nil {
@@ -308,7 +312,7 @@ func (s *Store) QueryEvents(ctx context.Context, sessionID string, limit int) ([
 	for rows.Next() {
 		var e SessionEvent
 		if err := rows.Scan(
-			&e.ID, &e.SessionID, &e.EventType, &e.Priority,
+			&e.ID, &e.SessionID, &e.ProjectID, &e.EventType, &e.Priority,
 			&e.ToolName, &e.Summary, &e.Metadata, &e.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)

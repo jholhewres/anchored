@@ -12,7 +12,7 @@ func runHookSessionStart(args []string) {
 	fs := newFlagSet("hook sessionstart")
 	sessionID := fs.String("session-id", "", "session identifier")
 	configPath := fs.String("config", "", "path to config file")
-	_ = fs.String("cwd", "", "current working directory")
+	cwd := fs.String("cwd", "", "current working directory")
 	fs.Parse(args)
 
 	content, err := io.ReadAll(os.Stdin)
@@ -39,12 +39,19 @@ func runHookSessionStart(args []string) {
 	}
 	defer svc.Close()
 
+	cwdVal := *cwd
+	if cwdVal == "" {
+		cwdVal = "."
+	}
+	projectID := svc.ResolveProject(cwdVal)
+
 	ctx := context.Background()
 	db := svc.StoreDB()
 
 	resumeContext := ""
 	row := db.QueryRowContext(ctx,
-		`SELECT summary FROM session_events WHERE event_type = 'precompact_snapshot' ORDER BY created_at DESC LIMIT 1`,
+		`SELECT summary FROM session_events WHERE event_type = 'precompact_snapshot' AND (project_id = ? OR project_id = '') ORDER BY created_at DESC LIMIT 1`,
+		projectID,
 	)
 	_ = row.Scan(&resumeContext)
 
@@ -58,7 +65,8 @@ func runHookSessionStart(args []string) {
 	var recent []recentEvent
 	rows, err := db.QueryContext(ctx,
 		`SELECT event_type, tool_name, summary, created_at FROM session_events
-		 WHERE priority <= 2 ORDER BY created_at DESC LIMIT 20`,
+		 WHERE priority <= 2 AND (project_id = ? OR project_id = '') ORDER BY created_at DESC LIMIT 20`,
+		projectID,
 	)
 	if err == nil {
 		defer rows.Close()

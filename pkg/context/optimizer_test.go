@@ -35,6 +35,9 @@ func newTestOptimizer(t *testing.T) *Optimizer {
 	if _, err := db.Exec(MigrationSQL); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	if _, err := db.Exec(MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
 
 	o, err := NewOptimizer(db, testOptimizerConfig(), nil)
 	if err != nil {
@@ -62,12 +65,12 @@ func TestOptimizer_ExecuteAndSearch(t *testing.T) {
 		t.Fatalf("exit code %d: %s", res.ExitCode, res.Stderr)
 	}
 
-	_, err = o.IndexRaw(ctx, res.Stdout, "execute", "test-output")
+	_, err = o.IndexRaw(ctx, res.Stdout, "execute", "test-output", "")
 	if err != nil {
 		t.Fatalf("index raw: %v", err)
 	}
 
-	results, err := o.Search(ctx, "optimizer", 5, "", "")
+	results, err := o.Search(ctx, "optimizer", 5, "", "", "")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestOptimizer_FetchAndIndex(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	result, err := o.FetchAndIndex(ctx, ts.URL, "test-fetch")
+	result, err := o.FetchAndIndex(ctx, ts.URL, "test-fetch", "")
 	if err != nil {
 		t.Fatalf("fetch and index: %v", err)
 	}
@@ -107,7 +110,7 @@ func TestOptimizer_FetchAndIndex(t *testing.T) {
 		t.Error("expected content type")
 	}
 
-	results, err := o.Search(ctx, "XylophoneQuantumFusion", 5, "", "")
+	results, err := o.Search(ctx, "XylophoneQuantumFusion", 5, "", "", "")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -126,7 +129,7 @@ func TestOptimizer_BatchExecute(t *testing.T) {
 	}
 	queries := []string{"batch hello"}
 
-	result, err := o.ExecuteBatch(ctx, commands, queries, "batch")
+	result, err := o.ExecuteBatch(ctx, commands, queries, "batch", "")
 	if err != nil {
 		t.Fatalf("execute batch: %v", err)
 	}
@@ -156,7 +159,7 @@ The system uses a microservices pattern with event sourcing.
 We use SQLite with FTS5 for full-text search.
 `
 
-	sourceID, err := o.IndexContent(ctx, md, "test-docs", "architecture", "prose")
+	sourceID, err := o.IndexContent(ctx, md, "test-docs", "architecture", "prose", "")
 	if err != nil {
 		t.Fatalf("index content: %v", err)
 	}
@@ -164,7 +167,7 @@ We use SQLite with FTS5 for full-text search.
 		t.Error("expected non-empty source ID")
 	}
 
-	results, err := o.Search(ctx, "microservices", 5, "prose", "")
+	results, err := o.Search(ctx, "microservices", 5, "prose", "", "")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -172,7 +175,7 @@ We use SQLite with FTS5 for full-text search.
 		t.Fatal("expected search results for 'microservices'")
 	}
 
-	results2, err := o.Search(ctx, "FTS5", 5, "", "")
+	results2, err := o.Search(ctx, "FTS5", 5, "", "", "")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

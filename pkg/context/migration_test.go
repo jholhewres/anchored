@@ -17,6 +17,16 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func applyMigrations(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(MigrationSQL); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if _, err := db.Exec(MigrationSQL009); err != nil {
+		t.Fatalf("migration 009: %v", err)
+	}
+}
+
 func tableExists(t *testing.T, db *sql.DB, table string) bool {
 	t.Helper()
 	var count int

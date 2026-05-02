@@ -24,7 +24,7 @@ func NewCtxOptimizer(db *sql.DB, cfg config.ContextOptimizerConfig, logger *slog
 	return &ctxOptimizer{inner: o}, nil
 }
 
-func (c *ctxOptimizer) Execute(ctx context.Context, code string, language string, timeoutMs int) (string, string, int, string, bool, bool, error) {
+func (c *ctxOptimizer) Execute(ctx context.Context, code string, language string, timeoutMs int, projectID string) (string, string, int, string, bool, bool, error) {
 	timeoutSec := timeoutMs / 1000
 	r, err := c.inner.Execute(ctx, code, language, timeoutSec)
 	if err != nil {
@@ -33,26 +33,27 @@ func (c *ctxOptimizer) Execute(ctx context.Context, code string, language string
 	return r.Stdout, r.Stderr, r.ExitCode, r.Duration.Round(time.Millisecond).String(), r.TimedOut, r.Truncated, nil
 }
 
-func (c *ctxOptimizer) ExecuteFile(ctx context.Context, path string, language string, code string, timeoutMs int) (string, string, int, string, bool, bool, error) {
+func (c *ctxOptimizer) ExecuteFile(ctx context.Context, path string, language string, code string, timeoutMs int, projectID string) (string, string, int, string, bool, bool, error) {
 	timeoutSec := timeoutMs / 1000
 	r, err := c.inner.ExecuteFile(ctx, path, language, code)
 	if err != nil {
 		return "", "", 0, "", false, false, err
 	}
 	_ = timeoutSec
+	_ = projectID
 	return r.Stdout, r.Stderr, r.ExitCode, r.Duration.Round(time.Millisecond).String(), r.TimedOut, r.Truncated, nil
 }
 
-func (c *ctxOptimizer) IndexContent(ctx context.Context, content string, source string, label string) (string, error) {
-	return c.inner.IndexContent(ctx, content, source, label, "prose")
+func (c *ctxOptimizer) IndexContent(ctx context.Context, content string, source string, label string, projectID string) (string, error) {
+	return c.inner.IndexContent(ctx, content, source, label, "prose", projectID)
 }
 
-func (c *ctxOptimizer) IndexRaw(ctx context.Context, content string, source string, label string) (string, error) {
-	return c.inner.IndexRaw(ctx, content, source, label)
+func (c *ctxOptimizer) IndexRaw(ctx context.Context, content string, source string, label string, projectID string) (string, error) {
+	return c.inner.IndexRaw(ctx, content, source, label, projectID)
 }
 
-func (c *ctxOptimizer) Search(ctx context.Context, query string, maxResults int, contentType string, source string) ([]OptimizerSearchResult, error) {
-	hits, err := c.inner.Search(ctx, query, maxResults, contentType, source)
+func (c *ctxOptimizer) Search(ctx context.Context, query string, maxResults int, contentType string, source string, projectID string) ([]OptimizerSearchResult, error) {
+	hits, err := c.inner.Search(ctx, query, maxResults, contentType, source, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,15 +70,15 @@ func (c *ctxOptimizer) Search(ctx context.Context, query string, maxResults int,
 	return out, nil
 }
 
-func (c *ctxOptimizer) FetchAndIndex(ctx context.Context, url string, source string) (string, string, bool, error) {
-	r, err := c.inner.FetchAndIndex(ctx, url, source)
+func (c *ctxOptimizer) FetchAndIndex(ctx context.Context, url string, source string, projectID string) (string, string, bool, error) {
+	r, err := c.inner.FetchAndIndex(ctx, url, source, projectID)
 	if err != nil {
 		return "", "", false, err
 	}
 	return r.Markdown, r.FetchedAt.Format(time.RFC3339), r.FromCache, nil
 }
 
-func (c *ctxOptimizer) ExecuteBatch(ctx context.Context, commands []OptimizerBatchCommand, queries []string, intent string) (*OptimizerBatchResult, error) {
+func (c *ctxOptimizer) ExecuteBatch(ctx context.Context, commands []OptimizerBatchCommand, queries []string, intent string, projectID string) (*OptimizerBatchResult, error) {
 	batchCmds := make([]ctxpkg.BatchCommand, len(commands))
 	for i, c := range commands {
 		batchCmds[i] = ctxpkg.BatchCommand{
@@ -86,7 +87,7 @@ func (c *ctxOptimizer) ExecuteBatch(ctx context.Context, commands []OptimizerBat
 			Language: c.Language,
 		}
 	}
-	r, err := c.inner.ExecuteBatch(ctx, batchCmds, queries, intent)
+	r, err := c.inner.ExecuteBatch(ctx, batchCmds, queries, intent, projectID)
 	if err != nil {
 		return nil, err
 	}
