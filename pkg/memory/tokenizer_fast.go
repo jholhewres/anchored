@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -56,7 +57,7 @@ type postProcessorConfig struct {
 }
 
 type spTokenConfig struct {
-	ID int `json:"id"`
+	ID interface{} `json:"id"`
 }
 
 type decoderConfig struct {
@@ -621,10 +622,14 @@ func (ft *FastTokenizer) templatePostProcessor(cfg *postProcessorConfig) func([]
 	clsID := ft.clsID
 	sepID := ft.sepID
 	if st, ok := cfg.SpecialTokens["[CLS]"]; ok {
-		clsID = st.ID
+		if id, ok := toInt(st.ID); ok {
+			clsID = id
+		}
 	}
 	if st, ok := cfg.SpecialTokens["[SEP]"]; ok {
-		sepID = st.ID
+		if id, ok := toInt(st.ID); ok {
+			sepID = id
+		}
 	}
 	return func(ids []int) []int {
 		out := make([]int, 0, len(ids)+2)
@@ -644,6 +649,9 @@ func toInt(v interface{}) (int, bool) {
 	case json.Number:
 		i, err := n.Int64()
 		return int(i), err == nil
+	case string:
+		i, err := strconv.Atoi(n)
+		return i, err == nil
 	}
 	return 0, false
 }
