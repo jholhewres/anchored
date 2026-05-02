@@ -308,7 +308,7 @@ func ensureONNXModel(paths *ONNXPaths, logger *slog.Logger) error {
 		return err
 	}
 
-	baseURL := onnxModelBaseURL
+	baseURL := onnxModelBaseURL + "/onnx"
 	if isLegacy {
 		baseURL = onnxLegacyModelBaseURL + "/onnx"
 	}
