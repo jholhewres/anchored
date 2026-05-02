@@ -103,8 +103,6 @@ func setConfigValue(cfg *config.Config, key, value string) {
 		fmt.Sscanf(value, "%d", &cfg.Search.MaxResults)
 	case "sanitizer.enabled":
 		cfg.Sanitizer.Enabled = value == "true"
-	case "stack.budget_bytes":
-		fmt.Sscanf(value, "%d", &cfg.Stack.BudgetBytes)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
 		os.Exit(1)

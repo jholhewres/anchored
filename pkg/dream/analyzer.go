@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -118,14 +119,32 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 			entries = append(entries, vecEntry{id: id, vec: vec})
 		}
 
-		compareCount := 0
-		for i := 0; i < len(entries) && compareCount < a.config.MaxPairwiseCompare; i++ {
-			for j := i + 1; j < len(entries) && compareCount < a.config.MaxPairwiseCompare; j++ {
-				compareCount++
-				aVec := entries[i].vec
-				bVec := entries[j].vec
+		// Shuffle to distribute comparisons across the dataset;
+		// without this, only entries[0] is ever compared.
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		rng.Shuffle(len(entries), func(i, j int) {
+			entries[i], entries[j] = entries[j], entries[i]
+		})
 
-				score := cosineSimilarity(aVec, bVec)
+		compareCount := 0
+		maxComps := a.config.MaxPairwiseCompare
+		n := len(entries)
+
+		// Window caps comparisons per entry so the budget reaches
+		// more entries than just the first one.
+		window := maxComps / max(1, n)
+		if window < 1 {
+			window = 1
+		}
+
+		for i := 0; i < n && compareCount < maxComps; i++ {
+			end := i + 1 + window
+			if end > n {
+				end = n
+			}
+			for j := i + 1; j < end && compareCount < maxComps; j++ {
+				compareCount++
+				score := cosineSimilarity(entries[i].vec, entries[j].vec)
 				if score >= a.config.DedupThreshold {
 					idA := entries[i].id
 					idB := entries[j].id
@@ -164,14 +183,30 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 			entries = append(entries, vecEntry{id: id, vec: vec})
 		}
 
+		rng3 := rand.New(rand.NewSource(time.Now().UnixNano() + 1))
+		rng3.Shuffle(len(entries), func(i, j int) {
+			entries[i], entries[j] = entries[j], entries[i]
+		})
+
 		contentMap := make(map[string]string)
 		for _, m := range memories {
 			contentMap[m.id] = m.content
 		}
 
 		compareCount := 0
-		for i := 0; i < len(entries) && compareCount < a.config.MaxPairwiseCompare; i++ {
-			for j := i + 1; j < len(entries) && compareCount < a.config.MaxPairwiseCompare; j++ {
+		maxComps := a.config.MaxPairwiseCompare
+		n := len(entries)
+		window := maxComps / max(1, n)
+		if window < 1 {
+			window = 1
+		}
+
+		for i := 0; i < n && compareCount < maxComps; i++ {
+			end := i + 1 + window
+			if end > n {
+				end = n
+			}
+			for j := i + 1; j < end && compareCount < maxComps; j++ {
 				compareCount++
 				score := cosineSimilarity(entries[i].vec, entries[j].vec)
 

@@ -15,12 +15,17 @@ import (
 )
 
 type OpenCodeImporter struct {
-	baseDir string
-	log     func(string, ...any)
+	baseDir     string
+	projectDirs []string
+	log         func(string, ...any)
 }
 
 func NewOpenCodeImporter(baseDir string, log func(string, ...any)) *OpenCodeImporter {
 	return &OpenCodeImporter{baseDir: baseDir, log: log}
+}
+
+func (i *OpenCodeImporter) SetProjectDirs(dirs []string) {
+	i.projectDirs = dirs
 }
 
 func (i *OpenCodeImporter) Name() string { return "opencode" }
@@ -67,6 +72,7 @@ func (i *OpenCodeImporter) Import(ctx context.Context, store ImportStore) Import
 	i.importProjects(ctx, store, projects, &result)
 	i.importSessions(ctx, store, db, projects, &result)
 	i.importTodos(ctx, store, db, projects, &result)
+	i.importConfigFiles(ctx, store, projects, &result)
 
 	return result
 }
@@ -258,6 +264,46 @@ func (i *OpenCodeImporter) importTodos(ctx context.Context, store ImportStore, d
 			continue
 		}
 		result.Imported++
+	}
+}
+
+func (i *OpenCodeImporter) importConfigFiles(ctx context.Context, store ImportStore, projects map[string]opencodeProject, result *ImportResult) {
+	dirs := make(map[string]bool)
+	for _, p := range projects {
+		if p.worktree != "" {
+			dirs[p.worktree] = true
+		}
+	}
+	for _, d := range i.projectDirs {
+		if d != "" {
+			dirs[d] = true
+		}
+	}
+
+	for dir := range dirs {
+		for _, name := range []string{"opencode.json", "opencode.yaml"} {
+			path := filepath.Join(dir, name)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+
+			content := strings.TrimSpace(string(data))
+			if content == "" {
+				continue
+			}
+
+			result.Found++
+			header := "# " + name + " (" + dir + ")\n\n"
+			if err := store.SaveRaw(ctx, header+content, "preference", i.Name(), dir); err != nil {
+				if i.log != nil {
+					i.log("skip config file", "path", path, "error", err)
+				}
+				result.Skipped++
+				continue
+			}
+			result.Imported++
+		}
 	}
 }
 

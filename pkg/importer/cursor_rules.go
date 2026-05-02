@@ -9,15 +9,22 @@ import (
 	"strings"
 )
 
-// CursorImporter imports Cursor rules from ~/.cursor/rules/*.mdc and ~/.cursor/mcp.json.
+// CursorImporter imports Cursor rules from ~/.cursor/rules/*.mdc, ~/.cursor/mcp.json,
+// and .cursorrules files at project roots.
 type CursorImporter struct {
-	baseDir string
-	log     func(string, ...any)
+	baseDir      string
+	projectDirs  []string
+	log          func(string, ...any)
 }
 
 // NewCursorImporter creates a CursorImporter scanning baseDir (expected: ~/.cursor).
 func NewCursorImporter(baseDir string, log func(string, ...any)) *CursorImporter {
 	return &CursorImporter{baseDir: baseDir, log: log}
+}
+
+// SetProjectDirs sets additional project directories to scan for .cursorrules files.
+func (i *CursorImporter) SetProjectDirs(dirs []string) {
+	i.projectDirs = dirs
 }
 
 func (i *CursorImporter) Name() string { return "cursor" }
@@ -38,6 +45,15 @@ func (i *CursorImporter) Detect() bool {
 	if _, err := os.Stat(mcpPath); err == nil {
 		return true
 	}
+
+	// Also detect .cursorrules in project directories
+	for _, dir := range i.projectDirs {
+		cursorrulesPath := filepath.Join(dir, ".cursorrules")
+		if _, err := os.Stat(cursorrulesPath); err == nil {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -46,6 +62,7 @@ func (i *CursorImporter) Import(ctx context.Context, store ImportStore) ImportRe
 
 	result.Found += i.importMDCFiles(ctx, store, &result)
 	result.Found += i.importMCPJSON(ctx, store, &result)
+	result.Found += i.importCursorRules(ctx, store, &result)
 
 	return result
 }
@@ -150,6 +167,42 @@ func (i *CursorImporter) importMCPJSON(ctx context.Context, store ImportStore, r
 
 	result.Imported++
 	return 1
+}
+
+func (i *CursorImporter) importCursorRules(ctx context.Context, store ImportStore, result *ImportResult) int {
+	var found int
+	seen := make(map[string]bool)
+
+	for _, dir := range i.projectDirs {
+		p := filepath.Join(dir, ".cursorrules")
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+
+		found++
+		header := "# .cursorrules (" + dir + ")\n\n"
+		if err := store.SaveRaw(ctx, header+content, "preference", "cursor", ""); err != nil {
+			result.Errors++
+			if i.log != nil {
+				i.log("failed to save .cursorrules", "path", p, "error", err)
+			}
+			continue
+		}
+		result.Imported++
+	}
+
+	return found
 }
 
 // parseFrontmatter extracts YAML frontmatter (between --- markers) using

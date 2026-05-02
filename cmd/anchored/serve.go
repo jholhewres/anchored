@@ -7,17 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jholhewres/anchored/pkg/capture"
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
 	"github.com/jholhewres/anchored/pkg/mcp"
 	"github.com/jholhewres/anchored/pkg/session"
-	"github.com/jholhewres/anchored/pkg/stack"
 )
 
 func runServe() {
@@ -61,49 +58,13 @@ func runServe() {
 	}
 }
 
-
-
 func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config, logFn *slog.Logger) error {
-	home, _ := os.UserHomeDir()
-	identityPath := home + "/.anchored/identity.md"
-
-	identityLayer := stack.NewIdentityLayer(identityPath, logFn, 800)
-	identityLayer.Start()
-	defer identityLayer.Stop()
-
-	projectLayer := stack.NewProjectLayer(func() string {
-		stats, err := memSvc.Stats(context.Background())
-		if err != nil || stats.TotalMemories == 0 {
-			return ""
-		}
-		var lines []string
-		lines = append(lines, fmt.Sprintf("%d memories across %d projects", stats.TotalMemories, len(stats.ByProject)))
-		for proj, count := range stats.ByProject {
-			lines = append(lines, fmt.Sprintf("• %s: %d", proj, count))
-		}
-		return strings.Join(lines, "\n")
-	})
-
-	onDemandLayer := stack.NewOnDemandLayer(
-		&dbAccessor{db: memSvc.StoreDB()},
-		memory.NewEntityDetector(memSvc.StoreDB(), memory.DefaultEntityDetectorConfig(), logFn),
-		memory.NewTopicChangeDetector(nil, nil),
-		logFn,
-		stack.OnDemandLayerConfig{},
-	)
-
-	memoryStack := stack.NewStack(identityLayer, projectLayer, onDemandLayer, cfg.Stack.BudgetBytes, logFn)
-
 	kgSvc := kg.New(memSvc.StoreDB(), logFn)
 	memSvc.SetKGExtractor(kg.NewPatternExtractor(kgSvc, logFn))
 
 	sessionMgr := session.NewManager(memSvc.StoreDB(), logFn)
 
-	extractor := capture.NewSummaryExtractor()
-	sanitizer := memory.NewSanitizer(true)
-	captureMgr := capture.NewAutoCaptureManager(memSvc, extractor, sanitizer, logFn)
-
-	server := mcp.NewServer(memSvc, kgSvc, memoryStack, sessionMgr, captureMgr, Version, logFn)
+	server := mcp.NewServer(memSvc, kgSvc, sessionMgr, Version, logFn)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

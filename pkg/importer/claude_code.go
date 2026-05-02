@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +38,8 @@ func (i *ClaudeCodeImporter) Import(ctx context.Context, store ImportStore) Impo
 
 	result.Imported += i.importMemoryFiles(ctx, store)
 	result.Imported += i.importGlobalCLAUDE(ctx, store)
+	result.Imported += i.importProjectCLAUDEs(ctx, store)
+	result.Imported += i.importSettings(ctx, store)
 
 	sessionDirs, err := os.ReadDir(i.baseDir)
 	if err != nil {
@@ -131,6 +135,109 @@ func (i *ClaudeCodeImporter) importGlobalCLAUDE(ctx context.Context, store Impor
 		return 0
 	}
 	return 1
+}
+
+func (i *ClaudeCodeImporter) importProjectCLAUDEs(ctx context.Context, store ImportStore) int {
+	entries, err := os.ReadDir(i.baseDir)
+	if err != nil {
+		return 0
+	}
+	var count int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		claudePath := filepath.Join(i.baseDir, e.Name(), "CLAUDE.md")
+		data, err := os.ReadFile(claudePath)
+		if err != nil {
+			continue
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			continue
+		}
+		cwd := dirToPath(e.Name())
+		sourceID := "claude-code:project-claude:" + e.Name()
+		if err := store.SaveRawWithSource(ctx, text, "preference", "claude-code", &sourceID, cwd); err != nil {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (i *ClaudeCodeImporter) importSettings(ctx context.Context, store ImportStore) int {
+	parentDir := filepath.Join(i.baseDir, "..")
+	var count int
+
+	settingsFiles := []struct {
+		name   string
+		prefix string
+	}{
+		{"settings.json", "Claude Code Settings"},
+		{"settings.local.json", "Claude Code Local Settings"},
+	}
+
+	for _, sf := range settingsFiles {
+		absPath, err := filepath.Abs(filepath.Join(parentDir, sf.name))
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			continue
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			continue
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			continue
+		}
+		if len(raw) == 0 {
+			continue
+		}
+
+		formatted := formatSettings(sf.prefix, raw)
+		sourceID := "claude-code:settings:" + sf.name
+		if err := store.SaveRawWithSource(ctx, formatted, "preference", "claude-code", &sourceID, ""); err != nil {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func formatSettings(prefix string, raw map[string]any) string {
+	var sb strings.Builder
+	sb.WriteString("# ")
+	sb.WriteString(prefix)
+	sb.WriteString("\n\n")
+	for _, key := range sortedKeys(raw) {
+		val := raw[key]
+		sb.WriteString("- **")
+		sb.WriteString(key)
+		sb.WriteString("**: ")
+		valBytes, err := json.Marshal(val)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("%v", val))
+		} else {
+			sb.WriteString(string(valBytes))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (i *ClaudeCodeImporter) importSession(ctx context.Context, store ImportStore, sessionPath, sessionID string, isSubagent bool) int {

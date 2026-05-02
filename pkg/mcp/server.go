@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
-	"github.com/jholhewres/anchored/pkg/capture"
 	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
 	"github.com/jholhewres/anchored/pkg/session"
@@ -16,22 +14,16 @@ import (
 type Server struct {
 	mem      *memory.Service
 	kg       *kg.KG
-	stack    StackRenderer
 	sessions *session.Manager
-	capture  *capture.AutoCaptureManager
 	logger   *slog.Logger
 	version  string
 }
 
-func NewServer(mem *memory.Service, kg *kg.KG, stack StackRenderer, sessions *session.Manager, captureMgr *capture.AutoCaptureManager, version string, logger *slog.Logger) *Server {
+func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{mem: mem, kg: kg, stack: stack, sessions: sessions, capture: captureMgr, logger: logger, version: version}
-}
-
-type StackRenderer interface {
-	Render() string
+	return &Server{mem: mem, kg: kg, sessions: sessions, logger: logger, version: version}
 }
 
 func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
@@ -142,13 +134,6 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 	// Track session activity
 	if s.sessions != nil && p.SessionID != "" {
 		_ = s.sessions.RecordActivity(ctx, p.SessionID)
-	}
-
-	if s.stack != nil {
-		rendered := s.stack.Render()
-		if rendered != "" {
-			return rendered, nil
-		}
 	}
 
 	return "No memory context available yet. Save memories with anchored_save.", nil
@@ -354,12 +339,6 @@ func (s *Server) toolSessionEnd(ctx context.Context, args json.RawMessage) (stri
 
 	if err := s.sessions.EndSession(ctx, p.SessionID); err != nil {
 		return "", err
-	}
-
-	if s.capture != nil && p.Summary != "" {
-		_ = s.capture.CaptureSession(ctx, p.SessionID, []capture.ToolCall{
-			{Tool: "session_end", Input: p.Summary, Timestamp: time.Now()},
-		}, ".")
 	}
 
 	if p.Summary != "" {

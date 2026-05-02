@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -412,5 +413,177 @@ func TestImportSession_Subagents(t *testing.T) {
 
 	if count != 2 {
 		t.Fatalf("expected 2 imported (1 main + 1 subagent), got %d", count)
+	}
+}
+
+func TestImportProjectCLAUDEs(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "-home-user-myproject")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Project Rules\nAlways use TypeScript strict mode."
+	if err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir2 := filepath.Join(tmpDir, "-home-user-other")
+	if err := os.MkdirAll(projectDir2, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &ccMockStore{}
+	imp := &ClaudeCodeImporter{baseDir: tmpDir, log: func(string, ...any) {}}
+	count := imp.importProjectCLAUDEs(context.Background(), store)
+
+	if count != 1 {
+		t.Fatalf("expected 1 project CLAUDE.md imported, got %d", count)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("expected 1 saved, got %d", len(store.saved))
+	}
+	s := store.saved[0]
+	if s.category != "preference" {
+		t.Errorf("expected category 'preference', got %q", s.category)
+	}
+	if s.source != "claude-code" {
+		t.Errorf("expected source 'claude-code', got %q", s.source)
+	}
+	if s.cwd != "/home/user/myproject" {
+		t.Errorf("expected cwd '/home/user/myproject', got %q", s.cwd)
+	}
+	if !strings.Contains(s.content, "TypeScript strict mode") {
+		t.Errorf("unexpected content: %q", s.content)
+	}
+}
+
+func TestImportProjectCLAUDEs_EmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "-home-user-myproject")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte("   \n\n  "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &ccMockStore{}
+	imp := &ClaudeCodeImporter{baseDir: tmpDir, log: func(string, ...any) {}}
+	count := imp.importProjectCLAUDEs(context.Background(), store)
+
+	if count != 0 {
+		t.Fatalf("expected 0 for empty file, got %d", count)
+	}
+}
+
+func TestImportSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, "projects")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	settings := map[string]any{
+		"model":     "claude-sonnet-4-20250514",
+		"effort":    "high",
+		"theme":     "dark",
+		"maxTokens": 16384,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), settingsJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &ccMockStore{}
+	imp := &ClaudeCodeImporter{baseDir: claudeDir, log: func(string, ...any) {}}
+	count := imp.importSettings(context.Background(), store)
+
+	if count != 1 {
+		t.Fatalf("expected 1 settings imported, got %d", count)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("expected 1 saved, got %d", len(store.saved))
+	}
+	s := store.saved[0]
+	if s.category != "preference" {
+		t.Errorf("expected category 'preference', got %q", s.category)
+	}
+	if s.source != "claude-code" {
+		t.Errorf("expected source 'claude-code', got %q", s.source)
+	}
+	if !strings.Contains(s.content, "effort") {
+		t.Errorf("expected content to contain 'effort', got %q", s.content)
+	}
+	if !strings.Contains(s.content, "maxTokens") {
+		t.Errorf("expected content to contain 'maxTokens', got %q", s.content)
+	}
+}
+
+func TestImportSettings_LocalOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, "projects")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	globalSettings := map[string]any{"model": "default", "theme": "dark"}
+	globalJSON, _ := json.Marshal(globalSettings)
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), globalJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	localSettings := map[string]any{"model": "claude-sonnet-4-20250514", "effort": "high"}
+	localJSON, _ := json.Marshal(localSettings)
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.local.json"), localJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &ccMockStore{}
+	imp := &ClaudeCodeImporter{baseDir: claudeDir, log: func(string, ...any) {}}
+	count := imp.importSettings(context.Background(), store)
+
+	if count != 2 {
+		t.Fatalf("expected 2 settings imported (global + local), got %d", count)
+	}
+}
+
+func TestImportSettings_NoFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, "projects")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &ccMockStore{}
+	imp := &ClaudeCodeImporter{baseDir: claudeDir, log: func(string, ...any) {}}
+	count := imp.importSettings(context.Background(), store)
+
+	if count != 0 {
+		t.Fatalf("expected 0 with no settings files, got %d", count)
+	}
+}
+
+func TestFormatSettings(t *testing.T) {
+	raw := map[string]any{
+		"model":  "claude-sonnet-4-20250514",
+		"effort": "high",
+		"allowedTools": []any{"Bash", "Read"},
+	}
+	result := formatSettings("Claude Code Settings", raw)
+
+	if !strings.Contains(result, "# Claude Code Settings") {
+		t.Error("expected header in output")
+	}
+	if !strings.Contains(result, "**effort**") {
+		t.Error("expected 'effort' key in output")
+	}
+	if !strings.Contains(result, "**model**") {
+		t.Error("expected 'model' key in output")
+	}
+	idxAllowed := strings.Index(result, "allowedTools")
+	idxEffort := strings.Index(result, "effort")
+	idxModel := strings.Index(result, "model")
+	if idxAllowed >= idxEffort || idxEffort >= idxModel {
+		t.Errorf("expected sorted key order, got allowedTools@%d, effort@%d, model@%d", idxAllowed, idxEffort, idxModel)
 	}
 }

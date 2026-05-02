@@ -14,7 +14,6 @@ type Config struct {
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	Search    SearchConfig    `yaml:"search"`
 	Sanitizer SanitizerConfig `yaml:"sanitizer"`
-	Stack     StackConfig     `yaml:"stack"`
 	Indexer   IndexerConfig   `yaml:"indexer"`
 	Dream     DreamConfig     `yaml:"dream"`
 }
@@ -60,12 +59,6 @@ type SanitizerConfig struct {
 	Patterns []string `yaml:"patterns"`
 }
 
-type StackConfig struct {
-	BudgetBytes  int    `yaml:"budget_bytes"`
-	L1CacheTTL   string `yaml:"l1_cache_ttl"`
-	L2MaxResults int    `yaml:"l2_max_results"`
-}
-
 func Defaults() *Config {
 	return &Config{
 		Memory: MemoryConfig{
@@ -86,11 +79,6 @@ func Defaults() *Config {
 		},
 		Sanitizer: SanitizerConfig{
 			Enabled: false,
-		},
-		Stack: StackConfig{
-			BudgetBytes:  3600,
-			L1CacheTTL:   "6h",
-			L2MaxResults: 5,
 		},
 		Dream: DreamConfig{
 			Aggressiveness:      "moderate",

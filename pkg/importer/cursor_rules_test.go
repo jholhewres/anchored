@@ -305,6 +305,134 @@ func TestCursorImporter_Import_NoFrontmatter(t *testing.T) {
 	})
 }
 
+func TestCursorImporter_Detect_CursorRules(t *testing.T) {
+	t.Run("cursorrules file detected via project dirs", func(t *testing.T) {
+		withTestDir(t, func(dir string) {
+			projectDir := t.TempDir()
+			os.WriteFile(filepath.Join(projectDir, ".cursorrules"), []byte("Always use Go 1.24+"), 0o644)
+
+			imp := NewCursorImporter(dir, nil)
+			imp.SetProjectDirs([]string{projectDir})
+			if !imp.Detect() {
+				t.Fatal("should detect .cursorrules in project dir")
+			}
+		})
+	})
+
+	t.Run("no cursorrules no detect", func(t *testing.T) {
+		withTestDir(t, func(dir string) {
+			projectDir := t.TempDir()
+
+			imp := NewCursorImporter(dir, nil)
+			imp.SetProjectDirs([]string{projectDir})
+			if imp.Detect() {
+				t.Fatal("should not detect without .cursorrules")
+			}
+		})
+	})
+}
+
+func TestCursorImporter_Import_CursorRules(t *testing.T) {
+	withTestDir(t, func(dir string) {
+		projectDir := t.TempDir()
+		rulesContent := "Always use Go 1.24+\nPrefer table-driven tests"
+		os.WriteFile(filepath.Join(projectDir, ".cursorrules"), []byte(rulesContent), 0o644)
+
+		store := &cursorMockStore{}
+		imp := NewCursorImporter(dir, nil)
+		imp.SetProjectDirs([]string{projectDir})
+		result := imp.Import(context.Background(), store)
+
+		if result.Found != 1 {
+			t.Fatalf("found: got %d, want 1", result.Found)
+		}
+		if result.Imported != 1 {
+			t.Fatalf("imported: got %d, want 1", result.Imported)
+		}
+
+		if len(store.saved) != 1 {
+			t.Fatalf("saved count: got %d, want 1", len(store.saved))
+		}
+
+		saved := store.saved[0]
+		if saved.category != "preference" {
+			t.Fatalf("category: got %q, want %q", saved.category, "preference")
+		}
+		if saved.source != "cursor" {
+			t.Fatalf("source: got %q, want %q", saved.source, "cursor")
+		}
+		if !strings.Contains(saved.content, ".cursorrules") {
+			t.Fatalf("content should reference .cursorrules, got: %s", saved.content)
+		}
+		if !strings.Contains(saved.content, "Always use Go 1.24+") {
+			t.Fatalf("content should contain rules, got: %s", saved.content)
+		}
+		if !strings.Contains(saved.content, "Prefer table-driven tests") {
+			t.Fatalf("content should contain rules, got: %s", saved.content)
+		}
+	})
+}
+
+func TestCursorImporter_Import_CursorRulesDedup(t *testing.T) {
+	withTestDir(t, func(dir string) {
+		projectDir := t.TempDir()
+		os.WriteFile(filepath.Join(projectDir, ".cursorrules"), []byte("Rule A"), 0o644)
+
+		store := &cursorMockStore{}
+		imp := NewCursorImporter(dir, nil)
+		imp.SetProjectDirs([]string{projectDir, projectDir})
+		result := imp.Import(context.Background(), store)
+
+		if result.Found != 1 {
+			t.Fatalf("found: got %d, want 1 (deduped)", result.Found)
+		}
+		if len(store.saved) != 1 {
+			t.Fatalf("saved count: got %d, want 1 (deduped)", len(store.saved))
+		}
+	})
+}
+
+func TestCursorImporter_Import_CursorRulesEmpty(t *testing.T) {
+	withTestDir(t, func(dir string) {
+		projectDir := t.TempDir()
+		os.WriteFile(filepath.Join(projectDir, ".cursorrules"), []byte("   \n\n  "), 0o644)
+
+		store := &cursorMockStore{}
+		imp := NewCursorImporter(dir, nil)
+		imp.SetProjectDirs([]string{projectDir})
+		result := imp.Import(context.Background(), store)
+
+		if result.Found != 0 {
+			t.Fatalf("found: got %d, want 0 for empty file", result.Found)
+		}
+	})
+}
+
+func TestCursorImporter_Import_MixedSources(t *testing.T) {
+	withTestDir(t, func(dir string) {
+		writeMDC(t, dir, "test.mdc", "---\ndescription: test\n---\nbody")
+		os.WriteFile(filepath.Join(dir, "mcp.json"), []byte("{}"), 0o644)
+
+		projectDir := t.TempDir()
+		os.WriteFile(filepath.Join(projectDir, ".cursorrules"), []byte("Project rule"), 0o644)
+
+		store := &cursorMockStore{}
+		imp := NewCursorImporter(dir, nil)
+		imp.SetProjectDirs([]string{projectDir})
+		result := imp.Import(context.Background(), store)
+
+		if result.Found != 3 {
+			t.Fatalf("found: got %d, want 3 (mdc + mcp + cursorrules)", result.Found)
+		}
+		if result.Imported != 3 {
+			t.Fatalf("imported: got %d, want 3", result.Imported)
+		}
+		if len(store.saved) != 3 {
+			t.Fatalf("saved count: got %d, want 3", len(store.saved))
+		}
+	})
+}
+
 func TestCursorImporter_MetadataStructure(t *testing.T) {
 	withTestDir(t, func(dir string) {
 		writeMDC(t, dir, "test.mdc", "---\ndescription: test\nglobs: src/**\n---\nbody")

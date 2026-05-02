@@ -151,6 +151,9 @@ func buildSources(home string, selected []string, logFn func(string, ...any)) []
 
 	if wantAll || want["opencode"] {
 		src := importer.NewOpenCodeImporter(home, logFn)
+		if cwd, err := os.Getwd(); err == nil {
+			src.SetProjectDirs([]string{cwd})
+		}
 		if src.Detect() {
 			sources = append(sources, src)
 		}
@@ -158,6 +161,9 @@ func buildSources(home string, selected []string, logFn func(string, ...any)) []
 
 	if wantAll || want["cursor"] {
 		src := importer.NewCursorImporter(home+"/.cursor", logFn)
+		if cwd, err := os.Getwd(); err == nil {
+			src.SetProjectDirs([]string{cwd})
+		}
 		if src.Detect() {
 			sources = append(sources, src)
 		}

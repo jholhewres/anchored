@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -291,5 +292,133 @@ func TestOpenCodeImporter_ImportNoDB(t *testing.T) {
 
 	if result.Errors != 1 {
 		t.Errorf("expected 1 error (no DB), got errors=%d", result.Errors)
+	}
+}
+
+func TestOpenCodeImporter_ImportConfigJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	createOpenCodeTestDB(t, tmpDir)
+
+	projectDir := t.TempDir()
+	configContent := `{"provider":"anthropic","model":"claude-sonnet-4-20250514"}`
+	os.WriteFile(filepath.Join(projectDir, "opencode.json"), []byte(configContent), 0o644)
+
+	store := &ocMockStore{}
+	imp := NewOpenCodeImporter(tmpDir, nil)
+	imp.SetProjectDirs([]string{projectDir})
+	_ = imp.Import(context.Background(), store)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	var configFound bool
+	for _, s := range store.saved {
+		if s.category == "preference" && strings.Contains(s.content, "opencode.json") {
+			configFound = true
+			if !strings.Contains(s.content, "anthropic") {
+				t.Errorf("config content should contain provider info, got: %s", s.content)
+			}
+			if s.source != "opencode" {
+				t.Errorf("source: got %q, want %q", s.source, "opencode")
+			}
+			break
+		}
+	}
+	if !configFound {
+		t.Error("expected config file to be imported as preference")
+	}
+}
+
+func TestOpenCodeImporter_ImportConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	createOpenCodeTestDB(t, tmpDir)
+
+	projectDir := t.TempDir()
+	yamlContent := "provider: openai\nmodel: gpt-4\n"
+	os.WriteFile(filepath.Join(projectDir, "opencode.yaml"), []byte(yamlContent), 0o644)
+
+	store := &ocMockStore{}
+	imp := NewOpenCodeImporter(tmpDir, nil)
+	imp.SetProjectDirs([]string{projectDir})
+	_ = imp.Import(context.Background(), store)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	var found bool
+	for _, s := range store.saved {
+		if s.category == "preference" && strings.Contains(s.content, "opencode.yaml") {
+			found = true
+			if !strings.Contains(s.content, "provider: openai") {
+				t.Errorf("config should contain yaml content, got: %s", s.content)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected yaml config to be imported")
+	}
+}
+
+func TestOpenCodeImporter_ImportConfigFromWorktree(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	projectDir := t.TempDir()
+	os.WriteFile(filepath.Join(projectDir, "opencode.json"), []byte(`{"model":"test"}`), 0o644)
+
+	dbDir := filepath.Join(tmpDir, ".local", "share", "opencode")
+	os.MkdirAll(dbDir, 0o755)
+	dbPath := filepath.Join(dbDir, "opencode.db")
+
+	db, _ := sql.Open("sqlite3", dbPath)
+	db.Exec(`CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT, vcs TEXT, time_created INTEGER, time_updated INTEGER)`)
+	db.Exec(`CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER)`)
+	db.Exec(`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT)`)
+	db.Exec(`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT)`)
+	db.Exec(`CREATE TABLE todo (session_id TEXT, content TEXT, status TEXT, priority TEXT, position INTEGER, time_created INTEGER, time_updated INTEGER)`)
+	db.Exec(`INSERT INTO project (id, name, worktree) VALUES ('p1', 'test', ?)`, projectDir)
+	db.Close()
+
+	store := &ocMockStore{}
+	imp := NewOpenCodeImporter(tmpDir, nil)
+	_ = imp.Import(context.Background(), store)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	var found bool
+	for _, s := range store.saved {
+		if s.category == "preference" && strings.Contains(s.content, "opencode.json") {
+			found = true
+			if s.cwd != projectDir {
+				t.Errorf("cwd: got %q, want %q", s.cwd, projectDir)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected config from project worktree to be imported")
+	}
+}
+
+func TestOpenCodeImporter_ImportConfigEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	createOpenCodeTestDB(t, tmpDir)
+
+	projectDir := t.TempDir()
+	os.WriteFile(filepath.Join(projectDir, "opencode.json"), []byte("  \n  "), 0o644)
+
+	store := &ocMockStore{}
+	imp := NewOpenCodeImporter(tmpDir, nil)
+	imp.SetProjectDirs([]string{projectDir})
+	imp.Import(context.Background(), store)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	for _, s := range store.saved {
+		if strings.Contains(s.content, "opencode.json") {
+			t.Error("empty config file should not be imported")
+		}
 	}
 }

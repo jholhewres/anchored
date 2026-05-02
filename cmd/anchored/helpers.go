@@ -40,12 +40,6 @@ type serviceStoreAdapter struct {
 	svc *memory.Service
 }
 
-type dbAccessor struct {
-	db *sql.DB
-}
-
-func (d *dbAccessor) DB() *sql.DB { return d.db }
-
 func (a *serviceStoreAdapter) SaveRaw(ctx context.Context, content, category, source string, cwd string) error {
 	return a.svc.SaveRawNoEmbed(ctx, content, category, source, cwd)
 }
