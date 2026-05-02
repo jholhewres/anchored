@@ -13,19 +13,66 @@ import (
 	"github.com/jholhewres/anchored/pkg/session"
 )
 
+// OptimizerFacade decouples pkg/mcp from pkg/context (which has a !windows build tag).
+type OptimizerFacade interface {
+	Execute(ctx context.Context, code string, language string, timeoutMs int) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
+	ExecuteFile(ctx context.Context, path string, language string, code string, timeoutMs int) (stdout string, stderr string, exitCode int, duration string, timedOut bool, truncated bool, err error)
+	IndexContent(ctx context.Context, content string, source string, label string) (string, error)
+	IndexRaw(ctx context.Context, content string, source string, label string) (string, error)
+	Search(ctx context.Context, query string, maxResults int, contentType string, source string) ([]OptimizerSearchResult, error)
+	FetchAndIndex(ctx context.Context, url string, source string) (markdown string, fetchedAt string, fromCache bool, err error)
+	ExecuteBatch(ctx context.Context, commands []OptimizerBatchCommand, queries []string, intent string) (*OptimizerBatchResult, error)
+	Close()
+}
+
+// OptimizerSearchResult is a platform-independent search result.
+type OptimizerSearchResult struct {
+	ChunkID string
+	Label   string
+	Source  string
+	Snippet string
+	Score   float64
+}
+
+// OptimizerBatchCommand is a platform-independent batch command.
+type OptimizerBatchCommand struct {
+	Label    string
+	Command  string
+	Language string
+}
+
+// OptimizerBatchResult is a platform-independent batch result.
+type OptimizerBatchResult struct {
+	Results       []OptimizerExecResult
+	SearchResults []OptimizerSearchResult
+	SourceID      string
+	TotalBytes    int64
+}
+
+// OptimizerExecResult is a platform-independent exec result.
+type OptimizerExecResult struct {
+	Stdout    string
+	Stderr    string
+	ExitCode  int
+	Duration  string
+	TimedOut  bool
+	Truncated bool
+}
+
 type Server struct {
 	mem      *memory.Service
 	kg       *kg.KG
 	sessions *session.Manager
+	optimizer OptimizerFacade
 	logger   *slog.Logger
 	version  string
 }
 
-func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, version string, logger *slog.Logger) *Server {
+func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimizer OptimizerFacade, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{mem: mem, kg: kg, sessions: sessions, logger: logger, version: version}
+	return &Server{mem: mem, kg: kg, sessions: sessions, optimizer: optimizer, logger: logger, version: version}
 }
 
 func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
@@ -119,6 +166,18 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolKGAdd(ctx, args)
 	case "anchored_session_end":
 		return s.toolSessionEnd(ctx, args)
+	case "anchored_execute":
+		return s.toolCtxExecute(ctx, args)
+	case "anchored_execute_file":
+		return s.toolCtxExecuteFile(ctx, args)
+	case "anchored_batch_execute":
+		return s.toolCtxBatchExecute(ctx, args)
+	case "anchored_index":
+		return s.toolCtxIndex(ctx, args)
+	case "anchored_ctx_search":
+		return s.toolCtxSearch(ctx, args)
+	case "anchored_fetch_and_index":
+		return s.toolCtxFetchAndIndex(ctx, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -417,6 +476,253 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	return fmt.Sprintf("Added relationship: %s — %s → %s (id: %s)", triple.Subject, triple.Predicate, triple.Object, triple.ID), nil
 }
 
+func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		Language string `json:"language"`
+		Code     string `json:"code"`
+		Timeout  int    `json:"timeout"`
+		Intent   string `json:"intent"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Timeout == 0 {
+		p.Timeout = 30000
+	}
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.Execute(ctx, p.Code, p.Language, p.Timeout)
+	if err != nil {
+		return "", err
+	}
+	if timedOut {
+		return fmt.Sprintf("TIMEOUT after %s", dur), nil
+	}
+	if exitCode != 0 {
+		return fmt.Sprintf("ERROR (exit %d): %s", exitCode, stderr), nil
+	}
+	output := stdout
+	if truncated {
+		output += "\n[output truncated]"
+	}
+	if len(output) > 5*1024 && p.Intent != "" {
+		_, _ = s.optimizer.IndexRaw(ctx, stdout, "execute", "auto-indexed")
+		hits, sErr := s.optimizer.Search(ctx, p.Intent, 5, "", "")
+		if sErr == nil && len(hits) > 0 {
+			var lines []string
+			for i, r := range hits {
+				lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, r.Label, r.Snippet))
+			}
+			return fmt.Sprintf("Large output indexed (%d bytes). Matching sections:\n\n%s", len(stdout), joinLines(lines)), nil
+		}
+		return fmt.Sprintf("Large output indexed (%d bytes). No sections matched intent.", len(stdout)), nil
+	}
+	return fmt.Sprintf("```\n%s\n```\nExit: 0 (%s)", output, dur), nil
+}
+
+func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		Path     string `json:"path"`
+		Language string `json:"language"`
+		Code     string `json:"code"`
+		Timeout  int    `json:"timeout"`
+		Intent   string `json:"intent"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Timeout == 0 {
+		p.Timeout = 30000
+	}
+	data, err := os.ReadFile(p.Path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	// Write content to temp file to avoid cross-language string escaping issues.
+	// FILE_PATH points to the temp file; the user's code reads from it.
+	tmpFile, err := os.CreateTemp("", "anchored-fc-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	tmpFile.Close()
+	wrapped := fmt.Sprintf("FILE_PATH=%q\n%s", tmpFile.Name(), p.Code)
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, p.Path, p.Language, wrapped, p.Timeout)
+	if err != nil {
+		return "", err
+	}
+	if timedOut {
+		return fmt.Sprintf("TIMEOUT after %s", dur), nil
+	}
+	if exitCode != 0 {
+		return fmt.Sprintf("ERROR (exit %d): %s", exitCode, stderr), nil
+	}
+	output := stdout
+	if truncated {
+		output += "\n[output truncated]"
+	}
+	return fmt.Sprintf("```\n%s\n```\nExit: 0 (%s)", output, dur), nil
+}
+
+func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		Commands []struct {
+			Label    string `json:"label"`
+			Command  string `json:"command"`
+			Language string `json:"language"`
+		} `json:"commands"`
+		Queries []string `json:"queries"`
+		Timeout int      `json:"timeout"`
+		Intent  string   `json:"intent"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Timeout == 0 {
+		p.Timeout = 60000
+	}
+	cmds := make([]OptimizerBatchCommand, len(p.Commands))
+	for i, c := range p.Commands {
+		cmds[i] = OptimizerBatchCommand{
+			Label:    c.Label,
+			Command:  c.Command,
+			Language: c.Language,
+		}
+	}
+	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent)
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Batch executed %d commands (%d bytes indexed).", len(result.Results), result.TotalBytes))
+	if len(result.SearchResults) > 0 {
+		lines = append(lines, "\nSearch results:")
+		for i, r := range result.SearchResults {
+			lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, r.Label, r.Snippet))
+		}
+	}
+	for i, r := range result.Results {
+		if r.ExitCode != 0 {
+			lines = append(lines, fmt.Sprintf("\nCommand %d failed (exit %d): %s", i+1, r.ExitCode, r.Stderr))
+		}
+	}
+	return joinLines(lines), nil
+}
+
+func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		Content string `json:"content"`
+		Path    string `json:"path"`
+		Source  string `json:"source"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Content != "" {
+		id, err := s.optimizer.IndexContent(ctx, p.Content, p.Source, "manual")
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Indexed content from '%s' (id: %s)", p.Source, id), nil
+	}
+	if p.Path != "" {
+		data, err := os.ReadFile(p.Path)
+		if err != nil {
+			return "", fmt.Errorf("read file: %w", err)
+		}
+		id, err := s.optimizer.IndexContent(ctx, string(data), p.Source, p.Path)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Indexed file '%s' as '%s' (id: %s)", p.Path, p.Source, id), nil
+	}
+	return "", fmt.Errorf("provide either 'content' or 'path'")
+}
+
+func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		Queries []string `json:"queries"`
+		Limit   int      `json:"limit"`
+		Source  string   `json:"source"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Limit == 0 {
+		p.Limit = 3
+	}
+	seen := make(map[string]bool)
+	var lines []string
+	for _, q := range p.Queries {
+		hits, err := s.optimizer.Search(ctx, q, p.Limit, "", p.Source)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("Query '%s': error — %v", q, err))
+			continue
+		}
+		if len(hits) == 0 {
+			lines = append(lines, fmt.Sprintf("Query '%s': no results.", q))
+			continue
+		}
+		for _, h := range hits {
+			if seen[h.ChunkID] {
+				continue
+			}
+			seen[h.ChunkID] = true
+			lines = append(lines, fmt.Sprintf("[%s] %.3f — %s", h.Source, h.Score, h.Snippet))
+		}
+	}
+	if len(lines) == 0 {
+		return "No results found for any query.", nil
+	}
+	return joinLines(lines), nil
+}
+
+func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage) (string, error) {
+	if s.optimizer == nil {
+		return "Context optimizer not enabled. Set context_optimizer.enabled: true in config.", nil
+	}
+	var p struct {
+		URL    string `json:"url"`
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if p.Source == "" {
+		p.Source = p.URL
+	}
+	markdown, fetchedAt, fromCache, err := s.optimizer.FetchAndIndex(ctx, p.URL, p.Source)
+	if err != nil {
+		return "", err
+	}
+	preview := markdown
+	if len(preview) > 3*1024 {
+		preview = preview[:3*1024] + "\n[...truncated preview...]"
+	}
+	cacheStatus := ""
+	if fromCache {
+		cacheStatus = " (from cache)"
+	}
+	return fmt.Sprintf("Fetched and indexed '%s'%s at %s (%d bytes).\n\n%s\n\nUse anchored_ctx_search to find specific sections.", p.Source, cacheStatus, fetchedAt, len(markdown), preview), nil
+}
+
 func (s *Server) handleResourcesList(id json.RawMessage) []byte {
 	resources := ResourceDefinitions()
 	return MarshalResponse(NewResponse(id, map[string]any{"resources": resources}))
@@ -479,6 +785,9 @@ func (s *Server) handleResourcesRead(ctx context.Context, id json.RawMessage, pa
 				return MarshalResponse(NewErrorResponse(id, InternalError(err)))
 			}
 			lines = append(lines, fmt.Sprintf("%s\t%s\t%s", pid, name, ppath))
+		}
+		if err := rows.Err(); err != nil {
+			return MarshalResponse(NewErrorResponse(id, InternalError(err)))
 		}
 		if len(lines) == 0 {
 			content = "No projects registered."

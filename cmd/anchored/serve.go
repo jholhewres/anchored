@@ -64,7 +64,20 @@ func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config,
 
 	sessionMgr := session.NewManager(memSvc.StoreDB(), logFn)
 
-	server := mcp.NewServer(memSvc, kgSvc, sessionMgr, Version, logFn)
+	var optimizer mcp.OptimizerFacade
+	if cfg.ContextOptimizer.Enabled {
+		opt, err := mcp.NewCtxOptimizer(memSvc.StoreDB(), cfg.ContextOptimizer, logFn)
+		if err != nil {
+			logFn.Warn("context optimizer init failed, ctx_* tools unavailable", "error", err)
+		} else {
+			optimizer = opt
+		}
+	}
+	if optimizer != nil {
+		defer optimizer.Close()
+	}
+
+	server := mcp.NewServer(memSvc, kgSvc, sessionMgr, optimizer, Version, logFn)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

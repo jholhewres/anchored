@@ -3,6 +3,8 @@ package memory
 import (
 	"database/sql"
 	"fmt"
+
+	ctxpkg "github.com/jholhewres/anchored/pkg/context"
 )
 
 type migration struct {
@@ -73,6 +75,7 @@ func Migrate(db *sql.DB) error {
 				status TEXT DEFAULT 'proposed'
 			);
 		`},
+		{Name: "008_content_optimizer", Up: ctxpkg.MigrationSQL},
 	}
 
 	for _, m := range migrations {

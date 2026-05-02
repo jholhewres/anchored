@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-var Version = "0.2.2"
+var Version = "0.3.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +38,8 @@ func main() {
 		runInit(os.Args[2:])
 	case "precompact":
 		runPrecompact(os.Args[2:])
+	case "hook":
+		runHook(os.Args[2:])
 	case "dream":
 		runDream(os.Args[2:])
 	case "--version", "-v":
@@ -65,6 +67,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored config [show|set]  View or modify configuration\n")
 	fmt.Fprintf(os.Stderr, "  anchored init [--tool]     Initialize and register MCP server\n")
 	fmt.Fprintf(os.Stderr, "  anchored precompact         Pre-compact memory context\n")
+	fmt.Fprintf(os.Stderr, "  anchored hook <subcommand>  Run session continuity hooks\n")
 	fmt.Fprintf(os.Stderr, "  anchored dream              Analyze and consolidate duplicate memories\n")
 	fmt.Fprintf(os.Stderr, "  anchored --version          Print version\n")
 	fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")

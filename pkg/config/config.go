@@ -10,12 +10,22 @@ import (
 )
 
 type Config struct {
-	Memory    MemoryConfig    `yaml:"memory"`
-	Embedding EmbeddingConfig `yaml:"embedding"`
-	Search    SearchConfig    `yaml:"search"`
-	Sanitizer SanitizerConfig `yaml:"sanitizer"`
-	Indexer   IndexerConfig   `yaml:"indexer"`
-	Dream     DreamConfig     `yaml:"dream"`
+	Memory          MemoryConfig          `yaml:"memory"`
+	Embedding       EmbeddingConfig       `yaml:"embedding"`
+	Search          SearchConfig          `yaml:"search"`
+	Sanitizer       SanitizerConfig       `yaml:"sanitizer"`
+	Indexer         IndexerConfig         `yaml:"indexer"`
+	Dream           DreamConfig           `yaml:"dream"`
+	ContextOptimizer ContextOptimizerConfig `yaml:"context_optimizer"`
+}
+
+type ContextOptimizerConfig struct {
+	Enabled         bool `yaml:"enabled"`
+	DefaultTTL      int  `yaml:"default_ttl_hours"`
+	LRUCapMB        int  `yaml:"lru_cap_mb"`
+	SandboxTimeout  int  `yaml:"sandbox_timeout_seconds"`
+	MaxOutputKB     int  `yaml:"max_output_kb"`
+	FetchCacheTTL   int  `yaml:"fetch_cache_ttl_hours"`
 }
 
 type DreamConfig struct {
@@ -85,6 +95,14 @@ func Defaults() *Config {
 			DedupThreshold:      0.75,
 			MaxDeletionsPerRun:  50,
 			ContradictionAction: "flag",
+		},
+		ContextOptimizer: ContextOptimizerConfig{
+			Enabled:        false,
+			DefaultTTL:     336,
+			LRUCapMB:       50,
+			SandboxTimeout: 30,
+			MaxOutputKB:    1024,
+			FetchCacheTTL:  24,
 		},
 	}
 }

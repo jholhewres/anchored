@@ -214,6 +214,168 @@ func ToolDefinitions() []Tool {
 				"required": []string{"subject", "predicate", "object"},
 			},
 		},
+		{
+			Name:        "anchored_execute",
+			Description: "Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess. Available: javascript, typescript, python, shell, ruby, go, rust, php, perl, r, elixir.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"language": map[string]any{
+						"type":        "string",
+						"description": "Runtime language",
+						"enum":        []string{"javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"},
+					},
+					"code": map[string]any{
+						"type":        "string",
+						"description": "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), fmt.Println (Go), IO.puts (Elixir) to output a summary to context.",
+					},
+					"timeout": map[string]any{
+						"type":        "integer",
+						"description": "Max execution time in ms (default: 30000)",
+						"default":     30000,
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "What you're looking for in the output. When provided and output is large (>5KB), indexes output and returns only matching sections.",
+					},
+				},
+				"required": []string{"language", "code"},
+			},
+		},
+		{
+			Name:        "anchored_execute_file",
+			Description: "Read a file and process it without loading contents into context. The file content is written to a temp file; FILE_PATH points to it. Only your printed summary enters context.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Absolute file path or relative to project root",
+					},
+					"language": map[string]any{
+						"type":        "string",
+						"description": "Runtime language",
+						"enum":        []string{"javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"},
+					},
+					"code": map[string]any{
+						"type":        "string",
+						"description": "Code to process the file at FILE_PATH. Print summary via console.log/print/echo/IO.puts.",
+					},
+					"timeout": map[string]any{
+						"type":        "integer",
+						"description": "Max execution time in ms (default: 30000)",
+						"default":     30000,
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "What you're looking for in the output.",
+					},
+				},
+				"required": []string{"path", "language", "code"},
+			},
+		},
+		{
+			Name:        "anchored_batch_execute",
+			Description: "Execute multiple commands in ONE call, auto-index all output, and search with multiple queries. Returns search results directly — no follow-up calls needed.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"commands": map[string]any{
+						"type":        "array",
+						"description": "Commands to execute as a batch",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"label":    map[string]any{"type": "string", "description": "Section header for this command's output"},
+								"command":  map[string]any{"type": "string", "description": "Shell command to execute"},
+								"language": map[string]any{"type": "string", "description": "Runtime language (default: shell)"},
+							},
+							"required": []string{"command"},
+						},
+					},
+					"queries": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Search queries to extract information from indexed output. Batch ALL questions in one call.",
+					},
+					"timeout": map[string]any{
+						"type":        "integer",
+						"description": "Max execution time in ms (default: 60000)",
+						"default":     60000,
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "What you're looking for in the output. Use specific technical terms.",
+					},
+				},
+				"required": []string{"commands", "queries"},
+			},
+		},
+		{
+			Name:        "anchored_index",
+			Description: "Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context — only a brief summary is returned.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Raw text/markdown to index. Provide this OR path, not both.",
+					},
+					"path": map[string]any{
+						"type":        "string",
+						"description": "File path to read and index (content never enters context). Provide this OR content, not both.",
+					},
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')",
+					},
+				},
+				"required": []string{"source"},
+			},
+		},
+		{
+			Name:        "anchored_ctx_search",
+			Description: "Search indexed content. Requires prior indexing via anchored_index, anchored_execute, or anchored_batch_execute. Pass ALL search questions as queries array in ONE call.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"queries": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Array of search queries. Batch ALL questions in one call.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Results per query (default: 3)",
+						"default":     3,
+					},
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Filter to a specific indexed source (partial match).",
+					},
+				},
+				"required": []string{"queries"},
+			},
+		},
+		{
+			Name:        "anchored_fetch_and_index",
+			Description: "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, and returns a ~3KB preview. Full content stays in sandbox — use anchored_ctx_search for deeper lookups.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"url": map[string]any{
+						"type":        "string",
+						"description": "The URL to fetch and index",
+					},
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Label for the indexed content (e.g., 'React useEffect docs', 'Supabase Auth API')",
+					},
+	
+				},
+				"required": []string{"url"},
+			},
+		},
 	}
 }
 
