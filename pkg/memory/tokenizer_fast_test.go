@@ -7,13 +7,18 @@ import (
 	"testing"
 )
 
+func vocabRaw(v map[string]int) json.RawMessage {
+	data, _ := json.Marshal(v)
+	return data
+}
+
 func writeTestTokenizerJSON(t *testing.T, dir string) string {
 	t.Helper()
 	cfg := tokenizerConfig{
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "WordPiece",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]":      0,
 				"[UNK]":      100,
 				"[CLS]":      101,
@@ -47,7 +52,7 @@ func writeTestTokenizerJSON(t *testing.T, dir string) string {
 				"naïve":      129,
 				"##ï":        130,
 				"##ve":       131,
-			},
+			}),
 			UnkToken: "[UNK]",
 			Prefix:   "##",
 			MaxChars: 200,
@@ -91,7 +96,7 @@ func writeTestTokenizerJSON(t *testing.T, dir string) string {
 func writeMultilingualTokenizerJSON(t *testing.T, dir string) string {
 	t.Helper()
 
-	vocab := map[string]int{
+	vocabMap := map[string]int{
 		"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 	}
 	id := 103
@@ -104,8 +109,8 @@ func writeMultilingualTokenizerJSON(t *testing.T, dir string) string {
 		"é", "está", "não", "português",
 	}
 	for _, w := range words {
-		if _, exists := vocab[w]; !exists {
-			vocab[w] = id
+		if _, exists := vocabMap[w]; !exists {
+			vocabMap[w] = id
 			id++
 		}
 	}
@@ -114,7 +119,7 @@ func writeMultilingualTokenizerJSON(t *testing.T, dir string) string {
 		Version: "1.0",
 		Model: modelConfig{
 			Type:      "WordPiece",
-			Vocab:     vocab,
+			Vocab:     vocabRaw(vocabMap),
 			UnkToken:  "[UNK]",
 			Prefix:    "##",
 			MaxChars:  200,
@@ -324,10 +329,10 @@ func TestFastTokenizer_NoNormalizer(t *testing.T) {
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "WordPiece",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 				"Hello": 103, "World": 104,
-			},
+			}),
 			UnkToken: "[UNK]",
 		},
 		PreTokenizer: &preTokenizerConfig{Type: "Whitespace"},
@@ -375,11 +380,11 @@ func TestFastTokenizer_WordPieceSubwords(t *testing.T) {
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "WordPiece",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 				"unigram": 103,
 				"un": 104, "##ig": 105, "##ram": 106,
-			},
+			}),
 			UnkToken: "[UNK]",
 			Prefix:   "##",
 		},
@@ -425,10 +430,10 @@ func TestFastTokenizer_NFDAccentStripping(t *testing.T) {
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "WordPiece",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 				"cafe": 103,
-			},
+			}),
 			UnkToken: "[UNK]",
 		},
 		Normalizer: &normalizerConfig{
@@ -481,11 +486,11 @@ func TestFastTokenizer_BPEModel(t *testing.T) {
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "BPE",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 				"h": 103, "e": 104, "l": 105, "o": 106,
 				"he": 107, "ll": 108, "hello": 109,
-			},
+			}),
 			UnkToken: "[UNK]",
 			Merges:   []string{"h e", "l l", "he ll", "hell o"},
 		},
@@ -589,9 +594,9 @@ func TestTokenizerInterface(t *testing.T) {
 		Version: "1.0",
 		Model: modelConfig{
 			Type: "WordPiece",
-			Vocab: map[string]int{
+			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102, "hello": 103,
-			},
+			}),
 			UnkToken: "[UNK]",
 		},
 		PreTokenizer: &preTokenizerConfig{Type: "Whitespace"},
@@ -620,5 +625,149 @@ func TestTokenizerInterface(t *testing.T) {
 	inputIDs, _, _ := tok.Tokenize("hello")
 	if inputIDs[0] != 101 {
 		t.Errorf("via interface: CLS = %d, want 101", inputIDs[0])
+	}
+}
+
+func TestFastTokenizer_UnigramVocabArray(t *testing.T) {
+	dir := t.TempDir()
+
+	vocabArr := [][]interface{}{
+		{"<s>", 0.0},
+		{"<pad>", 0.0},
+		{"</s>", 0.0},
+		{"<unk>", 0.0},
+		{"▁the", -3.46},
+		{"▁hello", -4.12},
+		{"▁world", -4.20},
+		{"▁a", -5.0},
+		{"▁test", -5.5},
+		{"in", -6.0},
+		{"g", -6.5},
+	}
+	vocabRawData, _ := json.Marshal(vocabArr)
+
+	cfg := tokenizerConfig{
+		Version: "1.0",
+		Model: modelConfig{
+			Type:     "Unigram",
+			Vocab:    vocabRawData,
+			UnkToken: "<unk>",
+		},
+		PreTokenizer: &preTokenizerConfig{Type: "Metaspace"},
+		PostProcessor: &postProcessorConfig{
+			Type: "TemplateProcessing",
+			SpecialTokens: map[string]spTokenConfig{
+				"<s>":  {ID: "<s>", IDs: []int{0}, Tokens: []string{"<s>"}},
+				"</s>": {ID: "</s>", IDs: []int{2}, Tokens: []string{"</s>"}},
+			},
+		},
+		AddedTokens: []addedTokenConfig{
+			{ID: 0, Content: "<s>", Special: true},
+			{ID: 1, Content: "<pad>", Special: true},
+			{ID: 2, Content: "</s>", Special: true},
+			{ID: 3, Content: "<unk>", Special: true},
+		},
+	}
+
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	path := filepath.Join(dir, "tokenizer.json")
+	os.WriteFile(path, data, 0o644)
+
+	ft, err := NewFastTokenizer(path, 128)
+	if err != nil {
+		t.Fatalf("NewFastTokenizer: %v", err)
+	}
+
+	if ft.clsID != 0 {
+		t.Errorf("clsID = %d, want 0 (<s>)", ft.clsID)
+	}
+	if ft.sepID != 2 {
+		t.Errorf("sepID = %d, want 2 (</s>)", ft.sepID)
+	}
+	if ft.unkID != 3 {
+		t.Errorf("unkID = %d, want 3 (<unk>)", ft.unkID)
+	}
+
+	inputIDs, _, _ := ft.Tokenize("hello world")
+	if inputIDs[0] != 0 {
+		t.Errorf("CLS (<s>) = %d, want 0", inputIDs[0])
+	}
+	if inputIDs[1] != 5 {
+		t.Errorf("▁hello = %d, want 5", inputIDs[1])
+	}
+	if inputIDs[2] != 6 {
+		t.Errorf("▁world = %d, want 6", inputIDs[2])
+	}
+	if inputIDs[3] != 2 {
+		t.Errorf("SEP (</s>) = %d, want 2", inputIDs[3])
+	}
+}
+
+func TestFastTokenizer_UnigramSpecialTokens(t *testing.T) {
+	dir := t.TempDir()
+
+	vocabArr := [][]interface{}{
+		{"<s>", 0.0},
+		{"<pad>", 0.0},
+		{"</s>", 0.0},
+		{"<unk>", 0.0},
+		{"▁test", -5.0},
+	}
+	vocabRawData, _ := json.Marshal(vocabArr)
+
+	cfg := tokenizerConfig{
+		Version: "1.0",
+		Model: modelConfig{
+			Type:     "Unigram",
+			Vocab:    vocabRawData,
+			UnkToken: "<unk>",
+		},
+		PreTokenizer: &preTokenizerConfig{Type: "Metaspace"},
+		PostProcessor: &postProcessorConfig{
+			Type: "TemplateProcessing",
+			SpecialTokens: map[string]spTokenConfig{
+				"</s>": {ID: "</s>", IDs: []int{2}, Tokens: []string{"</s>"}},
+				"<s>":  {ID: "<s>", IDs: []int{0}, Tokens: []string{"<s>"}},
+			},
+		},
+		AddedTokens: []addedTokenConfig{
+			{ID: 0, Content: "<s>", Special: true},
+			{ID: 1, Content: "<pad>", Special: true},
+			{ID: 2, Content: "</s>", Special: true},
+			{ID: 3, Content: "<unk>", Special: true},
+		},
+	}
+
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	path := filepath.Join(dir, "tokenizer.json")
+	os.WriteFile(path, data, 0o644)
+
+	ft, err := NewFastTokenizer(path, 128)
+	if err != nil {
+		t.Fatalf("NewFastTokenizer: %v", err)
+	}
+
+	inputIDs, attentionMask, _ := ft.Tokenize("test")
+	if inputIDs[0] != 0 {
+		t.Errorf("first token = %d, want 0 (<s>)", inputIDs[0])
+	}
+	if inputIDs[1] != 4 {
+		t.Errorf("▁test = %d, want 4", inputIDs[1])
+	}
+	if inputIDs[2] != 2 {
+		t.Errorf("last real token = %d, want 2 (</s>)", inputIDs[2])
+	}
+
+	seqLen := 0
+	for _, m := range attentionMask {
+		if m == 1 {
+			seqLen++
+		}
+	}
+	if seqLen != 3 {
+		t.Errorf("seqLen = %d, want 3 (<s> ▁test </s>)", seqLen)
+	}
+	if inputIDs[seqLen] != 1 {
+		t.Errorf("first pad token = %d, want 1 (<pad>)", inputIDs[seqLen])
 	}
 }

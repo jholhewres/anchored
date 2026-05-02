@@ -25,12 +25,12 @@ type tokenizerConfig struct {
 }
 
 type modelConfig struct {
-	Type     string         `json:"type"`
-	Vocab    map[string]int `json:"vocab"`
-	UnkToken string         `json:"unk_token"`
-	Prefix   string         `json:"continuing_subword_prefix,omitempty"`
-	MaxChars int            `json:"max_input_chars_per_word,omitempty"`
-	Merges   []string       `json:"merges,omitempty"`
+	Type     string            `json:"type"`
+	Vocab    json.RawMessage   `json:"vocab"`
+	UnkToken string            `json:"unk_token"`
+	Prefix   string            `json:"continuing_subword_prefix,omitempty"`
+	MaxChars int               `json:"max_input_chars_per_word,omitempty"`
+	Merges   []string          `json:"merges,omitempty"`
 }
 
 type normalizerConfig struct {
@@ -57,7 +57,9 @@ type postProcessorConfig struct {
 }
 
 type spTokenConfig struct {
-	ID interface{} `json:"id"`
+	ID     interface{} `json:"id"`
+	IDs    []int       `json:"ids,omitempty"`
+	Tokens []string    `json:"tokens,omitempty"`
 }
 
 type decoderConfig struct {
@@ -112,8 +114,14 @@ func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) 
 		maxLen = 128
 	}
 
+	// Parse vocab: map[string]int (WordPiece/BPE) or array of [token, score] pairs (Unigram)
+	vocab, err := parseVocab(cfg.Model.Vocab)
+	if err != nil {
+		return nil, fmt.Errorf("parse vocab: %w", err)
+	}
+
 	ft := &FastTokenizer{
-		vocab:           cfg.Model.Vocab,
+		vocab:           vocab,
 		addedTokens:     make(map[string]int),
 		modelType:       cfg.Model.Type,
 		unkToken:        cfg.Model.UnkToken,
@@ -135,9 +143,9 @@ func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) 
 	}
 
 	ft.unkID = ft.tokenID(ft.unkToken, -1)
-	ft.clsID = ft.tokenID("[CLS]", -1)
-	ft.sepID = ft.tokenID("[SEP]", -1)
-	ft.padID = ft.tokenID("[PAD]", 0)
+	ft.clsID = ft.tokenID("[CLS]", ft.tokenID("<s>", -1))
+	ft.sepID = ft.tokenID("[SEP]", ft.tokenID("</s>", -1))
+	ft.padID = ft.tokenID("[PAD]", ft.tokenID("<pad>", 0))
 
 	ft.normalizer = ft.buildNormalizer(cfg.Normalizer)
 	ft.preTokenizer = ft.buildPreTokenizer(cfg.PreTokenizer)
@@ -161,6 +169,45 @@ func (ft *FastTokenizer) tokenID(token string, defaultID int) int {
 		return id
 	}
 	return defaultID
+}
+
+func parseVocab(raw json.RawMessage) (map[string]int, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty vocab")
+	}
+	if raw[0] == '{' {
+		var m map[string]int
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("parse vocab as map: %w", err)
+		}
+		return m, nil
+	}
+	if raw[0] == '[' {
+		var arr [][]interface{}
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return nil, fmt.Errorf("parse vocab as array: %w", err)
+		}
+		m := make(map[string]int, len(arr))
+		for i, entry := range arr {
+			if len(entry) >= 1 {
+				if token, ok := entry[0].(string); ok {
+					m[token] = i
+				}
+			}
+		}
+		return m, nil
+	}
+	return nil, fmt.Errorf("unexpected vocab format: %s", string(raw[:min(len(raw), 20)]))
+}
+
+func spTokenToInt(st spTokenConfig) int {
+	if len(st.IDs) > 0 {
+		return st.IDs[0]
+	}
+	if id, ok := toInt(st.ID); ok {
+		return id
+	}
+	return -1
 }
 
 func (ft *FastTokenizer) Tokenize(text string) (inputIDs, attentionMask, tokenTypeIDs []int64) {
@@ -220,6 +267,8 @@ func (ft *FastTokenizer) encodeWord(word string) []int {
 		return ft.encodeBPE(word)
 	case "WordLevel":
 		return ft.encodeWordLevel(word)
+	case "Unigram":
+		return ft.encodeUnigram(word)
 	default:
 		return ft.encodeWordPiece(word)
 	}
@@ -542,7 +591,7 @@ func (ft *FastTokenizer) buildPreTokenizer(cfg *preTokenizerConfig) preTokenizer
 	case "ByteLevel":
 		return whitespacePreTokenizer
 	case "Metaspace":
-		return whitespacePreTokenizer
+		return metaspacePreTokenizer
 	default:
 		return defaultPreTokenizer
 	}
@@ -580,6 +629,14 @@ func punctuationPreTokenizer(s string) []string {
 
 func bertPreTokenizer(s string) []string {
 	return SplitOnPunctuation(s)
+}
+
+func metaspacePreTokenizer(s string) []string {
+	fields := strings.Fields(s)
+	for i, f := range fields {
+		fields[i] = "\u2581" + f
+	}
+	return fields
 }
 
 func (ft *FastTokenizer) buildPostProcessor(cfg *postProcessorConfig) func([]int) []int {
@@ -621,14 +678,18 @@ func (ft *FastTokenizer) bertPostProcessor(cfg *postProcessorConfig) func([]int)
 func (ft *FastTokenizer) templatePostProcessor(cfg *postProcessorConfig) func([]int) []int {
 	clsID := ft.clsID
 	sepID := ft.sepID
-	if st, ok := cfg.SpecialTokens["[CLS]"]; ok {
-		if id, ok := toInt(st.ID); ok {
-			clsID = id
+	for _, key := range []string{"[CLS]", "<s>"} {
+		if st, ok := cfg.SpecialTokens[key]; ok {
+			if id := spTokenToInt(st); id >= 0 {
+				clsID = id
+			}
 		}
 	}
-	if st, ok := cfg.SpecialTokens["[SEP]"]; ok {
-		if id, ok := toInt(st.ID); ok {
-			sepID = id
+	for _, key := range []string{"[SEP]", "</s>"} {
+		if st, ok := cfg.SpecialTokens[key]; ok {
+			if id := spTokenToInt(st); id >= 0 {
+				sepID = id
+			}
 		}
 	}
 	return func(ids []int) []int {
@@ -741,4 +802,30 @@ func (ft *FastTokenizer) encodeWordLevel(word string) []int {
 		return []int{id}
 	}
 	return []int{ft.unkID}
+}
+
+func (ft *FastTokenizer) encodeUnigram(word string) []int {
+	var tokens []int
+	runes := []rune(word)
+	pos := 0
+	for pos < len(runes) {
+		bestLen := 0
+		bestID := ft.unkID
+		for end := len(runes); end > pos; end-- {
+			substr := string(runes[pos:end])
+			if id, ok := ft.vocab[substr]; ok {
+				bestLen = end - pos
+				bestID = id
+				break
+			}
+		}
+		if bestLen > 0 {
+			tokens = append(tokens, bestID)
+			pos += bestLen
+		} else {
+			tokens = append(tokens, ft.unkID)
+			pos++
+		}
+	}
+	return tokens
 }
