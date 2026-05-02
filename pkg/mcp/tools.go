@@ -231,6 +231,18 @@ func ResourceDefinitions() []Resource {
 			Description: "Last 10 saved memories",
 			MIMEType:    "application/json",
 		},
+		{
+			URI:         "anchored://identity",
+			Name:        "Identity",
+			Description: "The user's identity file (~/.anchored/identity.md)",
+			MIMEType:    "text/plain",
+		},
+		{
+			URI:         "anchored://projects",
+			Name:        "Projects",
+			Description: "List of all known projects",
+			MIMEType:    "text/plain",
+		},
 	}
 }
 

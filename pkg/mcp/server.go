@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
@@ -450,6 +452,38 @@ func (s *Server) handleResourcesRead(ctx context.Context, id json.RawMessage, pa
 				lines = append(lines, fmt.Sprintf("[%s] %s", m.Category, m.Content))
 			}
 			content = joinLines(lines)
+		}
+	case "anchored://identity":
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+		}
+		identityPath := filepath.Join(homeDir, ".anchored", "identity.md")
+		data, err := os.ReadFile(identityPath)
+		if err != nil {
+			content = "No identity file configured. Use 'anchored identity edit' to create one."
+		} else {
+			content = string(data)
+		}
+	case "anchored://projects":
+		db := s.mem.StoreDB()
+		rows, err := db.QueryContext(ctx, "SELECT id, name, path FROM projects ORDER BY name")
+		if err != nil {
+			return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+		}
+		defer rows.Close()
+		var lines []string
+		for rows.Next() {
+			var pid, name, ppath string
+			if err := rows.Scan(&pid, &name, &ppath); err != nil {
+				return MarshalResponse(NewErrorResponse(id, InternalError(err)))
+			}
+			lines = append(lines, fmt.Sprintf("%s\t%s\t%s", pid, name, ppath))
+		}
+		if len(lines) == 0 {
+			content = "No projects registered."
+		} else {
+			content = "ID\tName\tPath\n" + joinLines(lines)
 		}
 	default:
 		return MarshalResponse(NewErrorResponse(id, NewError(-32601, fmt.Sprintf("unknown resource: %s", p.URI))))
