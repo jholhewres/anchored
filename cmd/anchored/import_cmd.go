@@ -85,25 +85,18 @@ func runImport(args []string) {
 
 	if *skipEmbeddings {
 		fmt.Println("\nEmbedding backfill skipped.")
-	} else if totalImported > 0 {
-		fmt.Println("\nBackfilling embeddings (single-threaded)...")
-		embedded, err := memSvc.BackfillEmbeddings(ctx, 200)
-		if err != nil {
-			logger.Warn("backfill failed", "error", err)
-		} else {
-			fmt.Printf("Embeddings backfilled: %d\n", embedded)
-		}
 	} else {
 		var pending int
 		memSvc.StoreDB().QueryRow("SELECT COUNT(*) FROM memories WHERE embedding IS NULL OR LENGTH(embedding) = 0").Scan(&pending)
 		if pending > 0 {
-			fmt.Printf("\nNo new imports, but %d memories pending embeddings. Backfilling...\n", pending)
+			fmt.Printf("\nBackfilling %d embeddings (this may take a while)...\n", pending)
 			embedded, err := memSvc.BackfillEmbeddings(ctx, 200)
 			if err != nil {
 				logger.Warn("backfill failed", "error", err)
-			} else {
-				fmt.Printf("Embeddings backfilled: %d\n", embedded)
 			}
+			fmt.Printf("Embeddings backfilled: %d / %d\n", embedded, pending)
+		} else if totalImported > 0 {
+			fmt.Println("\nAll embeddings already up to date.")
 		}
 	}
 

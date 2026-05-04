@@ -350,6 +350,10 @@ func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, e
 	}
 
 	var total int
+	var lastTotal int
+	stuckCount := 0
+	const maxStuck = 3
+
 	for {
 		mems, err := s.store.ListWithoutEmbedding(ctx, batchSize)
 		if err != nil {
@@ -359,6 +363,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, e
 			break
 		}
 
+		batchOK := 0
 		for _, m := range mems {
 			vecs, err := s.embedder.Embed(ctx, []string{m.Content})
 			if err != nil || len(vecs) == 0 {
@@ -373,10 +378,22 @@ func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, e
 				s.logger.Warn("backfill persist failed", "id", m.ID, "error", err)
 				continue
 			}
+			batchOK++
 			total++
 		}
 
-		s.logger.Info("backfill embeddings", "batch", len(mems), "total", total)
+		s.logger.Info("backfill embeddings", "batch", len(mems), "succeeded", batchOK, "total", total)
+
+		if total == lastTotal {
+			stuckCount++
+			if stuckCount >= maxStuck {
+				s.logger.Warn("backfill stuck: no progress after consecutive batches, stopping", "attempts", stuckCount)
+				break
+			}
+		} else {
+			stuckCount = 0
+		}
+		lastTotal = total
 	}
 
 	return total, nil
