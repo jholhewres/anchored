@@ -63,6 +63,22 @@ URL="https://github.com/${REPO}/releases/download/v${LATEST}/${ARCHIVE}"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
+# Auto-update: if already installed, just replace binary and exit
+if [ -x "$BIN_DIR/anchored" ]; then
+    CURRENT=$("$BIN_DIR/anchored" --version 2>/dev/null || echo "unknown")
+    if [ "$CURRENT" = "$LATEST" ]; then
+        ok "anchored v${LATEST} is already up to date."
+        exit 0
+    fi
+    info "Updating anchored ${CURRENT} → v${LATEST}..."
+    curl -fsSL "$URL" | tar xz -C "$BIN_DIR" anchored || {
+        err "Download failed."; exit 1
+    }
+    chmod +x "$BIN_DIR/anchored"
+    ok "Updated to v${LATEST}"
+    exit 0
+fi
+
 info "Installing anchored v${LATEST} (${OS}/${ARCH})..."
 curl -fsSL "$URL" | tar xz -C "$BIN_DIR" anchored || {
     err "Download failed."
@@ -196,7 +212,7 @@ echo ""
 info "Importing from: ${sources[*]}..."
 echo ""
 
-"$BIN_DIR/anchored" import "${sources[@]}" 2>&1 | while IFS= read -r line; do
+"$BIN_DIR/anchored" import --skip-embeddings "${sources[@]}" 2>&1 | while IFS= read -r line; do
     case "$line" in
         *level=WARN*)  warn "$line" ;;
         *level=ERROR*) err "$line" ;;
@@ -206,6 +222,8 @@ done
 
 echo ""
 ok "Done!"
+echo ""
+info "Embeddings will be computed on first use."
 echo ""
 info "Open a new terminal (or run: source ~/.bashrc)"
 echo ""
