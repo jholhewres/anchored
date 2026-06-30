@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0] - 2026-06-30
+
+Two contributions from @aronpc: a local web dashboard (PR #2) and a
+security fix + maintenance timer + MCP test coverage (PR #3).
+
+### Added
+
+- **Local web dashboard** (`anchored dashboard`) — browse stats, search, the
+  knowledge graph, and store health from a loopback-bound web UI; `dashboard
+  install` registers it as a systemd `--user` service. Hardened for local-only
+  use (loopback bind, Host guard, CSRF/Origin checks, CSP, optional `--token`
+  that gates reads and writes).
+- **Periodic maintenance** (`anchored maintenance`) — `run` chains import +
+  dream + curation as isolated subprocesses (a failure in one step does not
+  abort the others); `install` wires it into a daily systemd `--user` timer
+  (persistent, jittered) so upkeep happens without an agent connected.
+
+### Fixed
+
+- **crypto/rand errors are no longer ignored** in the id generators
+  (`newUUID`, `newID`): a silent failure would have produced non-unique
+  all-zero ids. They now panic, the standard treatment for an unrecoverable
+  CSPRNG failure.
+
+### Tests
+
+- Added MCP unit coverage (`SetDebugLogger`, `headTail`, `MarshalResponse`
+  error path, `searchHitWriter`) and maintenance unit/orchestration tests.
+
 ## [0.9.1] - 2026-06-21
 
 Stops the agent from abandoning anchored when its tools are deferred in the
