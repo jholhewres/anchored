@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>anchored · dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><span class="brand">⟁ anchored</span> dashboard</h1>
+    <nav class="tabs">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="memories">Memórias</button>
+      <button data-tab="kg">Knowledge Graph</button>
+      <button data-tab="system">Sistema</button>
+      <button data-tab="dream">Consolidação</button>
+      <button data-tab="artifacts">Artifacts</button>
+      <button data-tab="activity">Atividade</button>
+    </nav>
+    <span class="meta" id="db-meta"></span>
+  </header>
+
+  <main>
+    <!-- OVERVIEW -->
+    <section id="tab-overview" class="tab active">
+      <div class="card-grid" id="overview-cards"></div>
+      <div class="panel">
+        <h2>Memórias por categoria</h2>
+        <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Top projetos</h2>
+        <div class="chart-wrap"><canvas id="chart-projects"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Timeline de criação <select id="timeline-bucket" class="muted" style="margin-left:8px">
+          <option value="day">por dia (90)</option>
+          <option value="month">por mês (24)</option>
+        </select>
+          <label class="muted" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="timeline-stacked"> por categoria</label></h2>
+        <div class="chart-wrap"><canvas id="chart-timeline"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Top keywords</h2>
+        <div id="overview-keywords" class="tag-cloud"><span class="muted">carregando…</span></div>
+      </div>
+      <div class="panel">
+        <h2>Top entidades (knowledge graph)</h2>
+        <div id="overview-entities" class="tag-cloud"><span class="muted">carregando…</span></div>
+      </div>
+    </section>
+
+    <!-- MEMORIES -->
+    <section id="tab-memories" class="tab">
+      <div class="toolbar">
+        <input type="search" id="mem-search" placeholder="buscar (híbrida: FTS5 + vetor)…" style="flex:1;min-width:240px">
+        <select id="mem-category"><option value="">todas categorias</option></select>
+        <select id="mem-project"><option value="">todos projetos</option></select>
+        <input type="date" id="mem-since" title="criada desde">
+        <input type="date" id="mem-until" title="criada até">
+        <button class="btn primary" id="mem-go">Buscar</button>
+        <button class="btn" id="mem-clear">Limpar</button>
+        <span class="muted" style="margin-left:auto">exportar visíveis:</span>
+        <button class="btn" data-export="json">JSON</button>
+        <button class="btn" data-export="md">Markdown</button>
+        <button class="btn" data-export="csv">CSV</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th class="sortable" data-order="category">Categoria ⇅</th><th>Conteúdo</th><th>Projeto</th><th class="sortable" data-order="source">Origem ⇅</th><th class="sortable" data-order="created_at">Criado ⇅</th></tr></thead>
+          <tbody id="mem-tbody"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span id="mem-count" class="muted"></span>
+        <div class="row">
+          <button class="btn" id="mem-prev">← anterior</button>
+          <button class="btn" id="mem-next">próximo →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- KNOWLEDGE GRAPH -->
+    <section id="tab-kg" class="tab">
+      <div class="toolbar">
+        <select id="kg-project"><option value="">todos projetos</option></select>
+        <label class="muted">limite <input type="text" id="kg-limit" value="300" style="width:70px"></label>
+        <button class="btn primary" id="kg-go">Carregar grafo</button>
+        <input type="search" id="kg-find" placeholder="encontrar nó…" style="width:170px">
+        <button class="btn" id="kg-find-go">focar</button>
+        <button class="btn" id="kg-export">exportar JSON</button>
+        <span class="muted" id="kg-stats"></span>
+      </div>
+      <div id="kg-network"></div>
+    </section>
+
+    <!-- SYSTEM -->
+    <section id="tab-system" class="tab">
+      <div class="card-grid" id="system-health"></div>
+      <div class="panel">
+        <h2>Projetos detectados</h2>
+        <table><thead><tr><th>Nome</th><th>Path</th><th>Remote key</th><th>Memórias</th><th>Última atividade</th></tr></thead>
+          <tbody id="sys-projects"></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>Sessões recentes</h2>
+        <table><thead><tr><th>Título</th><th>Diretório</th><th>Origem</th><th>Msgs</th><th>Última atividade</th></tr></thead>
+          <tbody id="sys-sessions"></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>Lixeira (soft-delete) <button class="btn" id="trash-refresh" style="float:right">atualizar</button></h2>
+        <table><thead><tr><th>Categoria</th><th>Conteúdo</th><th>Projeto</th><th>Deletada em</th><th></th></tr></thead>
+          <tbody id="sys-trash"></tbody></table>
+      </div>
+    </section>
+
+    <!-- CONSOLIDAÇÃO (dream) -->
+    <section id="tab-dream" class="tab">
+      <div class="card-grid" id="dream-cards"></div>
+      <div class="row" style="margin-bottom:12px">
+        <div class="muted">por tipo:</div><div id="dream-bytype" class="tag-cloud"></div>
+      </div>
+      <div class="panel" style="padding:0">
+        <table><thead><tr><th>Ação</th><th>Status</th><th>Confiança</th><th>Motivo</th><th>Proposta</th></tr></thead>
+          <tbody id="dream-actions"></tbody></table>
+      </div>
+    </section>
+
+    <!-- ARTIFACTS -->
+    <section id="tab-artifacts" class="tab">
+      <div class="card-grid" id="art-cards"></div>
+      <div class="toolbar">
+        <select id="art-type"><option value="">todos os tipos</option></select>
+        <button class="btn primary" id="art-go">Atualizar</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table><thead><tr><th>Tipo</th><th>Label</th><th>Tool</th><th>Tamanho</th><th>Criado</th><th>Expira</th></tr></thead>
+          <tbody id="art-tbody"></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>Content index (chunks)</h2>
+        <div id="chunks-stats" class="muted">carregando…</div>
+      </div>
+    </section>
+
+    <!-- ATIVIDADE -->
+    <section id="tab-activity" class="tab">
+      <div class="card-grid" id="act-cards"></div>
+      <div class="panel">
+        <h2>Top tools</h2>
+        <div id="act-toptools" class="tag-cloud"></div>
+      </div>
+      <div class="panel" style="padding:0">
+        <h2 style="padding:16px 16px 0">Eventos recentes</h2>
+        <table><thead><tr><th>Tipo</th><th>Tool</th><th>Resumo</th><th>Quando</th></tr></thead>
+          <tbody id="act-events"></tbody></table>
+      </div>
+      <div class="panel" style="padding:0">
+        <h2 style="padding:16px 16px 0">Histórico de imports</h2>
+        <table><thead><tr><th>Origem</th><th>Path</th><th>Status</th><th>Memórias</th><th>Entidades</th><th>Início</th><th>Fim</th></tr></thead>
+          <tbody id="act-imports"></tbody></table>
+      </div>
+    </section>
+  </main>
+
+  <!-- detail modal -->
+  <div class="modal-overlay" id="modal">
+    <div class="modal">
+      <h3 id="m-cat"></h3>
+      <div class="kv" id="m-meta"></div>
+      <div class="body" id="m-body"></div>
+      <div class="actions">
+        <label class="muted" style="margin-right:auto;display:flex;align-items:center;gap:6px"><input type="checkbox" id="m-md" checked> Markdown</label>
+        <button class="btn danger" id="m-delete">Deletar (soft)</button>
+        <button class="btn" id="m-close">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <div id="loading" class="loading-overlay"><div class="spinner"></div></div>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="vendor/vis-network.min.js"></script>
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

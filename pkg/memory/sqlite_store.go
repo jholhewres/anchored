@@ -659,6 +659,20 @@ func (s *SQLiteStore) SoftDelete(ctx context.Context, id string) error {
 	return nil
 }
 
+// Restore undoes a soft-delete (deleted_at -> NULL). It is the inverse of
+// SoftDelete: same cache invalidation and only touches rows that are currently
+// deleted, so re-restoring an active memory is a no-op.
+func (s *SQLiteStore) Restore(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL", id,
+	)
+	if err != nil {
+		return fmt.Errorf("restore memory %s: %w", id, err)
+	}
+	s.cache.Remove(id)
+	return nil
+}
+
 func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions) (int, error) {
 	var conditions []string
 	var args []any

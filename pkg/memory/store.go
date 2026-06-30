@@ -116,6 +116,7 @@ type Store interface {
 	Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error)
 	Delete(ctx context.Context, id string) error
 	SoftDelete(ctx context.Context, id string) error
+	Restore(ctx context.Context, id string) error
 	DeleteByScope(ctx context.Context, opts DeleteScopeOptions) (int, error)
 	List(ctx context.Context, opts ListOptions) ([]Memory, error)
 	Stats(ctx context.Context) (*StoreStats, error)
@@ -132,4 +133,5 @@ type MemoryObserver interface {
 	OnMemorySaved(ctx context.Context, m Memory)
 	OnMemoryUpdated(ctx context.Context, m Memory)
 	OnMemoryDeleted(ctx context.Context, id string, projectID *string)
+	OnMemoryRestored(ctx context.Context, id string, projectID *string)
 }

@@ -119,6 +119,7 @@ func (s *hybridMockStore) UpdateMetadata(ctx context.Context, id string, metadat
 	return nil
 }
 func (s *hybridMockStore) SoftDelete(ctx context.Context, id string) error { return nil }
+func (s *hybridMockStore) Restore(ctx context.Context, id string) error    { return nil }
 func (s *hybridMockStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions) (int, error) {
 	return 0, nil
 }

@@ -331,6 +331,31 @@ func (s *Service) SoftForget(ctx context.Context, id string) error {
 	return nil
 }
 
+// Restore undoes a soft-delete so the memory re-enters search/list results.
+// It mirrors SoftForget in reverse: project id is read directly (Get filters
+// out deleted rows) so observers receive the same routing context they would
+// for a save/update/delete, then the store clears deleted_at and the observer
+// fan-out fires.
+func (s *Service) Restore(ctx context.Context, id string) error {
+	// Get excludes soft-deleted rows, so read the project id straight from the
+	// store to keep observer routing accurate for (future) sync/KG listeners.
+	var pid *string
+	var projectID sql.NullString
+	_ = s.store.DB().QueryRowContext(ctx,
+		"SELECT project_id FROM memories WHERE id = ?", id).Scan(&projectID)
+	if projectID.Valid && projectID.String != "" {
+		v := projectID.String
+		pid = &v
+	}
+	if err := s.store.Restore(ctx, id); err != nil {
+		return err
+	}
+	s.notifyObservers(func(obs MemoryObserver) {
+		obs.OnMemoryRestored(ctx, id, pid)
+	})
+	return nil
+}
+
 func (s *Service) ForgetByScope(ctx context.Context, projectID, category, source string, hard bool) (int, error) {
 	return s.store.DeleteByScope(ctx, DeleteScopeOptions{
 		ProjectID: projectID,

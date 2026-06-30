@@ -206,11 +206,12 @@ func TestList_IncludeDeleted(t *testing.T) {
 
 // mockObserver is a test MemoryObserver
 type mockObserver struct {
-	mu              sync.Mutex
-	savedCalls      []Memory
-	updatedCalls    []Memory
-	deletedCalls    []deletedCall
-	panicOnSave     bool
+	mu            sync.Mutex
+	savedCalls    []Memory
+	updatedCalls  []Memory
+	deletedCalls  []deletedCall
+	restoredCalls []deletedCall
+	panicOnSave   bool
 }
 
 type deletedCall struct {
@@ -237,6 +238,12 @@ func (m *mockObserver) OnMemoryDeleted(_ context.Context, id string, projectID *
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deletedCalls = append(m.deletedCalls, deletedCall{ID: id, ProjectID: projectID})
+}
+
+func (m *mockObserver) OnMemoryRestored(_ context.Context, id string, projectID *string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restoredCalls = append(m.restoredCalls, deletedCall{ID: id, ProjectID: projectID})
 }
 
 func TestObserver_OnMemorySaved(t *testing.T) {
@@ -389,7 +396,7 @@ func TestObserver_SoftForget(t *testing.T) {
 
 func testConfig() *config.Config {
 	return &config.Config{
-		Memory:   config.MemoryConfig{DatabasePath: ":memory:"},
+		Memory:    config.MemoryConfig{DatabasePath: ":memory:"},
 		Embedding: config.EmbeddingConfig{ModelDir: "/nonexistent"},
 	}
 }
