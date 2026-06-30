@@ -352,19 +352,6 @@ WantedBy=default.target
 `, exe, addr)
 }
 
-// runCmd runs a command streaming output to stderr. Failure is non-fatal —
-// service management must degrade gracefully across distros/environments.
-func runCmd(name string, args ...string) bool {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "  (warning) %s: %v\n", name, err)
-		return false
-	}
-	return true
-}
-
 // installDashboardService writes a systemd --user unit pointing at the current
 // binary, enables lingering (so it survives logout / starts at boot), and
 // enables+starts the service. The listen address comes from --addr so an

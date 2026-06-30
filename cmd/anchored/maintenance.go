@@ -182,19 +182,6 @@ func maintenanceExe() (string, error) {
 
 const maintenanceUnitName = "anchored-maintenance"
 
-// runCmd runs a command streaming output to stderr. Failure is non-fatal —
-// service management must degrade gracefully across distros/environments.
-func runCmd(name string, args ...string) bool {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "  (warning) %s: %v\n", name, err)
-		return false
-	}
-	return true
-}
-
 func maintenanceUnitDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
