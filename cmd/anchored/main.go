@@ -75,6 +75,8 @@ func main() {
 		runBackfillEmbeddings(os.Args[2:])
 	case "dashboard":
 		runDashboard(os.Args[2:])
+	case "maintenance":
+		runMaintenance(os.Args[2:])
 	case "--version", "-v":
 		fmt.Printf("anchored %s\n", Version)
 	case "--help", "-h":
@@ -121,6 +123,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored remote preview     Preview which memories would sync (offline)\n")
 	fmt.Fprintf(os.Stderr, "  anchored dashboard [--addr] Start local web dashboard (stats, search, KG, health)\n")
 	fmt.Fprintf(os.Stderr, "  anchored dashboard install  Install dashboard as a systemd --user service\n")
+	fmt.Fprintf(os.Stderr, "  anchored maintenance run    Periodic upkeep: import + dream + curation reconcile\n")
+	fmt.Fprintf(os.Stderr, "  anchored maintenance install  Install upkeep as a systemd --user daily timer\n")
 	fmt.Fprintf(os.Stderr, "  anchored --version          Print version\n")
 	fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")
 	fmt.Fprintf(os.Stderr, "\nFlags:\n")

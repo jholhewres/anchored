@@ -67,7 +67,11 @@ func (s *SQLiteStore) VectorCache() *VectorCache { return s.cache }
 
 func newUUID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand should never fail on a healthy system, but ignoring the
+		// error would silently return an all-zero (non-unique) id.
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
 	return hex.EncodeToString(b)
 }
 
