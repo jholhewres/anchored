@@ -8,11 +8,40 @@ For everything else, the snippets below register the `anchored` MCP server **and
 
 ## Cursor
 
-1. Drop the contents of [`cursor/mcp.json`](cursor/mcp.json) into `~/.cursor/mcp.json` (merge with existing `mcpServers`).
-2. Drop the contents of [`cursor/hooks.json`](cursor/hooks.json) into `~/.cursor/hooks.json` (or `<project>/.cursor/hooks.json` for project-scoped).
-3. Restart Cursor.
+Cursor's hook schema differs from Claude Code's — event names are
+`beforeShellExecution`, `beforeMCPExecution`, `afterFileEdit`, `beforeSubmitPrompt`,
+`stop` (not `preToolUse`/`postToolUse`/`SessionStart`). `anchored init --tool cursor`
+installs all three files below for you; the manual steps are only needed without `init`.
 
-The pretooluse hook ensures anchored gets a chance to inject memory context before Cursor's own tool calls; postToolUse + stop capture session events.
+1. Drop the contents of [`cursor/mcp.json`](cursor/mcp.json) into `~/.cursor/mcp.json` (merge with existing `mcpServers`).
+2. Drop the contents of [`cursor/hooks.json`](cursor/hooks.json) into `~/.cursor/hooks.json` (or `<project>/.cursor/hooks.json` for project-scoped), replacing `<BIN>` with the absolute path to your `anchored` binary.
+3. Drop [`cursor/anchored.mdc`](cursor/anchored.mdc) into `~/.cursor/rules/anchored.mdc`.
+4. Restart Cursor.
+
+`beforeShellExecution`/`beforeMCPExecution` route through the pretooluse guard
+(dangerous-pattern and secret-write checks); `afterFileEdit` and `stop` capture session
+events for continuity. **`beforeSubmitPrompt` is informational-only in Cursor** — unlike
+Claude Code's `UserPromptSubmit`, Cursor ignores any JSON a hook returns from this event,
+so it cannot inject memory context into the prompt. Activation instead comes from
+`anchored.mdc`, an always-on rule (`alwaysApply: true`) instructing the agent to call
+`anchored_context`/`anchored_search`/`anchored_save` proactively — the role Claude
+Code's SessionStart/UserPromptSubmit hooks play there.
+
+### Probing real Cursor hook payloads
+
+Cursor's hooks API is in beta and documented event/field names may drift. To see
+exactly what Cursor sends before relying on it (or to debug a hook that isn't firing),
+use [`cursor/probe-hooks.json`](cursor/probe-hooks.json): every covered event runs
+`sh -c 'cat >> ~/.anchored/cursor-probe.log'`, appending the raw stdin payload with no
+stdout output, so it can never block Cursor.
+
+1. Back up your real hooks.json: `cp ~/.cursor/hooks.json ~/.cursor/hooks.json.bak`.
+2. Install the probe: `cp cursor/probe-hooks.json ~/.cursor/hooks.json`.
+3. Use Cursor briefly — send a prompt, edit a file, run a shell command, stop a
+   generation — to trigger each event.
+4. Inspect `~/.anchored/cursor-probe.log` for the real payload shapes.
+5. Restore the real hooks.json: `cp ~/.cursor/hooks.json.bak ~/.cursor/hooks.json`
+   (or re-run `anchored init --tool cursor`).
 
 ## OpenCode
 

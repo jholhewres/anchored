@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jholhewres/anchored/pkg/debuglog"
+	"github.com/jholhewres/anchored/pkg/hookroute"
 	"github.com/jholhewres/anchored/pkg/intent"
 	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/mcp"
@@ -57,6 +58,16 @@ func runHookUserPromptSubmit(args []string) {
 	defer dlog.Close()
 
 	body, _ := io.ReadAll(os.Stdin)
+
+	// Cursor's beforeSubmitPrompt maps here, but Cursor IGNORES this hook's
+	// stdout — so there is no recall injection to emit. The Cursor adapter does
+	// capture-only work and emits nothing. Claude Code payloads never match, so
+	// the injection path below is unchanged for them.
+	if hookroute.DetectCursorPayload(body) {
+		handleCursorHook(os.Stdout, body, *configPath, dlog)
+		return
+	}
+
 	var parsed struct {
 		SessionID string `json:"session_id"`
 		Cwd       string `json:"cwd"`

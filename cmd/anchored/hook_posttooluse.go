@@ -17,6 +17,7 @@ import (
 
 	ctxpkg "github.com/jholhewres/anchored/pkg/context"
 	"github.com/jholhewres/anchored/pkg/debuglog"
+	"github.com/jholhewres/anchored/pkg/hookroute"
 	"github.com/jholhewres/anchored/pkg/session"
 )
 
@@ -86,11 +87,29 @@ func runHookPostToolUse(args []string) {
 	dlog := openDebugLogger(*configPath)
 	defer dlog.Close()
 
-	hc, err := openHookContext(*configPath)
+	// Read stdin once so we can sniff for a Cursor payload before committing to
+	// the Claude Code capture path. A Cursor afterFileEdit is translated and
+	// driven through the SAME recording pipeline (see hook_cursor.go); Claude
+	// Code payloads flow through unchanged (DetectCursorPayload is false).
+	content, _ := io.ReadAll(os.Stdin)
+	if hookroute.DetectCursorPayload(content) {
+		handleCursorHook(os.Stdout, content, *configPath, dlog)
+		return
+	}
+
+	runPostToolUseWithIO(*configPath, *sessionIDFlag, *cwdFlag, bytes.NewReader(content), os.Stdout, dlog)
+}
+
+// runPostToolUseWithIO wires the DB / artifact-capture / working-set
+// collaborators and runs the recording core against the given stdin/stdout. It
+// is split from runHookPostToolUse so the Cursor afterFileEdit path can reuse
+// the identical pipeline by feeding a translated Claude-Code-shaped payload.
+func runPostToolUseWithIO(configPath, sessionIDFlag, cwdFlag string, stdin io.Reader, stdout io.Writer, dlog *debuglog.Logger) {
+	hc, err := openHookContext(configPath)
 	if err != nil {
 		slog.Warn("posttooluse: hook context init failed", "error", err)
 		dlog.Event("hook.posttooluse", map[string]any{"stage": "service_init_failed", "error": err.Error()})
-		writePostToolUseResp(os.Stdout, map[string]any{"recorded": false, "reason": "context init failed"})
+		writePostToolUseResp(stdout, map[string]any{"recorded": false, "reason": "context init failed"})
 		return
 	}
 	defer hc.Close()
@@ -128,12 +147,12 @@ func runHookPostToolUse(args []string) {
 	}
 
 	recordPostToolUseEvent(PostToolUseDeps{
-		Stdin:            os.Stdin,
-		Stdout:           os.Stdout,
+		Stdin:            stdin,
+		Stdout:           stdout,
 		DB:               hc.db,
 		ResolveProject:   hc.ResolveProject,
-		SessionIDFlag:    *sessionIDFlag,
-		CwdFlag:          *cwdFlag,
+		SessionIDFlag:    sessionIDFlag,
+		CwdFlag:          cwdFlag,
 		Now:              time.Now,
 		NewID:            newHookID,
 		Logger:           dlog,

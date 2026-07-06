@@ -44,6 +44,16 @@ func runHookPreToolUse(args []string) {
 		return
 	}
 
+	// Cursor sends a different envelope (camelCase hook_event_name +
+	// workspace_roots/conversation_id) and expects a different output contract.
+	// Sniff before the Claude Code parse; on match, route through the Cursor
+	// adapter and return. Claude Code payloads never match (PascalCase event
+	// names), so the existing path below is byte-for-byte unchanged for them.
+	if hookroute.DetectCursorPayload(content) {
+		handleCursorHook(os.Stdout, content, *configPath, dlog)
+		return
+	}
+
 	// Claude Code's canonical PreToolUse payload is {tool_name, tool_input,
 	// session_id, hook_event_name, cwd, ...}. Older drafts used {tool,
 	// arguments}; we accept either so manual scripts keep working.

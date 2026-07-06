@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "beforeShellExecution": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "beforeMCPExecution": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "beforeReadFile": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "afterFileEdit": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "stop": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "sessionStart": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "preToolUse": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }],
+    "postToolUse": [{ "command": "sh -c 'cat >> ~/.anchored/cursor-probe.log'" }]
+  }
+}

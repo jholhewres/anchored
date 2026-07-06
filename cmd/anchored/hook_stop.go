@@ -17,6 +17,7 @@ import (
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/debuglog"
+	"github.com/jholhewres/anchored/pkg/hookroute"
 	"github.com/jholhewres/anchored/pkg/memory"
 	"github.com/jholhewres/anchored/pkg/project"
 	"github.com/jholhewres/anchored/pkg/session"
@@ -102,6 +103,14 @@ func runHookStop(args []string) {
 	defer dlog.Close()
 
 	body, _ := io.ReadAll(os.Stdin)
+
+	// Cursor's stop payload carries no transcript_path (a Claude Code concept),
+	// so the durable-extraction pass below has nothing to read. Route it through
+	// the Cursor adapter, which exits 0 fast. Claude Code payloads never match.
+	if hookroute.DetectCursorPayload(body) {
+		handleCursorHook(os.Stdout, body, *configPath, dlog)
+		return
+	}
 
 	var input struct {
 		SessionID      string `json:"session_id"`

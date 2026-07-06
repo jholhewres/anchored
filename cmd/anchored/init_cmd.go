@@ -36,6 +36,14 @@ func runInit(args []string) {
 		if err := registerMCP(t, cwdVal); err != nil {
 			slog.Error("failed to register MCP", "tool", t, "error", err)
 		}
+		// Cursor needs more than MCP registration to activate: hooks.json
+		// (capture + guards) and the always-on rule (the agent-side trigger,
+		// since Cursor's beforeSubmitPrompt can't inject context).
+		if t == "cursor" {
+			if home, err := os.UserHomeDir(); err == nil {
+				installCursorArtifacts(home)
+			}
+		}
 	}
 
 	fmt.Fprintln(os.Stderr, "\nAnchored initialized. Restart your tool to pick up the MCP server.")
@@ -211,7 +219,23 @@ func registerMCPJSON(t string, cwd string, mc mcpConfig) error {
 	if serversRaw, ok := cfg[rootKey]; ok {
 		var servers map[string]json.RawMessage
 		if err := json.Unmarshal(serversRaw, &servers); err == nil {
-			if _, exists := servers["anchored"]; exists {
+			if existingRaw, exists := servers["anchored"]; exists {
+				// Repair mode: older anchored versions wrote a bare
+				// "anchored" command, which only resolves via PATH and
+				// breaks when a tool launches its MCP server outside a
+				// login shell. Upgrade just the command field in place;
+				// every other field (env, args, type, ...) round-trips
+				// through json.RawMessage untouched.
+				if repaired, changed := repairBareCommandEntry(existingRaw); changed {
+					servers["anchored"] = repaired
+					serversJSON, _ := json.Marshal(servers)
+					cfg[rootKey] = serversJSON
+					if err := writeMCPConfigFile(configPath, cfg, data); err != nil {
+						return err
+					}
+					slog.Info("repaired anchored MCP command to absolute path", "tool", t, "path", configPath)
+					return nil
+				}
 				slog.Info("already registered, skipping", "tool", t)
 				return nil
 			}
@@ -222,11 +246,11 @@ func registerMCPJSON(t string, cwd string, mc mcpConfig) error {
 	if mc.requireType {
 		anchoredEntry, _ = json.Marshal(map[string]string{
 			"type":    "stdio",
-			"command": "anchored",
+			"command": anchoredBinaryPath(),
 		})
 	} else {
 		anchoredEntry, _ = json.Marshal(map[string]string{
-			"command": "anchored",
+			"command": anchoredBinaryPath(),
 		})
 	}
 
@@ -241,6 +265,17 @@ func registerMCPJSON(t string, cwd string, mc mcpConfig) error {
 	serversJSON, _ := json.Marshal(servers)
 	cfg[rootKey] = serversJSON
 
+	if err := writeMCPConfigFile(configPath, cfg, data); err != nil {
+		return err
+	}
+
+	slog.Info("registered anchored in MCP config", "tool", t, "path", configPath)
+	return nil
+}
+
+// writeMCPConfigFile marshals cfg and writes it to configPath, backing up
+// prevData to configPath+".bak" first when a file already existed there.
+func writeMCPConfigFile(configPath string, cfg map[string]json.RawMessage, prevData []byte) error {
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create dir %s: %w", dir, err)
@@ -252,15 +287,48 @@ func registerMCPJSON(t string, cwd string, mc mcpConfig) error {
 	}
 
 	if _, err := os.Stat(configPath); err == nil {
-		_ = os.WriteFile(configPath+".bak", data, 0644)
+		_ = os.WriteFile(configPath+".bak", prevData, 0644)
 	}
 
 	if err := os.WriteFile(configPath, append(out, '\n'), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", configPath, err)
 	}
-
-	slog.Info("registered anchored in MCP config", "tool", t, "path", configPath)
 	return nil
+}
+
+// repairBareCommandEntry rewrites the "command" field of a JSON MCP server
+// entry to the resolved absolute binary path, but only when the existing
+// command is exactly the bare "anchored" this tool used to write (PATH
+// dependent). Every other field in the entry is preserved untouched via the
+// json.RawMessage round-trip. Returns changed=false when the entry doesn't
+// need repair (a custom or already-absolute command) or can't be parsed as
+// an object, in which case the caller must leave it alone.
+func repairBareCommandEntry(entryRaw json.RawMessage) (json.RawMessage, bool) {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(entryRaw, &entry); err != nil {
+		return nil, false
+	}
+	cmdRaw, ok := entry["command"]
+	if !ok {
+		return nil, false
+	}
+	var cmd string
+	if err := json.Unmarshal(cmdRaw, &cmd); err != nil {
+		return nil, false
+	}
+	if cmd != "anchored" {
+		return nil, false
+	}
+	newCmd, err := json.Marshal(anchoredBinaryPath())
+	if err != nil {
+		return nil, false
+	}
+	entry["command"] = newCmd
+	repaired, err := json.Marshal(entry)
+	if err != nil {
+		return nil, false
+	}
+	return repaired, true
 }
 
 func registerMCPTOML(t string, cwd string) error {
@@ -280,18 +348,34 @@ func registerMCPTOML(t string, cwd string) error {
 	}
 
 	if data != nil {
-		for _, line := range strings.Split(string(data), "\n") {
+		lines := strings.Split(string(data), "\n")
+		sectionIdx := -1
+		for i, line := range lines {
 			if strings.TrimSpace(line) == "[mcp_servers.anchored]" {
-				slog.Info("already registered, skipping", "tool", t)
+				sectionIdx = i
+				break
+			}
+		}
+		if sectionIdx != -1 {
+			// Repair mode: mirror of the JSON path above. Only the
+			// `command = "anchored"` line inside this table is rewritten;
+			// every other line (including foreign tables elsewhere in the
+			// file) is byte-preserved.
+			if repaired, changed := repairTOMLBareCommand(lines, sectionIdx); changed {
+				_ = os.WriteFile(configPath+".bak", data, 0644)
+				out := strings.Join(repaired, "\n")
+				if err := os.WriteFile(configPath, []byte(out), 0644); err != nil {
+					return fmt.Errorf("write %s: %w", configPath, err)
+				}
+				slog.Info("repaired anchored MCP command to absolute path", "tool", t, "path", configPath)
 				return nil
 			}
+			slog.Info("already registered, skipping", "tool", t)
+			return nil
 		}
 	}
 
-	entry := `[mcp_servers.anchored]
-command = "anchored"
-enabled = true
-`
+	entry := fmt.Sprintf("[mcp_servers.anchored]\ncommand = %q\nenabled = true\n", anchoredBinaryPath())
 
 	if _, err := os.Stat(configPath); err == nil {
 		_ = os.WriteFile(configPath+".bak", data, 0644)
@@ -315,6 +399,26 @@ enabled = true
 
 	slog.Info("registered anchored in MCP config", "tool", t, "path", configPath)
 	return nil
+}
+
+// repairTOMLBareCommand scans the [mcp_servers.anchored] table starting at
+// sectionIdx for a `command = "anchored"` line (bare, PATH-dependent) and
+// rewrites it in place to the resolved absolute binary path. The table ends
+// at the next line starting with "[" or at EOF. Returns changed=false when
+// no bare command line is found (already absolute or a custom command),
+// leaving lines untouched.
+func repairTOMLBareCommand(lines []string, sectionIdx int) ([]string, bool) {
+	for i := sectionIdx + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "[") {
+			break // start of the next table
+		}
+		if trimmed == `command = "anchored"` {
+			lines[i] = fmt.Sprintf("command = %q", anchoredBinaryPath())
+			return lines, true
+		}
+	}
+	return lines, false
 }
 
 func setupAnchored() {

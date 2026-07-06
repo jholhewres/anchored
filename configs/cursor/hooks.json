@@ -1,21 +1,10 @@
 {
   "version": 1,
   "hooks": {
-    "preToolUse": [
-      {
-        "matcher": "Shell|Read|Grep|WebFetch|MCP:anchored_save|MCP:anchored_search|MCP:anchored_kg_query|MCP:anchored_kg_add",
-        "command": "anchored hook pretooluse"
-      }
-    ],
-    "postToolUse": [
-      {
-        "command": "anchored hook posttooluse"
-      }
-    ],
-    "stop": [
-      {
-        "command": "anchored hook precompact"
-      }
-    ]
+    "beforeShellExecution": [{ "command": "<BIN> hook pretooluse" }],
+    "beforeMCPExecution": [{ "command": "<BIN> hook pretooluse" }],
+    "afterFileEdit": [{ "command": "<BIN> hook posttooluse" }],
+    "beforeSubmitPrompt": [{ "command": "<BIN> hook userpromptsubmit" }],
+    "stop": [{ "command": "<BIN> hook stop" }]
   }
 }
