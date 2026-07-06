@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+// formatV renders a version string with exactly one leading "v", regardless
+// of whether the input already carries one. Version (from ldflags) and the
+// "--version" subprocess output both already include "v" — formatting either
+// with a bare "v%s" produces "vv0.10.0"; this is the single normalization
+// point for every version string doctor prints.
+func formatV(v string) string {
+	return "v" + strings.TrimPrefix(v, "v")
+}
+
 func runDoctor(args []string) {
 	fs := newFlagSet("doctor")
 	configPath := fs.String("config", "", "path to config file")
@@ -26,7 +35,7 @@ func runDoctor(args []string) {
 	doctorJSONMode = *jsonOut
 
 	if !doctorJSONMode {
-		fmt.Printf("anchored doctor — diagnostics for v%s\n\n", Version)
+		fmt.Printf("anchored doctor — diagnostics for %s\n\n", formatV(Version))
 	}
 
 	cfg, err := loadConfig(*configPath)
@@ -40,9 +49,13 @@ func runDoctor(args []string) {
 
 	checkBinary(home)
 	checkONNX(cfg.Embedding.ModelDir)
+	checkModelLabel(cfg.Embedding.Model, cfg.Embedding.ModelDir)
 	checkDatabase(cfg.Memory.DatabasePath, cfg.Embedding.Dimensions)
 	checkMCPRegistration(home, *cwd)
 	checkConfig(home, cfg)
+	checkCursorActivation(home)
+	checkMaintenanceTimer(home)
+	checkDebugLog(cfg, home)
 	checkPluginDrift(cfg)
 	anyReachable := checkRemoteConnectivity(cfg)
 	checkRemoteConfigSanity(cfg)
@@ -71,11 +84,11 @@ func checkBinary(home string) {
 	v := strings.TrimSpace(strings.TrimPrefix(string(out), "anchored "))
 	if v != Version {
 		printCheck(false, fmt.Sprintf("installed binary version (%s)", v),
-			fmt.Sprintf("source is v%s but installed is v%s", Version, v),
+			fmt.Sprintf("source is %s but installed is %s", formatV(Version), formatV(v)),
 			"rebuild and reinstall: cp bin/anchored ~/.anchored/bin/anchored")
 		return
 	}
-	printCheck(true, fmt.Sprintf("binary v%s at ~/.anchored/bin/anchored", v), "", "")
+	printCheck(true, fmt.Sprintf("binary %s at ~/.anchored/bin/anchored", formatV(v)), "", "")
 
 	if pathHas(canonical) {
 		printCheck(true, "~/.anchored/bin in PATH", "", "")
@@ -184,21 +197,21 @@ func checkDatabase(dbPath string, expectedDims int) {
 	var embRows int
 	if err := db.QueryRowContext(ctx,
 		"SELECT count(*) FROM memories WHERE embedding IS NOT NULL AND length(embedding) > 0 AND deleted_at IS NULL").Scan(&embRows); err == nil {
-		coverage := 0
-		if memCount > 0 {
-			coverage = embRows * 100 / memCount
+		coverage := embeddingCoveragePercent(embRows, memCount)
+		detail := fmt.Sprintf("%d/%d memories embedded (%d%% — dim=%d)", embRows, memCount, coverage, expectedDims)
+		if embeddingCoverageOK(embRows, memCount) {
+			printCheck(true, detail, "", "")
+		} else {
+			recordCheck("warn", detail, "embedding coverage below 80% threshold", "anchored backfill", false)
 		}
-		printCheck(true,
-			fmt.Sprintf("%d/%d memories embedded (%d%% — dim=%d)", embRows, memCount, coverage, expectedDims),
-			"", "")
 	}
 }
 
 type mcpProbe struct {
-	tool    string
-	path    string
-	scope   string
-	hint    string
+	tool  string
+	path  string
+	scope string
+	hint  string
 }
 
 func checkMCPRegistration(home string, cwd string) {
