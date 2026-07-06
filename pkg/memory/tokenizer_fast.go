@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Tokenizer converts text into ONNX-compatible token sequences.
@@ -25,35 +26,35 @@ type tokenizerConfig struct {
 }
 
 type modelConfig struct {
-	Type     string            `json:"type"`
-	Vocab    json.RawMessage   `json:"vocab"`
-	UnkToken string            `json:"unk_token"`
-	Prefix   string            `json:"continuing_subword_prefix,omitempty"`
-	MaxChars int               `json:"max_input_chars_per_word,omitempty"`
-	Merges   []string          `json:"merges,omitempty"`
+	Type     string          `json:"type"`
+	Vocab    json.RawMessage `json:"vocab"`
+	UnkToken string          `json:"unk_token"`
+	Prefix   string          `json:"continuing_subword_prefix,omitempty"`
+	MaxChars int             `json:"max_input_chars_per_word,omitempty"`
+	Merges   []string        `json:"merges,omitempty"`
 }
 
 type normalizerConfig struct {
-	Type            string             `json:"type"`
-	Normalizers     []normalizerConfig `json:"normalizers,omitempty"`
-	CleanText       *bool              `json:"clean_text,omitempty"`
-	HandleChineseChars *bool           `json:"handle_chinese_chars,omitempty"`
-	StripAccentsN   *bool              `json:"strip_accents,omitempty"`
-	LowercaseN      *bool              `json:"lowercase,omitempty"`
+	Type               string             `json:"type"`
+	Normalizers        []normalizerConfig `json:"normalizers,omitempty"`
+	CleanText          *bool              `json:"clean_text,omitempty"`
+	HandleChineseChars *bool              `json:"handle_chinese_chars,omitempty"`
+	StripAccentsN      *bool              `json:"strip_accents,omitempty"`
+	LowercaseN         *bool              `json:"lowercase,omitempty"`
 }
 
 type preTokenizerConfig struct {
-	Type          string              `json:"type"`
+	Type          string               `json:"type"`
 	PreTokenizers []preTokenizerConfig `json:"pre_tokenizers,omitempty"`
 }
 
 type postProcessorConfig struct {
-	Type          string                    `json:"type"`
-	Sep           []interface{}             `json:"sep,omitempty"`
-	Cls           []interface{}             `json:"cls,omitempty"`
-	Single        interface{}               `json:"single,omitempty"`
-	Pair          interface{}               `json:"pair,omitempty"`
-	SpecialTokens map[string]spTokenConfig  `json:"special_tokens,omitempty"`
+	Type          string                   `json:"type"`
+	Sep           []interface{}            `json:"sep,omitempty"`
+	Cls           []interface{}            `json:"cls,omitempty"`
+	Single        interface{}              `json:"single,omitempty"`
+	Pair          interface{}              `json:"pair,omitempty"`
+	SpecialTokens map[string]spTokenConfig `json:"special_tokens,omitempty"`
 }
 
 type spTokenConfig struct {
@@ -210,8 +211,34 @@ func spTokenToInt(st spTokenConfig) int {
 	return -1
 }
 
+// maxTokenizeBytes bounds the input handed to normalization/encoding. The
+// model window is maxLen tokens (~128), so anything beyond a few KB can never
+// reach the model — but without this cap a single huge input (e.g. a 48KB
+// imported blob) is fully normalized and word-encoded first, and encodeUnigram
+// is O(n²) in word length, which turns one giant unbroken "word" into a
+// multi-minute stall (observed hanging `anchored backfill`).
+const maxTokenizeBytes = 8192
+
+// maxWordBytes bounds a single pre-tokenized word before subword encoding.
+// Mirrors HuggingFace WordPiece's max_input_chars_per_word guard (100), sized
+// generously; unlike HF we truncate instead of emitting [UNK] so a long
+// identifier still contributes its prefix to the embedding.
+const maxWordBytes = 200
+
+// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 func (ft *FastTokenizer) Tokenize(text string) (inputIDs, attentionMask, tokenTypeIDs []int64) {
 	text = strings.TrimSpace(text)
+	text = truncateUTF8(text, maxTokenizeBytes)
 	text = ft.normalizer(text)
 	words := ft.preTokenizer(text)
 
@@ -224,7 +251,7 @@ func (ft *FastTokenizer) Tokenize(text string) (inputIDs, attentionMask, tokenTy
 			tokenIDs = append(tokenIDs, id)
 			continue
 		}
-		pieces := ft.encodeWord(word)
+		pieces := ft.encodeWord(truncateUTF8(word, maxWordBytes))
 		tokenIDs = append(tokenIDs, pieces...)
 		if len(tokenIDs) >= ft.maxLen-2 {
 			tokenIDs = tokenIDs[:ft.maxLen-2]

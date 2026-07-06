@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func vocabRaw(v map[string]int) json.RawMessage {
@@ -19,39 +21,39 @@ func writeTestTokenizerJSON(t *testing.T, dir string) string {
 		Model: modelConfig{
 			Type: "WordPiece",
 			Vocab: vocabRaw(map[string]int{
-				"[PAD]":      0,
-				"[UNK]":      100,
-				"[CLS]":      101,
-				"[SEP]":      102,
-				"[MASK]":     103,
-				"o":          104,
-				"sistema":    105,
-				"usa":        106,
-				"j":          107,
-				"##w":        108,
-				"##t":        109,
-				"tokens":     110,
-				"deploy":     111,
-				"no":         112,
-				"kubernetes": 113,
-				"how":        114,
-				"to":         115,
+				"[PAD]":        0,
+				"[UNK]":        100,
+				"[CLS]":        101,
+				"[SEP]":        102,
+				"[MASK]":       103,
+				"o":            104,
+				"sistema":      105,
+				"usa":          106,
+				"j":            107,
+				"##w":          108,
+				"##t":          109,
+				"tokens":       110,
+				"deploy":       111,
+				"no":           112,
+				"kubernetes":   113,
+				"how":          114,
+				"to":           115,
 				"authenticate": 116,
-				"api":        117,
-				"rate":       118,
-				"limiting":   119,
-				"hello":      120,
-				"world":      121,
-				"the":        122,
-				"quick":      123,
-				"brown":      124,
-				"fox":        125,
-				"a":          126,
-				"test":       127,
-				"café":       128,
-				"naïve":      129,
-				"##ï":        130,
-				"##ve":       131,
+				"api":          117,
+				"rate":         118,
+				"limiting":     119,
+				"hello":        120,
+				"world":        121,
+				"the":          122,
+				"quick":        123,
+				"brown":        124,
+				"fox":          125,
+				"a":            126,
+				"test":         127,
+				"café":         128,
+				"naïve":        129,
+				"##ï":          130,
+				"##ve":         131,
 			}),
 			UnkToken: "[UNK]",
 			Prefix:   "##",
@@ -118,11 +120,11 @@ func writeMultilingualTokenizerJSON(t *testing.T, dir string) string {
 	cfg := tokenizerConfig{
 		Version: "1.0",
 		Model: modelConfig{
-			Type:      "WordPiece",
-			Vocab:     vocabRaw(vocabMap),
-			UnkToken:  "[UNK]",
-			Prefix:    "##",
-			MaxChars:  200,
+			Type:     "WordPiece",
+			Vocab:    vocabRaw(vocabMap),
+			UnkToken: "[UNK]",
+			Prefix:   "##",
+			MaxChars: 200,
 		},
 		Normalizer:   nil,
 		PreTokenizer: &preTokenizerConfig{Type: "Whitespace"},
@@ -160,23 +162,23 @@ func TestFastTokenizer_PTBRSentences(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		text        string
-		wantFirst   int
-		wantLast    int
-		wantSeqLen  int
+		name       string
+		text       string
+		wantFirst  int
+		wantLast   int
+		wantSeqLen int
 	}{
 		{
-			name:       "jwt tokens",
-			text:       "O sistema usa JWT tokens",
-			wantFirst:  101,
-			wantLast:   102,
+			name:      "jwt tokens",
+			text:      "O sistema usa JWT tokens",
+			wantFirst: 101,
+			wantLast:  102,
 		},
 		{
-			name:       "kubernetes deploy",
-			text:       "Deploy no Kubernetes",
-			wantFirst:  101,
-			wantLast:   102,
+			name:      "kubernetes deploy",
+			text:      "Deploy no Kubernetes",
+			wantFirst: 101,
+			wantLast:  102,
 		},
 	}
 	for _, tt := range tests {
@@ -383,7 +385,7 @@ func TestFastTokenizer_WordPieceSubwords(t *testing.T) {
 			Vocab: vocabRaw(map[string]int{
 				"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 				"unigram": 103,
-				"un": 104, "##ig": 105, "##ram": 106,
+				"un":      104, "##ig": 105, "##ram": 106,
 			}),
 			UnkToken: "[UNK]",
 			Prefix:   "##",
@@ -769,5 +771,79 @@ func TestFastTokenizer_UnigramSpecialTokens(t *testing.T) {
 	}
 	if inputIDs[seqLen] != 1 {
 		t.Errorf("first pad token = %d, want 1 (<pad>)", inputIDs[seqLen])
+	}
+}
+
+// Regression: a single huge unbroken "word" (e.g. a base64/minified blob in an
+// imported memory) must not stall Tokenize. encodeUnigram is O(n²) in word
+// length; before the maxTokenizeBytes/maxWordBytes guards a 48KB blob hung
+// `anchored backfill` indefinitely at full CPU.
+func TestTokenizeGiantBlobCompletes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Unigram is the pathological path (Viterbi over substrings, O(n²) in word
+	// length); WordPiece covers the default. Both must stay bounded by the
+	// maxTokenizeBytes/maxWordBytes guards.
+	unigramVocab, _ := json.Marshal([][]interface{}{
+		{"<s>", 0.0}, {"<pad>", 0.0}, {"</s>", 0.0}, {"<unk>", 0.0},
+		{"▁a", -3.0}, {"a", -4.0}, {"b", -4.1}, {"c", -4.2}, {"1", -4.3},
+	})
+	unigramCfg := tokenizerConfig{
+		Version:      "1.0",
+		Model:        modelConfig{Type: "Unigram", Vocab: unigramVocab, UnkToken: "<unk>"},
+		PreTokenizer: &preTokenizerConfig{Type: "Metaspace"},
+		AddedTokens: []addedTokenConfig{
+			{ID: 0, Content: "<s>", Special: true},
+			{ID: 1, Content: "<pad>", Special: true},
+			{ID: 2, Content: "</s>", Special: true},
+			{ID: 3, Content: "<unk>", Special: true},
+		},
+	}
+	unigramData, _ := json.MarshalIndent(unigramCfg, "", "  ")
+	unigramPath := filepath.Join(dir, "tokenizer_unigram.json")
+	if err := os.WriteFile(unigramPath, unigramData, 0o644); err != nil {
+		t.Fatalf("write unigram tokenizer: %v", err)
+	}
+
+	paths := map[string]string{
+		"wordpiece": writeTestTokenizerJSON(t, dir),
+		"unigram":   unigramPath,
+	}
+	blob := strings.Repeat("abc123XYZ+/=", 4096) // ~48KB, no whitespace
+
+	for name, path := range paths {
+		t.Run(name, func(t *testing.T) {
+			tok, err := NewFastTokenizer(path, 128)
+			if err != nil {
+				t.Fatalf("NewFastTokenizer: %v", err)
+			}
+			done := make(chan struct{})
+			go func() {
+				ids, mask, _ := tok.Tokenize(blob)
+				if len(ids) == 0 || len(mask) == 0 {
+					t.Errorf("expected non-empty token output for giant blob")
+				}
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("Tokenize did not complete within 10s on a giant single-word input")
+			}
+		})
+	}
+}
+
+func TestTruncateUTF8RuneSafe(t *testing.T) {
+	s := strings.Repeat("é", 100) // 2 bytes each
+	got := truncateUTF8(s, 101)   // would split a rune at byte 101
+	if len(got) != 100 {
+		t.Fatalf("expected 100 bytes (rune-safe cut), got %d", len(got))
+	}
+	if got != strings.Repeat("é", 50) {
+		t.Fatalf("unexpected content after truncation")
+	}
+	if truncateUTF8("abc", 10) != "abc" {
+		t.Fatal("short strings must pass through unchanged")
 	}
 }
