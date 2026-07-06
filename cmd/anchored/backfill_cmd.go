@@ -23,6 +23,7 @@ func runBackfillEmbeddings(args []string) {
 	fs := newFlagSet("backfill")
 	batch := fs.Int("batch", 200, "embeddings per batch")
 	pause := fs.Duration("pause", 0, "sleep between batches (e.g. 500ms) to stay gentle on CPU")
+	max := fs.Int("max", 0, "max memories to embed this run (0 = unlimited)")
 	fs.Parse(args)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -53,11 +54,19 @@ func runBackfillEmbeddings(args []string) {
 	start := time.Now()
 	fmt.Println("anchored: backfilling embeddings for memories missing a vector…")
 
-	n, err := memSvc.BackfillEmbeddingsThrottled(ctx, *batch, *pause)
+	n, err := memSvc.BackfillEmbeddingsLimited(ctx, *batch, *pause, *max)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backfill error after %d embedded: %v\n", n, err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("anchored: backfill complete — %d memories embedded in %s\n", n, time.Since(start).Round(time.Second))
+
+	// When capped, report how much backlog is left so a timer-driven caller
+	// (or the user watching a manual run) knows the drain isn't finished.
+	if *max > 0 && n >= *max {
+		if remaining, err := memSvc.PendingEmbeddings(ctx); err == nil && remaining > 0 {
+			fmt.Printf("anchored: %d memories still missing a vector — run again to continue\n", remaining)
+		}
+	}
 }

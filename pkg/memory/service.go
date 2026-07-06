@@ -381,6 +381,13 @@ func (s *Service) BackfillContentHash(ctx context.Context) (int, error) {
 	return s.store.BackfillContentHash(ctx)
 }
 
+// PendingEmbeddings reports how many memories are still missing a vector, so
+// callers of a capped backfill run (`--max`) can report how much backlog
+// remains.
+func (s *Service) PendingEmbeddings(ctx context.Context) (int, error) {
+	return s.store.CountWithoutEmbedding(ctx)
+}
+
 // ResolveProject returns the project ID for a given working directory, or empty string if none.
 func (s *Service) ResolveProject(cwd string) string {
 	if cwd == "" || s.projDet == nil {
@@ -510,6 +517,15 @@ func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, e
 // resumable: it drains ListWithoutEmbedding, so re-running after an interrupted
 // pass just continues where it left off.
 func (s *Service) BackfillEmbeddingsThrottled(ctx context.Context, batchSize int, pause time.Duration) (int, error) {
+	return s.BackfillEmbeddingsLimited(ctx, batchSize, pause, 0)
+}
+
+// BackfillEmbeddingsLimited is BackfillEmbeddingsThrottled bounded by maxTotal
+// memories embedded during this call (0 or negative = unlimited, same as
+// BackfillEmbeddingsThrottled). Used by `anchored backfill --max` and the
+// maintenance "backfill" step so a daily timer chews the backlog in bounded
+// slices instead of one multi-hour run.
+func (s *Service) BackfillEmbeddingsLimited(ctx context.Context, batchSize int, pause time.Duration, maxTotal int) (int, error) {
 	if s.embedder == nil || s.cache == nil {
 		return 0, fmt.Errorf("embedder not available")
 	}
@@ -526,8 +542,16 @@ func (s *Service) BackfillEmbeddingsThrottled(ctx context.Context, batchSize int
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
+		if maxTotal > 0 && total >= maxTotal {
+			break
+		}
 
-		mems, err := s.store.ListWithoutEmbedding(ctx, batchSize)
+		listLimit := batchSize
+		if maxTotal > 0 && maxTotal-total < listLimit {
+			listLimit = maxTotal - total
+		}
+
+		mems, err := s.store.ListWithoutEmbedding(ctx, listLimit)
 		if err != nil {
 			return total, fmt.Errorf("list pending: %w", err)
 		}

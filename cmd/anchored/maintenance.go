@@ -14,10 +14,11 @@ import (
 // on demand or while an agent is connected to `anchored serve`:
 //
 //   - import   — pull fresh memories from Claude Code / OpenCode / Cursor
+//   - backfill — embed memories still missing a vector, in a bounded slice
 //   - dream    — consolidate (dedup, merge, flag contradictions)
 //   - curation — reconcile quality/importance scores
 //
-// `anchored maintenance run` executes the three steps as isolated subprocesses
+// `anchored maintenance run` executes the four steps as isolated subprocesses
 // (a failure in one step is logged but does not abort the others). `install`
 // wires that command into a systemd --user timer so it runs every day without
 // any agent connected — the same pattern as `anchored dashboard install`.
@@ -45,11 +46,12 @@ func runMaintenance(args []string) {
 func printMaintenanceUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: anchored maintenance <run|install|uninstall|status>")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Periodic upkeep: import fresh memories, dream (consolidate),")
-	fmt.Fprintln(os.Stderr, "and reconcile curation scores — either once or on a timer.")
+	fmt.Fprintln(os.Stderr, "Periodic upkeep: import fresh memories, backfill missing embeddings,")
+	fmt.Fprintln(os.Stderr, "dream (consolidate), and reconcile curation scores — either once or")
+	fmt.Fprintln(os.Stderr, "on a timer.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  anchored maintenance run         run import + dream + curation now")
+	fmt.Fprintln(os.Stderr, "  anchored maintenance run         run import + backfill + dream + curation now")
 	fmt.Fprintln(os.Stderr, "  anchored maintenance install     install a systemd --user daily timer")
 	fmt.Fprintln(os.Stderr, "  anchored maintenance uninstall   remove the timer")
 	fmt.Fprintln(os.Stderr, "  anchored maintenance status      show timer status")
@@ -59,6 +61,7 @@ func printMaintenanceUsage() {
 	fmt.Fprintln(os.Stderr, "  --aggressiveness LEVEL   dream level: conservative|moderate|aggressive (default moderate)")
 	fmt.Fprintln(os.Stderr, "  --max-deletions N        max soft-deletions per dream run (default 50)")
 	fmt.Fprintln(os.Stderr, "  --skip-import            skip the import step")
+	fmt.Fprintln(os.Stderr, "  --skip-backfill          skip the backfill step")
 	fmt.Fprintln(os.Stderr, "  --skip-dream             skip the dream step")
 	fmt.Fprintln(os.Stderr, "  --skip-curation          skip the curation reconcile step")
 }
@@ -73,6 +76,7 @@ func runMaintenanceRun(args []string) {
 	aggressiveness := fs.String("aggressiveness", "moderate", "dream aggressiveness: conservative, moderate, aggressive")
 	maxDeletions := fs.Int("max-deletions", 50, "maximum soft-deletions per dream run")
 	skipImport := fs.Bool("skip-import", false, "skip the import step")
+	skipBackfill := fs.Bool("skip-backfill", false, "skip the backfill step")
 	skipDream := fs.Bool("skip-dream", false, "skip the dream step")
 	skipCuration := fs.Bool("skip-curation", false, "skip the curation reconcile step")
 	fs.Parse(args)
@@ -124,7 +128,14 @@ func runMaintenanceRun(args []string) {
 		return maintenanceCmd(exe, *configPath, "import", "all")
 	})
 
-	// 2. Dream — analyze + apply consolidation. --dry-run=false forces apply
+	// 2. Backfill — embed any memories still missing a vector (e.g. from a
+	// historical import done with --skip-embeddings). Capped at 2000 per run
+	// so a large backlog drains in daily slices instead of one multi-hour pass.
+	runStep("backfill", *skipBackfill, func() *exec.Cmd {
+		return maintenanceCmd(exe, *configPath, "backfill", "--max", "2000")
+	})
+
+	// 3. Dream — analyze + apply consolidation. --dry-run=false forces apply
 	// (the flag defaults to dry-run=true for interactive safety).
 	runStep("dream", *skipDream, func() *exec.Cmd {
 		cmd := maintenanceCmd(exe, *configPath, "dream",
@@ -135,7 +146,7 @@ func runMaintenanceRun(args []string) {
 		return cmd
 	})
 
-	// 3. Curation — reconcile quality/importance metadata. --yes skips the
+	// 4. Curation — reconcile quality/importance metadata. --yes skips the
 	// interactive confirmation prompt (unsupervised timer context).
 	runStep("curation", *skipCuration, func() *exec.Cmd {
 		return maintenanceCmd(exe, *configPath, "curation", "reconcile", "--yes")
@@ -191,10 +202,10 @@ func maintenanceUnitDir() (string, error) {
 }
 
 // maintenanceUnit is the oneshot service the timer fires. It calls
-// `anchored maintenance run`, which chains import + dream + curation.
+// `anchored maintenance run`, which chains import + backfill + dream + curation.
 func maintenanceUnit(exe string) string {
 	return fmt.Sprintf(`[Unit]
-Description=anchored periodic upkeep (import + dream + curation)
+Description=anchored periodic upkeep (import + backfill + dream + curation)
 
 [Service]
 Type=oneshot

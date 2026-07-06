@@ -122,6 +122,7 @@ type Store interface {
 	Stats(ctx context.Context) (*StoreStats, error)
 	UpdateEmbedding(ctx context.Context, id string, embedding []float32) error
 	ListWithoutEmbedding(ctx context.Context, limit int) ([]Memory, error)
+	CountWithoutEmbedding(ctx context.Context) (int, error)
 	FindByContentHash(ctx context.Context, hash string, projectID *string) (*Memory, error)
 	BackfillContentHash(ctx context.Context) (int, error)
 	DB() *sql.DB

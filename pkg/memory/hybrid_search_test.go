@@ -114,6 +114,9 @@ func (s *hybridMockStore) Close() error { return nil }
 func (s *hybridMockStore) ListWithoutEmbedding(ctx context.Context, limit int) ([]Memory, error) {
 	return nil, nil
 }
+func (s *hybridMockStore) CountWithoutEmbedding(ctx context.Context) (int, error) {
+	return 0, nil
+}
 func (s *hybridMockStore) Update(ctx context.Context, id, content, category string) error { return nil }
 func (s *hybridMockStore) UpdateMetadata(ctx context.Context, id string, metadata any) error {
 	return nil

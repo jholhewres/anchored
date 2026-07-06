@@ -43,6 +43,15 @@ func TestMaintenanceCmd_ThreadsConfig(t *testing.T) {
 	if got2 != want2 {
 		t.Errorf("cmd without config: got %q, want %q", got2, want2)
 	}
+
+	// The backfill step caps memories embedded per run so the daily timer
+	// drains a large backlog in slices instead of one multi-hour pass.
+	cmd3 := maintenanceCmd("/x/anchored", "", "backfill", "--max", "2000")
+	got3 := strings.Join(cmd3.Args, " ")
+	want3 := "/x/anchored backfill --max 2000"
+	if got3 != want3 {
+		t.Errorf("cmd for backfill: got %q, want %q", got3, want3)
+	}
 }
 
 // TestRunMaintenanceRun_AllSkipped exercises the orchestration loop without
@@ -58,6 +67,6 @@ func TestRunMaintenanceRun_AllSkipped(t *testing.T) {
 		}
 	}()
 	runMaintenanceRun([]string{
-		"--skip-import", "--skip-dream", "--skip-curation",
+		"--skip-import", "--skip-backfill", "--skip-dream", "--skip-curation",
 	})
 }

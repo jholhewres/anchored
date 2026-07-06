@@ -38,6 +38,16 @@ func (s *backfillTestStore) UpdateEmbedding(ctx context.Context, id string, e []
 	return nil
 }
 
+func (s *backfillTestStore) CountWithoutEmbedding(ctx context.Context) (int, error) {
+	n := 0
+	for _, m := range s.pending {
+		if !s.updated[m.ID] {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func newBackfillStore(n int) *backfillTestStore {
 	mems := make([]Memory, n)
 	for i := 0; i < n; i++ {
