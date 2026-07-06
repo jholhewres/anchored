@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,15 @@ func installPluginFromMirror(mirrorDir, cacheParentDir, registryPath, version st
 		os.RemoveAll(tmpDir)
 		return fmt.Errorf("copy mirror tree: %w", err)
 	}
+
+	// Rewrite hook commands in the installed copy to an absolute binary path
+	// (see anchoredBinaryPath) so hooks still fire when Claude Code launches
+	// them outside a login shell with no PATH. The repo template stays
+	// generic — it ships to every user — only this per-machine cached copy
+	// is patched. Non-fatal: hooks.json is optional and any failure here
+	// must not abort the install; the plugin still resolves "anchored" via
+	// PATH in that case.
+	rewriteInstalledHookCommands(filepath.Join(tmpDir, "hooks", "hooks.json"))
 
 	// If a directory already exists at the destination (e.g. user reinstalled
 	// from /plugin install), back it up before swapping in. Easier to recover
@@ -267,6 +277,63 @@ func copyDirExcludingGit(src, dst string) error {
 			return copyFileWithMode(path, target, info.Mode().Perm())
 		}
 	})
+}
+
+// rewriteInstalledHookCommands rewrites the "anchored" binary token in every
+// "command" string of the given hooks.json to the resolved absolute binary
+// path (anchoredBinaryPath). It is a no-op when the file doesn't exist, and
+// logs-and-continues on any parse/write error — hooks.json is optional
+// tooling, and a malformed or unreadable copy must never break the plugin
+// install.
+func rewriteInstalledHookCommands(hooksPath string) {
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("read hooks.json for command rewrite", "path", hooksPath, "error", err)
+		}
+		return
+	}
+
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		slog.Warn("parse hooks.json for command rewrite", "path", hooksPath, "error", err)
+		return
+	}
+
+	rewriteAnchoredCommands(doc, anchoredBinaryPath())
+
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		slog.Warn("marshal rewritten hooks.json", "path", hooksPath, "error", err)
+		return
+	}
+	if err := os.WriteFile(hooksPath, append(out, '\n'), 0o644); err != nil {
+		slog.Warn("write rewritten hooks.json", "path", hooksPath, "error", err)
+	}
+}
+
+// rewriteAnchoredCommands walks an arbitrary decoded JSON value looking for
+// "command" string fields that invoke the bare "anchored" binary, rewriting
+// just the binary token in place so trailing args (e.g. "hook stop") survive
+// untouched. Recurses through maps and slices to handle hooks.json's nested
+// event -> matcher -> hooks[] shape without assuming a fixed structure.
+func rewriteAnchoredCommands(node any, bin string) {
+	switch v := node.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if k == "command" {
+				if s, ok := val.(string); ok && strings.HasPrefix(s, "anchored ") {
+					v[k] = bin + strings.TrimPrefix(s, "anchored")
+					continue
+				}
+			}
+			rewriteAnchoredCommands(val, bin)
+		}
+	case []any:
+		for _, item := range v {
+			rewriteAnchoredCommands(item, bin)
+		}
+	}
 }
 
 func copyFileWithMode(src, dst string, mode os.FileMode) error {

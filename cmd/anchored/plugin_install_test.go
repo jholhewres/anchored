@@ -187,6 +187,78 @@ func TestInstallPluginFromMirror_AtomicSwap(t *testing.T) {
 	}
 }
 
+// TestInstallPluginFromMirror_RewritesHookCommandsToAbsolutePath confirms
+// that installing patches the installed copy's hooks/hooks.json commands to
+// the absolute binary path, without disturbing the JSON structure or
+// unrelated fields.
+func TestInstallPluginFromMirror_RewritesHookCommandsToAbsolutePath(t *testing.T) {
+	withFakeBinaryPath(t)
+	mirror := t.TempDir()
+	cacheParent := t.TempDir()
+	registryPath := filepath.Join(t.TempDir(), "installed_plugins.json")
+	seedMirrorManifest(t, mirror, "0.4.9")
+
+	writeFile(t, filepath.Join(mirror, "hooks", "hooks.json"), `{
+  "description": "test hooks",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "anchored hook sessionstart"}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "anchored hook stop"}
+        ]
+      }
+    ]
+  }
+}`)
+	writeJSON(t, registryPath, map[string]any{"version": 2, "plugins": map[string]any{}})
+
+	if err := installPluginFromMirror(mirror, cacheParent, registryPath, "0.4.9"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	var doc map[string]any
+	readJSON(t, filepath.Join(cacheParent, "0.4.9", "hooks", "hooks.json"), &doc)
+
+	if doc["description"] != "test hooks" {
+		t.Errorf("unrelated field lost: %v", doc["description"])
+	}
+
+	hooks := doc["hooks"].(map[string]any)
+	sessionStartCmd := hooks["SessionStart"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]
+	if sessionStartCmd != fakeBinaryPath+" hook sessionstart" {
+		t.Errorf("SessionStart command = %v, want %q", sessionStartCmd, fakeBinaryPath+" hook sessionstart")
+	}
+	stopCmd := hooks["Stop"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]
+	if stopCmd != fakeBinaryPath+" hook stop" {
+		t.Errorf("Stop command = %v, want %q", stopCmd, fakeBinaryPath+" hook stop")
+	}
+}
+
+// TestInstallPluginFromMirror_MissingHooksJSONIsNonFatal confirms the
+// install still succeeds when hooks/hooks.json isn't present in the mirror
+// (the rewrite step must be a silent no-op, not an install-breaking error).
+func TestInstallPluginFromMirror_MissingHooksJSONIsNonFatal(t *testing.T) {
+	withFakeBinaryPath(t)
+	mirror := t.TempDir()
+	cacheParent := t.TempDir()
+	registryPath := filepath.Join(t.TempDir(), "installed_plugins.json")
+	seedMirrorManifest(t, mirror, "0.4.9")
+	writeJSON(t, registryPath, map[string]any{"version": 2, "plugins": map[string]any{}})
+
+	if err := installPluginFromMirror(mirror, cacheParent, registryPath, "0.4.9"); err != nil {
+		t.Fatalf("install should succeed without hooks.json: %v", err)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
