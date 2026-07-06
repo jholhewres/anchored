@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.0] - 2026-07-06
+
+Real Cursor activation and a fix for the embedding backfill that had left the
+historical store almost entirely un-embedded.
+
+### Added
+
+- **Real Cursor support** (`anchored init --tool cursor`) — beyond MCP
+  registration, init now installs `~/.cursor/hooks.json` (wired to Cursor's
+  actual hook schema: `beforeShellExecution`, `beforeMCPExecution`,
+  `afterFileEdit`, `beforeSubmitPrompt`, `stop`) and an always-on activation
+  rule at `~/.cursor/rules/anchored.mdc`. The rule is the agent-side trigger
+  Cursor needs because its `beforeSubmitPrompt` hook is informational-only and
+  cannot inject recall context. hooks.json is merged non-destructively —
+  foreign entries are preserved and a bare `anchored` command is repaired to
+  an absolute path. A `configs/cursor/probe-hooks.json` template is included
+  for capturing real Cursor payloads.
+- **Cursor hook routing** — a payload adapter (`pkg/hookroute`) detects
+  Cursor's envelope and routes its events through the existing hook pipeline,
+  emitting Cursor's permission wire shape (`{continue, permission, agentMessage}`).
+  The Claude Code path is unchanged. The dangerous-pattern guard for the
+  sandbox tools applies to Cursor's `beforeMCPExecution` as well.
+- **`anchored backfill --max N`** — bounds embeddings per run so a large
+  backlog drains in slices; wired into `maintenance run` as a step so the
+  daily timer chews through it without an agent connected.
+- **New doctor checks** — Cursor hooks/rule installation, embedding coverage
+  (warns below 80%), maintenance timer status, and debug-log staleness.
+
+### Fixed
+
+- **Tokenizer O(n²) stall on giant words** — a single very long unbroken token
+  (e.g. a minified/base64 blob in an imported memory) could hang the ONNX
+  tokenizer indefinitely at full CPU, which stalled `anchored backfill` and
+  left the store at ~6% embedding coverage. Input is now bounded before
+  tokenization (rune-safe), so the backlog embeds normally.
+- **PATH-dependent MCP registration** — `init` wrote a bare `anchored`
+  command that only resolved via `PATH`, breaking when a tool launched its
+  MCP server outside a login shell. It now writes the resolved absolute
+  binary path (and repairs existing bare entries in place across all tools).
+  Plugin hook commands are rewritten to the absolute path on install too.
+- **`anchored doctor` printed `vv0.10.0`** — the version string already
+  carried its `v` prefix; the double-`v` is gone.
+- **Stale embedding-model label** in the shipped `config.yaml` template now
+  matches the model bootstrap actually downloads
+  (`paraphrase-multilingual-MiniLM-L12-v2`).
+
 ## [0.10.0] - 2026-06-30
 
 Two contributions from @aronpc: a local web dashboard (PR #2) and a
