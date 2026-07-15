@@ -47,6 +47,12 @@ func (s *Server) toolTask(ctx context.Context, args json.RawMessage) (string, er
 		if err != nil {
 			return "", err
 		}
+		// UpsertTaskThread freezes terminal threads: a start on a done/cancelled
+		// task is a no-op and the delta was dropped. Say so honestly instead of
+		// reporting "started".
+		if isTerminal(t.Status) {
+			return renderTask(fmt.Sprintf("Task is %s — nothing changed; reopen with action=status status=active first", t.Status), t), nil
+		}
 		return renderTask("Started/updated task", t), nil
 
 	case "note":
@@ -65,11 +71,26 @@ func (s *Server) toolTask(ctx context.Context, args json.RawMessage) (string, er
 		if err != nil {
 			return "", err
 		}
+		// A terminal thread is frozen — the note was dropped. Report it rather
+		// than falsely confirming the note was recorded.
+		if isTerminal(t.Status) {
+			return renderTask(fmt.Sprintf("Task is %s — note not recorded; reopen with action=status status=active first", t.Status), t), nil
+		}
 		return renderTask("Journal note added", t), nil
 
 	case "status":
 		if key == "" {
 			return "", fmt.Errorf("key is required for action=status")
+		}
+		// Guard existence first: without this, a terminal target status would
+		// take UpdateTaskThread's close-path (delta before status), and the
+		// delta's UpsertTaskThread would CREATE the thread on first touch — so
+		// a status change on a non-existent key would spawn a phantom
+		// already-closed task.
+		if existing, err := s.sessions.GetTaskThread(ctx, key); err != nil {
+			return "", err
+		} else if existing == nil {
+			return fmt.Sprintf("No task thread %q.", key), nil
 		}
 		// UpdateTaskThread links the session (KeepStatus) and applies the status
 		// in the intent-preserving order: a note lands before done/cancel, and a
@@ -151,8 +172,14 @@ func firstLine(s string, max int) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > max {
-		s = s[:max] + "…"
+	// Truncate on a rune boundary so multi-byte UTF-8 (common in PT-BR notes)
+	// is never sliced mid-codepoint.
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max]) + "…"
 	}
 	return s
+}
+
+func isTerminal(status string) bool {
+	return status == session.TaskStatusDone || status == session.TaskStatusCancelled
 }

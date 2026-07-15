@@ -134,6 +134,39 @@ func TestToolTask_ListGetAndErrors(t *testing.T) {
 	}
 }
 
+// TestToolTask_NoPhantomOnStatus guards M1: setting a terminal status on a
+// non-existent key must not create a phantom closed task.
+func TestToolTask_NoPhantomOnStatus(t *testing.T) {
+	srv, mgr := newTaskTestServer(t)
+	out, err := callTask(t, srv, map[string]any{"action": "status", "key": "GHOST-1", "status": "done"})
+	if err != nil {
+		t.Fatalf("status on missing: %v", err)
+	}
+	if th, _ := mgr.GetTaskThread(context.Background(), "GHOST-1"); th != nil {
+		t.Errorf("phantom task created: %+v", th)
+	}
+	if !strings.Contains(out, "No task thread") {
+		t.Errorf("unexpected message: %q", out)
+	}
+}
+
+// TestToolTask_TerminalFreezeIsHonest guards M2: start/note on a done task must
+// not falsely report success (the delta is frozen out).
+func TestToolTask_TerminalFreezeIsHonest(t *testing.T) {
+	srv, _ := newTaskTestServer(t)
+	callTask(t, srv, map[string]any{"action": "start", "key": "FRZ-1"})
+	callTask(t, srv, map[string]any{"action": "status", "key": "FRZ-1", "status": "done"})
+
+	out, _ := callTask(t, srv, map[string]any{"action": "note", "key": "FRZ-1", "note": "late note"})
+	if !strings.Contains(out, "not recorded") {
+		t.Errorf("note on done task should report it was not recorded, got: %q", out)
+	}
+	out, _ = callTask(t, srv, map[string]any{"action": "start", "key": "FRZ-1"})
+	if !strings.Contains(out, "nothing changed") {
+		t.Errorf("start on done task should report no-op, got: %q", out)
+	}
+}
+
 func contains(xs []string, v string) bool {
 	for _, x := range xs {
 		if x == v {
