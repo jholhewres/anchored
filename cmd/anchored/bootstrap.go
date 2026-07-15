@@ -117,11 +117,10 @@ func runBootstrap(args []string) {
 	fmt.Printf("Bootstrap: %d memories %s, %d skipped (dedup)\n", saved, action, skipped)
 
 	if !*dryRun && !*skipEmbeddings && svc.EmbeddingsEnabled() {
-		var pending int
-		svc.StoreDB().QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM memories WHERE embedding IS NULL OR LENGTH(embedding) = 0",
-		).Scan(&pending)
-		if pending > 0 {
+		pending, err := svc.PendingEmbeddings(ctx)
+		if err != nil {
+			slog.Warn("could not count pending embeddings", "error", err)
+		} else if pending > 0 {
 			fmt.Fprintf(os.Stderr, "Backfilling %d embeddings (this may take a while)...\n", pending)
 			embedded, err := svc.BackfillEmbeddings(ctx, 50)
 			if err != nil {

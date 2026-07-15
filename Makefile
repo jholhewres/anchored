@@ -62,10 +62,10 @@ sync-bin: build
 	  found=1; \
 	  if cp -f "$(SRC_BIN)" "$$t" 2>/dev/null; then \
 	    echo "  synced  $$t"; \
-	  elif sudo cp -f "$(SRC_BIN)" "$$t"; then \
+	  elif sudo -n cp -f "$(SRC_BIN)" "$$t" 2>/dev/null; then \
 	    echo "  synced  $$t (sudo)"; \
 	  else \
-	    echo "  FAILED  $$t"; \
+	    echo "  FAILED  $$t (root-owned? re-run: sudo cp $(SRC_BIN) $$t)"; \
 	  fi; \
 	done; \
 	[ "$$found" = "1" ] || echo "  no installed anchored found (nothing synced)"
