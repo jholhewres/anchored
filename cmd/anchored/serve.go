@@ -55,6 +55,16 @@ func runServe() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Lifecycle guards. Historically the server only stopped on stdin EOF, so
+	// when an MCP client (Claude Code, Cursor, ...) exited abnormally — crash,
+	// SIGKILL, or a lingering parent still holding the pipe — EOF never arrived
+	// and the process leaked. Each orphan pins the ~450MB ONNX model resident,
+	// which is how a handful of closed IDE windows ballooned into GBs of RAM.
+	// watchParent triggers shutdown when our client goes away; forceExit is the
+	// backstop that guarantees the process actually terminates afterwards.
+	go watchParent(ctx, cancel, logger)
+	go forceExitAfterShutdown(ctx, logger)
+
 	go updater.Run(ctx, updater.Options{
 		CurrentVersion: Version,
 		Logger:         logger,
@@ -134,29 +144,56 @@ func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config,
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	for scanner.Scan() {
+	// The blocking stdin read cannot be interrupted by context cancellation
+	// (closing os.Stdin does not unblock an in-flight read on fd 0), so we run
+	// the scanner in its own goroutine and feed decoded lines over a channel.
+	// The main loop then selects between incoming lines and ctx.Done(), letting
+	// a signal or parent-death cancellation return immediately and run the
+	// deferred cleanup. The reader goroutine is abandoned on shutdown; it is
+	// reaped when the process exits.
+	lines := make(chan []byte)
+	scanErr := make(chan error, 1)
+	go func() {
+		defer close(lines)
+		for scanner.Scan() {
+			b := scanner.Bytes()
+			buf := make([]byte, len(b)) // scanner reuses its buffer; copy before handing off
+			copy(buf, b)
+			select {
+			case lines <- buf:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			scanErr <- err
+		}
+	}()
+
+	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		default:
+			// Signal or parent death: stop serving and fall through to cleanup.
+			goto shutdown
+		case line, ok := <-lines:
+			if !ok {
+				// stdin EOF — the client closed the pipe. Surface a genuine read
+				// error, but treat a cancelled context as an expected shutdown.
+				if err := drainScanErr(scanErr); err != nil && ctx.Err() == nil {
+					return fmt.Errorf("stdin read: %w", err)
+				}
+				goto shutdown
+			}
+			if len(line) == 0 {
+				continue
+			}
+			if response := server.HandleMessage(ctx, line); response != nil {
+				fmt.Printf("%s\n", response)
+			}
 		}
-
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		response := server.HandleMessage(ctx, line)
-		if response == nil {
-			continue
-		}
-
-		fmt.Printf("%s\n", response)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("stdin read: %w", err)
-	}
+shutdown:
 
 	if sessionMgr != nil {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
@@ -165,6 +202,17 @@ func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config,
 	}
 
 	return nil
+}
+
+// drainScanErr returns the reader goroutine's scan error if one has already
+// been reported, without blocking when none is pending.
+func drainScanErr(scanErr <-chan error) error {
+	select {
+	case err := <-scanErr:
+		return err
+	default:
+		return nil
+	}
 }
 
 // runEventCleanup periodically deletes session_events rows older than
@@ -197,6 +245,74 @@ func runEventCleanup(ctx context.Context, memSvc *memory.Service, logger *slog.L
 			sweep()
 		}
 	}
+}
+
+const (
+	// parentPollInterval is how often the parent-death watchdog re-checks the
+	// parent PID. 5s frees an orphaned server's memory within seconds while the
+	// getppid syscall cost stays negligible.
+	parentPollInterval = 5 * time.Second
+	// shutdownGrace bounds graceful teardown after a shutdown signal. If Close()
+	// (embedder + store) has not returned by then we force-exit so the process
+	// never lingers.
+	shutdownGrace = 10 * time.Second
+)
+
+// watchParent shuts the server down when the process that launched it exits.
+// MCP clients speak over stdin/stdout, so a departed client normally closes
+// stdin and we see EOF — but a crashed or lingering parent can leave the pipe
+// open, and the server would otherwise run forever holding the ONNX model in
+// RAM. We capture the parent PID at startup and cancel once we are reparented
+// (getppid changes, typically to 1 or a subreaper). setParentDeathSignal adds
+// an immediate, kernel-level notification on Linux. Set ANCHORED_NO_PARENT_WATCH
+// to any non-empty value to disable this watchdog.
+func watchParent(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger) {
+	if os.Getenv("ANCHORED_NO_PARENT_WATCH") != "" {
+		return
+	}
+	setParentDeathSignal(logger)
+	watchParentPoll(ctx, cancel, logger, os.Getppid, parentPollInterval)
+}
+
+// watchParentPoll is the testable core of watchParent: it captures the parent
+// PID via getppid and cancels once it changes (the parent exited and we were
+// reparented). getppid/interval are injected so the reparent transition can be
+// exercised without a real fork.
+func watchParentPoll(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, getppid func() int, interval time.Duration) {
+	orig := getppid()
+	if orig <= 1 {
+		// Already orphaned or running without a meaningful parent (e.g. launched
+		// directly under init). Nothing reliable to watch.
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ppid := getppid(); ppid != orig {
+				logger.Info("parent process exited, shutting down", "orig_ppid", orig, "new_ppid", ppid)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// forceExitAfterShutdown guarantees a shutdown signal actually terminates the
+// process. serveSTDIO closes stdin on cancellation to unblock its read and let
+// deferred cleanup run; if that cleanup stalls (e.g. a wedged background embed
+// blocking Service.Close's wg.Wait), we exit anyway once the grace window ends.
+func forceExitAfterShutdown(ctx context.Context, logger *slog.Logger) {
+	<-ctx.Done()
+	timer := time.NewTimer(shutdownGrace)
+	defer timer.Stop()
+	<-timer.C
+	logger.Warn("graceful shutdown exceeded grace period, forcing exit", "grace", shutdownGrace)
+	os.Exit(0)
 }
 
 func loadConfig(explicit string) (*config.Config, error) {
