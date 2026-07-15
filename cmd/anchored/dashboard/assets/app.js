@@ -58,6 +58,10 @@ const fmtBytes = (b) => {
 const preview = (s, n = 160) => (s && s.length > n ? s.slice(0, n) + "…" : s || "");
 
 // ---------------- tabs ----------------
+const TAB_TITLES = {
+  overview: "Overview", memories: "Memórias", tasks: "Tasks", kg: "Knowledge Graph",
+  system: "Sistema", dream: "Consolidação", artifacts: "Artifacts", activity: "Atividade",
+};
 const tabs = document.querySelectorAll("nav.tabs button");
 tabs.forEach((b) => b.addEventListener("click", () => {
   tabs.forEach((x) => x.classList.toggle("active", x === b));
@@ -65,9 +69,17 @@ tabs.forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("section.tab").forEach((s) => {
     s.classList.toggle("active", s.id === "tab-" + name);
   });
-  const loaders = { overview: loadOverview, memories: loadMemories, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity };
+  const title = el("view-title");
+  if (title) title.textContent = TAB_TITLES[name] || name;
+  const loaders = { overview: loadOverview, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity };
   if (loaders[name] && !loaders[name].loaded) loaders[name]();
 }));
+
+// setDbMeta mirrors the corpus summary into both the sidebar footer and the
+// topbar (the redesign shows it in two places).
+function setDbMeta(text) {
+  ["db-meta", "db-meta-top"].forEach((id) => { const n = el(id); if (n) n.textContent = text; });
+}
 
 // ---------------- overview ----------------
 const charts = {};
@@ -77,13 +89,11 @@ async function loadOverview() {
   loadOverview.loaded = true;
   try {
     const [stats, health] = await Promise.all([fetchJSON("/api/stats"), fetchJSON("/api/health")]);
-    el("db-meta").textContent =
-      `${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)}`;
+    setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)}`);
     renderOverviewCards(stats, health);
     renderCategoryChart(stats.by_category || {});
     renderProjectChart(stats.by_project || {});
-    el("db-meta").textContent =
-      `${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)} · ${health.embedding_coverage?.toFixed(0)}% embed`;
+    setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)} · ${health.embedding_coverage?.toFixed(0)}% embed`);
   } catch (e) { el("overview-cards").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
   loadTimeline();
   loadKeywords();
@@ -420,6 +430,181 @@ async function restoreMemory(id) {
     showToast("memória restaurada", "ok");
     loadTrash();
   } catch (e) { showToast("falha ao restaurar: " + e.message, "err"); }
+}
+
+// ---------------- tasks (kanban) ----------------
+const TASK_STATUSES = ["active", "paused", "done", "cancelled"];
+let tasks = [];
+let tmMode = "create";   // "create" | "edit"
+let tmKey = null;
+
+async function loadTasks() {
+  if (!loadTasks.wired) {
+    loadTasks.wired = true;
+    // populate the project picker in the task modal from the shared projectMap
+    fillProjectOptions(el("tm-project"), [...projectMap.keys()]);
+    el("task-new").addEventListener("click", () => openTaskModal(null));
+    el("task-refresh").addEventListener("click", () => renderTasksBoard(true));
+    el("task-find").addEventListener("input", () => paintBoard());
+    el("tm-close").addEventListener("click", closeTaskModal);
+    el("task-modal").addEventListener("click", (e) => { if (e.target.id === "task-modal") closeTaskModal(); });
+    el("tm-save").addEventListener("click", saveTask);
+    el("tm-status-row").querySelectorAll("button[data-set]").forEach((b) =>
+      b.addEventListener("click", () => changeTaskStatus(tmKey, b.dataset.set)));
+    // drop zones — HTML5 native DnD, one listener set per column
+    document.querySelectorAll("#kanban .kcards").forEach((zone) => {
+      zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drop-hover"); });
+      zone.addEventListener("dragleave", () => zone.classList.remove("drop-hover"));
+      zone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        zone.classList.remove("drop-hover");
+        const key = e.dataTransfer.getData("text/task-key");
+        const status = zone.dataset.drop;
+        if (key && status) changeTaskStatus(key, status);
+      });
+    });
+  }
+  await renderTasksBoard();
+}
+
+async function renderTasksBoard(loud) {
+  try {
+    const d = await withLoading(fetchJSON("/api/tasks?limit=1000"));
+    tasks = d.items || [];
+    paintBoard();
+    if (loud) showToast(`${tasks.length} tasks`, "ok");
+  } catch (e) {
+    showToast("erro ao carregar tasks: " + e.message, "err");
+  }
+}
+
+// paintBoard (re)renders every column from the in-memory `tasks`, applying the
+// current text filter. Kept separate from the fetch so filtering is instant.
+function paintBoard() {
+  const q = el("task-find").value.trim().toLowerCase();
+  const match = (t) => !q ||
+    (t.task_key || "").toLowerCase().includes(q) ||
+    (t.external_ref || "").toLowerCase().includes(q) ||
+    (t.project_names || []).some((n) => n.toLowerCase().includes(q));
+  const shown = tasks.filter(match);
+  TASK_STATUSES.forEach((st) => {
+    const zone = document.querySelector(`#kanban .kcards[data-drop="${st}"]`);
+    const rows = shown.filter((t) => t.status === st);
+    document.querySelector(`.kcount[data-count="${st}"]`).textContent = rows.length;
+    zone.innerHTML = rows.length
+      ? rows.map(taskCardHTML).join("")
+      : `<div class="muted" style="padding:10px;font-size:12px;text-align:center">—</div>`;
+  });
+  el("task-stats").textContent = `${shown.length}/${tasks.length} tasks`;
+  // wire card interactions
+  document.querySelectorAll("#kanban .tcard").forEach((c) => {
+    c.addEventListener("click", () => openTaskModal(tasks.find((t) => t.task_key === c.dataset.key)));
+    c.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/task-key", c.dataset.key);
+      e.dataTransfer.effectAllowed = "move";
+      c.classList.add("dragging");
+    });
+    c.addEventListener("dragend", () => c.classList.remove("dragging"));
+  });
+}
+
+function taskCardHTML(t) {
+  const projs = (t.project_names || []).slice(0, 3)
+    .map((n) => `<span class="tchip proj">${esc(shortName(n))}</span>`).join("");
+  const extra = (t.project_names || []).length > 3 ? `<span class="tchip">+${t.project_names.length - 3}</span>` : "";
+  const note = (t.journal || [])[0];
+  return `<div class="tcard" draggable="true" data-key="${esc(t.task_key)}" data-status="${esc(t.status)}">
+    <div class="tkey">${esc(t.task_key)}</div>
+    ${t.external_ref ? `<div class="tref">${esc(t.external_ref)}</div>` : ""}
+    <div class="tmeta">
+      ${projs}${extra}
+      ${t.journal_count ? `<span class="tchip">📓 ${t.journal_count}</span>` : ""}
+      ${t.session_count ? `<span class="tchip">⎇ ${t.session_count}</span>` : ""}
+    </div>
+    ${note ? `<div class="tnote">${esc(preview(note, 90))}</div>` : ""}
+  </div>`;
+}
+
+function openTaskModal(task) {
+  tmMode = task ? "edit" : "create";
+  tmKey = task ? task.task_key : null;
+  el("tm-title").textContent = task ? task.task_key : "Nova task";
+  el("tm-key").value = task ? task.task_key : "";
+  el("tm-key").readOnly = !!task;
+  el("tm-ref").value = task ? (task.external_ref || "") : "";
+  el("tm-project").value = "";
+  el("tm-note").value = "";
+  // status controls + journal only in edit mode
+  el("tm-status-row").hidden = !task;
+  const jr = el("tm-journal");
+  jr.hidden = !task;
+  if (task) {
+    el("tm-status-row").querySelectorAll("button[data-set]").forEach((b) =>
+      b.classList.toggle("primary", b.dataset.set === task.status));
+    const j = task.journal || [];
+    jr.innerHTML = j.length
+      ? j.map((n) => `<div class="jentry">${esc(n)}</div>`).join("")
+      : `<div class="muted" style="font-size:12px">sem notas de journal</div>`;
+    el("tm-meta").textContent = `criada ${fmtDate(task.created_at)} · atualizada ${fmtDate(task.updated_at)}`;
+  } else {
+    el("tm-meta").textContent = "";
+  }
+  el("task-modal").classList.add("open");
+  if (!task) setTimeout(() => el("tm-key").focus(), 30);
+}
+function closeTaskModal() { el("task-modal").classList.remove("open"); }
+
+async function saveTask() {
+  const key = el("tm-key").value.trim();
+  const ref = el("tm-ref").value.trim();
+  const note = el("tm-note").value.trim();
+  const proj = el("tm-project").value;
+  if (!key) { showToast("informe a task key", "err"); return; }
+  try {
+    if (tmMode === "create") {
+      const body = { task_key: key, external_ref: ref };
+      if (note) body.journal_note = note;
+      if (proj) body.project_ids = [proj];
+      const r = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      showToast("task criada", "ok");
+    } else {
+      const body = {};
+      if (ref !== "") body.external_ref = ref;
+      if (note) body.journal_note = note;
+      if (proj) body.project_id = proj;
+      await patchTask(tmKey, body);
+      showToast("task atualizada", "ok");
+    }
+    closeTaskModal();
+    await renderTasksBoard();
+  } catch (e) { showToast("falha ao salvar: " + e.message, "err"); }
+}
+
+async function changeTaskStatus(key, status) {
+  if (!key) return;
+  try {
+    await patchTask(key, { status });
+    // reflect immediately without a full refetch flicker, then reconcile
+    const t = tasks.find((x) => x.task_key === key);
+    if (t) t.status = status;
+    paintBoard();
+    if (el("task-modal").classList.contains("open") && tmKey === key) {
+      const fresh = await fetchJSON("/api/tasks/" + encodeURIComponent(key));
+      const i = tasks.findIndex((x) => x.task_key === key);
+      if (i >= 0) tasks[i] = fresh;
+      openTaskModal(fresh);
+    }
+    showToast(`→ ${status}`, "ok");
+  } catch (e) { showToast("falha ao mover: " + e.message, "err"); renderTasksBoard(); }
+}
+
+async function patchTask(key, body) {
+  const r = await fetch("/api/tasks/" + encodeURIComponent(key), {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  return r.json();
 }
 
 // ---------------- knowledge graph ----------------

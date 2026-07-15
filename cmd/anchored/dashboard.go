@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jholhewres/anchored/pkg/session"
 )
 
 // dashboardAssets embeds the SPA (HTML/JS/CSS + vendored Chart.js and
@@ -76,7 +78,12 @@ func runDashboard(args []string) {
 	}
 	defer svc.Close()
 
-	api := &dashboardAPI{svc: svc, db: svc.StoreDB(), logger: logger}
+	api := &dashboardAPI{
+		svc:      svc,
+		db:       svc.StoreDB(),
+		sessions: session.NewManager(svc.StoreDB(), logger),
+		logger:   logger,
+	}
 
 	assets, err := fs.Sub(dashboardAssets, "dashboard/assets")
 	if err != nil {

@@ -41,6 +41,13 @@ type TaskThreadDelta struct {
 	SessionID   string
 	JournalNote string
 	ExternalRef string
+	// KeepStatus suppresses the automatic paused→active reactivation that
+	// otherwise fires when a project/session is attached. It lets a caller
+	// record a session link or journal note against a paused thread WITHOUT
+	// reopening it (e.g. the MCP `note` action), while `start` leaves it false
+	// so resuming work still reactivates. Default false preserves the original
+	// behavior for the branch-inference hook and the CLI.
+	KeepStatus bool
 }
 
 // taskKeyRe matches ticket-style keys (PROJ-123) inside branch names or free
@@ -88,6 +95,41 @@ func (m *Manager) ActiveTaskThreads(ctx context.Context) ([]TaskThread, error) {
 	return out, rows.Err()
 }
 
+// ListTaskThreads returns threads ordered most-recently-touched first. An empty
+// status lists every thread regardless of state (for the dashboard board);
+// a non-empty status filters to that lifecycle state. limit <= 0 applies a
+// sane default cap.
+func (m *Manager) ListTaskThreads(ctx context.Context, status string, limit int) ([]TaskThread, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	query := `
+		SELECT task_key, external_ref, project_ids, journal, session_ids, status, created_at, updated_at
+		FROM task_threads`
+	args := []any{}
+	if s := strings.TrimSpace(status); s != "" {
+		query += ` WHERE status = ?`
+		args = append(args, s)
+	}
+	query += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TaskThread{}
+	for rows.Next() {
+		t, err := scanTaskThreadRows(rows)
+		if err != nil {
+			continue
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
 // UpsertTaskThread merges delta into the thread, creating it (status active)
 // on first touch. Resuming work on a paused thread reactivates it; done and
 // cancelled threads are terminal for automation (only an explicit
@@ -122,7 +164,7 @@ func (m *Manager) UpsertTaskThread(ctx context.Context, key string, delta TaskTh
 	if cur.Status == TaskStatusDone || cur.Status == TaskStatusCancelled {
 		return cur, nil
 	}
-	if cur.Status == TaskStatusPaused && (delta.ProjectID != "" || delta.SessionID != "") {
+	if !delta.KeepStatus && cur.Status == TaskStatusPaused && (delta.ProjectID != "" || delta.SessionID != "") {
 		cur.Status = TaskStatusActive
 	}
 
@@ -173,6 +215,63 @@ func prependJournal(journal []string, note string) []string {
 		out = out[:taskJournalMaxNotes]
 	}
 	return out
+}
+
+// empty reports whether the delta carries no mergeable field (KeepStatus is a
+// modifier, not content, so it does not count).
+func (d TaskThreadDelta) empty() bool {
+	return d.ProjectID == "" && d.SessionID == "" &&
+		strings.TrimSpace(d.JournalNote) == "" && d.ExternalRef == ""
+}
+
+func isTerminalStatus(s string) bool {
+	return s == TaskStatusDone || s == TaskStatusCancelled
+}
+
+// UpdateTaskThread applies an optional free-form delta and an optional status
+// transition (newStatus == "" skips it) in the ORDER that preserves intent:
+//
+//   - Reopening a terminal thread (newStatus active/paused): the status change
+//     runs FIRST, so the delta then lands on a live thread instead of being
+//     silently dropped by the terminal-freeze guard in UpsertTaskThread.
+//   - Otherwise (going terminal, or no status change): the delta runs FIRST, so
+//     a closing note is recorded while the thread is still active before it is
+//     moved to done/cancelled.
+//
+// The delta's status is always kept (KeepStatus) because the transition is
+// owned by newStatus here — a merged session/project must never flip the status
+// out from under an explicit request.
+func (m *Manager) UpdateTaskThread(ctx context.Context, key string, delta TaskThreadDelta, newStatus string) (*TaskThread, error) {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	delta.KeepStatus = true
+
+	applyDelta := func() error {
+		if delta.empty() {
+			return nil
+		}
+		_, err := m.UpsertTaskThread(ctx, key, delta)
+		return err
+	}
+	applyStatus := func() error {
+		if newStatus == "" {
+			return nil
+		}
+		return m.SetTaskStatus(ctx, key, newStatus)
+	}
+
+	var first, second func() error
+	if newStatus != "" && !isTerminalStatus(newStatus) {
+		first, second = applyStatus, applyDelta // reopen, then merge
+	} else {
+		first, second = applyDelta, applyStatus // merge (closing note), then close
+	}
+	if err := first(); err != nil {
+		return nil, err
+	}
+	if err := second(); err != nil {
+		return nil, err
+	}
+	return m.GetTaskThread(ctx, key)
 }
 
 // SetTaskStatus moves a thread to status (active|paused|done|cancelled).

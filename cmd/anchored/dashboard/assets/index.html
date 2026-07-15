@@ -7,21 +7,33 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1><span class="brand">⟁ anchored</span> dashboard</h1>
-    <nav class="tabs">
-      <button data-tab="overview" class="active">Overview</button>
-      <button data-tab="memories">Memórias</button>
-      <button data-tab="kg">Knowledge Graph</button>
-      <button data-tab="system">Sistema</button>
-      <button data-tab="dream">Consolidação</button>
-      <button data-tab="artifacts">Artifacts</button>
-      <button data-tab="activity">Atividade</button>
-    </nav>
-    <span class="meta" id="db-meta"></span>
-  </header>
+  <div class="app">
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="brand"><span class="glyph">⟁</span> <span class="brand-name">anchored</span></div>
+      <nav class="tabs">
+        <button data-tab="overview" class="active"><span class="ico">◧</span> Overview</button>
+        <button data-tab="memories"><span class="ico">❒</span> Memórias</button>
+        <button data-tab="tasks"><span class="ico">◪</span> Tasks</button>
+        <button data-tab="kg"><span class="ico">⬡</span> Knowledge Graph</button>
+        <button data-tab="system"><span class="ico">⚙</span> Sistema</button>
+        <button data-tab="dream"><span class="ico">✷</span> Consolidação</button>
+        <button data-tab="artifacts"><span class="ico">▤</span> Artifacts</button>
+        <button data-tab="activity"><span class="ico">⎇</span> Atividade</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="meta" id="db-meta"></span>
+      </div>
+    </aside>
 
-  <main>
+    <!-- CONTENT -->
+    <div class="content">
+      <header class="topbar">
+        <h1 id="view-title">Overview</h1>
+        <span class="meta" id="db-meta-top"></span>
+      </header>
+
+      <main>
     <!-- OVERVIEW -->
     <section id="tab-overview" class="tab active">
       <div class="card-grid" id="overview-cards"></div>
@@ -77,6 +89,34 @@
         <div class="row">
           <button class="btn" id="mem-prev">← anterior</button>
           <button class="btn" id="mem-next">próximo →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TASKS (kanban) -->
+    <section id="tab-tasks" class="tab">
+      <div class="toolbar">
+        <button class="btn primary" id="task-new">+ Nova task</button>
+        <input type="search" id="task-find" placeholder="filtrar por key / ref / projeto…" style="min-width:220px">
+        <button class="btn" id="task-refresh">Atualizar</button>
+        <span class="muted" id="task-stats" style="margin-left:auto"></span>
+      </div>
+      <div class="kanban" id="kanban">
+        <div class="kcol" data-status="active">
+          <div class="kcol-head"><span class="dot active"></span> Ativas <span class="kcount" data-count="active">0</span></div>
+          <div class="kcards" data-drop="active"></div>
+        </div>
+        <div class="kcol" data-status="paused">
+          <div class="kcol-head"><span class="dot paused"></span> Pausadas <span class="kcount" data-count="paused">0</span></div>
+          <div class="kcards" data-drop="paused"></div>
+        </div>
+        <div class="kcol" data-status="done">
+          <div class="kcol-head"><span class="dot done"></span> Concluídas <span class="kcount" data-count="done">0</span></div>
+          <div class="kcards" data-drop="done"></div>
+        </div>
+        <div class="kcol" data-status="cancelled">
+          <div class="kcol-head"><span class="dot cancelled"></span> Canceladas <span class="kcount" data-count="cancelled">0</span></div>
+          <div class="kcards" data-drop="cancelled"></div>
         </div>
       </div>
     </section>
@@ -162,9 +202,11 @@
           <tbody id="act-imports"></tbody></table>
       </div>
     </section>
-  </main>
+      </main>
+    </div>
+  </div>
 
-  <!-- detail modal -->
+  <!-- memory detail modal -->
   <div class="modal-overlay" id="modal">
     <div class="modal">
       <h3 id="m-cat"></h3>
@@ -174,6 +216,36 @@
         <label class="muted" style="margin-right:auto;display:flex;align-items:center;gap:6px"><input type="checkbox" id="m-md" checked> Markdown</label>
         <button class="btn danger" id="m-delete">Deletar (soft)</button>
         <button class="btn" id="m-close">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- task create/detail modal -->
+  <div class="modal-overlay" id="task-modal">
+    <div class="modal">
+      <h3 id="tm-title">Task</h3>
+      <div class="tm-form">
+        <label class="field"><span>Task key</span>
+          <input type="text" id="tm-key" placeholder="PROJ-123" autocomplete="off"></label>
+        <label class="field"><span>Referência externa</span>
+          <input type="text" id="tm-ref" placeholder="link / ticket / branch" autocomplete="off"></label>
+        <label class="field"><span>Projeto</span>
+          <select id="tm-project"><option value="">— nenhum —</option></select></label>
+        <label class="field"><span>Nota de journal</span>
+          <textarea id="tm-note" rows="2" placeholder="anota o que aconteceu…"></textarea></label>
+      </div>
+      <div class="tm-status" id="tm-status-row" hidden>
+        <span class="muted">status:</span>
+        <button class="btn kstatus" data-set="active">ativar</button>
+        <button class="btn kstatus" data-set="paused">pausar</button>
+        <button class="btn kstatus" data-set="done">concluir</button>
+        <button class="btn kstatus" data-set="cancelled">cancelar</button>
+      </div>
+      <div class="tm-journal" id="tm-journal" hidden></div>
+      <div class="actions">
+        <span class="muted" id="tm-meta" style="margin-right:auto"></span>
+        <button class="btn primary" id="tm-save">Salvar</button>
+        <button class="btn" id="tm-close">Fechar</button>
       </div>
     </div>
   </div>

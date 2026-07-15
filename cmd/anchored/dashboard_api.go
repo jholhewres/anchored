@@ -12,15 +12,18 @@ import (
 	"time"
 
 	"github.com/jholhewres/anchored/pkg/memory"
+	"github.com/jholhewres/anchored/pkg/session"
 )
 
 // dashboardAPI wires the HTTP routes to the memory.Service / raw DB. It is
-// read-mostly (search, list, stats, KG, health); the only write path is the
-// soft-delete of a single memory, mirroring `anchored forget`.
+// read-mostly (search, list, stats, KG, health); the write paths are the
+// soft-delete of a single memory (mirroring `anchored forget`) and task-thread
+// management (create/update/status, mirroring `anchored task`).
 type dashboardAPI struct {
-	svc    *memory.Service
-	db     *sql.DB
-	logger *slog.Logger
+	svc      *memory.Service
+	db       *sql.DB
+	sessions *session.Manager
+	logger   *slog.Logger
 }
 
 func (a *dashboardAPI) routes() http.Handler {
@@ -44,6 +47,11 @@ func (a *dashboardAPI) routes() http.Handler {
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/imports", a.handleImports)
 	mux.HandleFunc("GET /api/health", a.handleHealth)
+	mux.HandleFunc("GET /api/tasks", a.handleTasksList)
+	mux.HandleFunc("POST /api/tasks", a.handleTaskCreate)
+	mux.HandleFunc("GET /api/tasks/{key}", a.handleTaskGet)
+	mux.HandleFunc("PATCH /api/tasks/{key}", a.handleTaskUpdate)
+	mux.HandleFunc("DELETE /api/tasks/{key}", a.handleTaskDelete)
 	return a.recoverer(loggingMW(a.logger)(mux))
 }
 
