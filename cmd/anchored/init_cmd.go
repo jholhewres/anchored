@@ -457,22 +457,12 @@ func setupAnchored() {
 func ensureONNXModel() {
 	home, _ := os.UserHomeDir()
 	onnxDir := filepath.Join(home, ".anchored", "data", "onnx")
-
-	entries, err := os.ReadDir(onnxDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			slog.Info("ONNX model not found. Run 'anchored' to auto-download the embedding model.")
-		} else {
-			slog.Warn("failed to check ONNX model directory", "error", err)
-		}
+	if _, found := findONNXModel(onnxDir); found {
 		return
 	}
-
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".onnx") {
-			return // model found
-		}
+	if _, err := os.Stat(onnxDir); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to check ONNX model directory", "path", onnxDir, "error", err)
+		return
 	}
-
 	slog.Info("ONNX model not found. Run 'anchored' to auto-download the embedding model.")
 }

@@ -13,7 +13,12 @@ endif
 VERSION := $(shell cat VERSION)
 LDFLAGS := -X main.Version=$(VERSION)
 
-.PHONY: build test lint clean sync-version eval
+# Canonical location the installer (install/install.sh) writes to, and the
+# freshly built binary produced by `make build`.
+INSTALL_BIN := $(HOME)/.anchored/bin/anchored
+SRC_BIN     := $(CURDIR)/bin/anchored
+
+.PHONY: build test lint clean sync-version eval sync-bin sync-bin-dry
 
 build:
 	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" go build -ldflags "$(LDFLAGS)" -o bin/anchored ./cmd/anchored/
@@ -37,3 +42,43 @@ clean:
 
 sync-version:
 	go run ./cmd/version-sync
+
+# Discover every installed `anchored` on this machine and overwrite it with the
+# freshly built binary. Locations are found at runtime via whereis + command -v
+# (so it works for any username / install layout), plus the canonical installer
+# path. The repo's own bin/anchored is never a target. Paths owned by root fall
+# back to sudo.
+sync-bin: build
+	@echo "Discovering installed anchored binaries..."
+	@targets="$(INSTALL_BIN) $$(command -v anchored 2>/dev/null) \
+	  $$(whereis -b anchored 2>/dev/null | cut -d: -f2-)"; \
+	seen=""; found=0; \
+	for t in $$targets; do \
+	  [ -n "$$t" ] || continue; \
+	  [ "$$t" = "$(SRC_BIN)" ] && continue; \
+	  case " $$seen " in *" $$t "*) continue;; esac; \
+	  seen="$$seen $$t"; \
+	  [ -e "$$t" ] || continue; \
+	  found=1; \
+	  if cp -f "$(SRC_BIN)" "$$t" 2>/dev/null; then \
+	    echo "  synced  $$t"; \
+	  elif sudo cp -f "$(SRC_BIN)" "$$t"; then \
+	    echo "  synced  $$t (sudo)"; \
+	  else \
+	    echo "  FAILED  $$t"; \
+	  fi; \
+	done; \
+	[ "$$found" = "1" ] || echo "  no installed anchored found (nothing synced)"
+
+# Preview which paths sync-bin would target, without copying.
+sync-bin-dry:
+	@targets="$(INSTALL_BIN) $$(command -v anchored 2>/dev/null) \
+	  $$(whereis -b anchored 2>/dev/null | cut -d: -f2-)"; \
+	seen=""; \
+	for t in $$targets; do \
+	  [ -n "$$t" ] || continue; \
+	  [ "$$t" = "$(SRC_BIN)" ] && continue; \
+	  case " $$seen " in *" $$t "*) continue;; esac; \
+	  seen="$$seen $$t"; \
+	  [ -e "$$t" ] && echo "  would sync  $$t" || echo "  (absent)    $$t"; \
+	done

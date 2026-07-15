@@ -100,37 +100,20 @@ func checkBinary(home string) {
 }
 
 func checkONNX(modelDir string) {
-	entries, err := os.ReadDir(modelDir)
-	if err != nil {
-		printCheck(false, "ONNX model dir", err.Error(),
-			"run 'anchored serve' once to auto-download the model (~470MB)")
-		return
-	}
-
-	var modelFound, tokenizerFound bool
-	var modelName string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		modelName = e.Name()
-		sub := filepath.Join(modelDir, e.Name())
-		if _, err := os.Stat(filepath.Join(sub, "model.onnx")); err == nil {
-			modelFound = true
-		}
-		if _, err := os.Stat(filepath.Join(sub, "tokenizer.json")); err == nil {
-			tokenizerFound = true
-		}
-	}
-
+	modelName, modelFound := findONNXModel(modelDir)
 	if !modelFound {
-		printCheck(false, "ONNX model.onnx", "missing in "+modelDir,
-			"run 'anchored serve' once to trigger auto-download")
+		if _, err := os.Stat(modelDir); os.IsNotExist(err) {
+			printCheck(false, "ONNX model dir", err.Error(),
+				"run 'anchored serve' once to auto-download the model (~470MB)")
+		} else {
+			printCheck(false, "ONNX model.onnx", "missing in "+modelDir,
+				"run 'anchored serve' once to trigger auto-download")
+		}
 		return
 	}
 	printCheck(true, fmt.Sprintf("ONNX model: %s", modelName), "", "")
 
-	if !tokenizerFound {
+	if _, err := os.Stat(filepath.Join(modelDir, modelName, "tokenizer.json")); err != nil {
 		printCheck(false, "tokenizer.json", "missing — embedder will fall back to slow path",
 			"delete the model dir and re-run 'anchored serve' to re-download")
 	} else {

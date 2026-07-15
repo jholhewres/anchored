@@ -163,6 +163,106 @@ command = "anchored"
 enabled = true
 ```
 
+### VS Code Copilot
+
+> **Note:** Hooks are in Preview in VS Code. See the
+> [official documentation](https://code.visualstudio.com/docs/agent-customization/hooks)
+> for details.
+
+#### 1. MCP server
+
+Register Anchored as an MCP server in the current project:
+
+```bash
+mkdir -p .vscode
+anchored init --tool vscode --cwd /path/to/project
+```
+
+To make Anchored available in **all projects**, use the user profile's
+global configuration file. Open the file via the `MCP: Open User Configuration`
+command and add it manually:
+
+```json
+{
+  "servers": {
+    "anchored": {
+      "type": "stdio",
+      "command": "anchored"
+    }
+  }
+}
+```
+
+> **Notes:**
+> - Make sure the `anchored` command is available in your terminal's PATH —
+>   VS Code runs it directly when starting the server.
+> - On first run, VS Code displays a trust dialog — confirm to activate
+>   Anchored's tools.
+
+#### 2. Hooks (automatic context injection)
+
+VS Code Copilot supports hooks using the same format as Claude Code, including
+`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PreCompact`, and `Stop`.
+With hooks, `anchored_context` is automatically injected at the start of every
+conversation — no manual call needed.
+
+Create `.github/hooks/anchored.json` in your project:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "anchored hook sessionstart",
+        "timeout": 15
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "anchored hook userpromptsubmit",
+        "timeout": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "anchored hook posttooluse",
+        "timeout": 10
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "anchored hook precompact",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "anchored hook stop",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+VS Code also accepts hooks from the following locations:
+
+| Location | Scope |
+|---|---|
+| `.github/hooks/*.json` | Workspace |
+| `.claude/settings.json` | Workspace |
+| `.claude/settings.local.json` | Workspace local |
+| `~/.claude/settings.json` | User (global) |
+
+After saving, VS Code loads the hooks automatically. On the next conversation,
+`SessionStart` will inject Anchored context (identity, recent decisions,
+relevant memories) with no manual action needed.
+
 ## CLI overview
 
 ```text
@@ -191,6 +291,7 @@ anchored dream                   Analyze duplicate/contradictory memories
 anchored dream --apply <id>      Apply one proposed dream action
 anchored retention sweep         Archive expired operational/episodic memories
 anchored bootstrap [--cwd]       Extract project seed memories from README/docs/rules/tree
+anchored backfill [--batch]      Embed memories missing a vector (after bootstrap/import)
 anchored handoff [--scope]       Save a short session handoff with TTL
 anchored precompact              Save a pre-compaction recovery snapshot
 anchored hook <subcommand>       Run session continuity hooks
@@ -204,6 +305,8 @@ anchored purge                   Wipe memories; --hard resets DB with backup
 ```
 
 Import sources: `claude-code`, `devclaw`, `opencode`, `cursor`, `all`.
+
+After `bootstrap` or `import`, run `anchored backfill` if memories still need vector embeddings for hybrid search. It is idempotent, a fully embedded store finishes immediately. Use `--pause 500ms` to stay gentle on CPU; `--skip-embeddings` on bootstrap/import defers this step.
 
 ## Curation vs dream
 

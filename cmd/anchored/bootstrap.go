@@ -19,6 +19,7 @@ func runBootstrap(args []string) {
 	configPath := fs.String("config", "", "path to config file")
 	dryRun := fs.Bool("dry-run", false, "preview without saving")
 	force := fs.Bool("force", false, "overwrite existing memories")
+	skipEmbeddings := fs.Bool("skip-embeddings", false, "skip embedding backfill after bootstrap")
 	sources := fs.String("source", "readme,docs,rules,tree", "comma-separated sources")
 	fs.Parse(args)
 
@@ -95,11 +96,12 @@ func runBootstrap(args []string) {
 
 		meta := memory.BootstrapMetadata(seed.Confidence)
 		_, err := svc.SaveWithOptions(ctx, memory.SaveOptions{
-			Content:  seed.Content,
-			Category: seed.Category,
-			Source:   "bootstrap",
-			CWD:      rootDir,
-			Metadata: meta.ToAny(),
+			Content:   seed.Content,
+			Category:  seed.Category,
+			Source:    "bootstrap",
+			CWD:       rootDir,
+			Metadata:  meta.ToAny(),
+			SkipEmbed: true,
 		})
 		if err != nil {
 			slog.Warn("bootstrap save failed", "error", err, "category", seed.Category)
@@ -113,6 +115,22 @@ func runBootstrap(args []string) {
 		action = "would save"
 	}
 	fmt.Printf("Bootstrap: %d memories %s, %d skipped (dedup)\n", saved, action, skipped)
+
+	if !*dryRun && !*skipEmbeddings && svc.EmbeddingsEnabled() {
+		var pending int
+		svc.StoreDB().QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM memories WHERE embedding IS NULL OR LENGTH(embedding) = 0",
+		).Scan(&pending)
+		if pending > 0 {
+			fmt.Fprintf(os.Stderr, "Backfilling %d embeddings (this may take a while)...\n", pending)
+			embedded, err := svc.BackfillEmbeddings(ctx, 50)
+			if err != nil {
+				slog.Warn("embedding backfill failed", "error", err)
+			} else {
+				fmt.Printf("Embeddings backfilled: %d / %d\n", embedded, pending)
+			}
+		}
+	}
 }
 
 type memorySeed struct {
