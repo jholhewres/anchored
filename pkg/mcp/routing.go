@@ -64,6 +64,10 @@ const AnchoredRoutingBlock = `<anchored_memory>
     Decisions and preferences saved via anchored_save remain authoritative across sessions and tools. When the user contradicts a stored fact, prefer anchored_update over creating a duplicate; when they revoke one, use anchored_forget. These directives stay active for the whole conversation — don't drop them as it grows.
   </session_continuity>
 
+  <task_threads>
+    When the user frames focused work as a ticket/feature/branch (e.g. PROJ-123), call anchored_task(action=start, key=..., session_id, cwd) to open/resume the thread and link this session — a task is cross-session and cross-project, so it survives conversation end. Use action=note to log progress (does not reopen a paused task) and action=status to pause/resume. GUARDRAIL: move a task to done or cancelled ONLY when the user explicitly says it is finished or abandoned — never infer completion, and never finish a task just because the conversation is ending.
+  </task_threads>
+
   <forbidden>
     NEVER save secrets, credentials, tokens, or PII.
     NEVER narrate the search/save — just do it and let results inform the answer.

@@ -243,6 +243,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolKGAdd(ctx, args)
 	case "anchored_session_end":
 		return s.toolSessionEnd(ctx, args)
+	case "anchored_task":
+		return s.toolTask(ctx, args)
 	case "anchored_execute":
 		return s.toolCtxExecute(ctx, args)
 	case "anchored_execute_file":

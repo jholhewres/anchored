@@ -192,6 +192,50 @@ func ToolDefinitions() []Tool {
 			},
 		},
 		{
+			Name:        "anchored_task",
+			Description: "Manage cross-session, cross-project TASK THREADS (a ticket / branch-named unit of work like PROJ-123 that spans several sessions and repos). A task is NOT a session: it lives across many conversations, so never treat ending a conversation as finishing a task. Call PROACTIVELY at the start of focused work the user frames as a ticket/feature/branch, so the session is linked to the thread and the work is traceable in the dashboard.\n\nactions:\n• start — create or resume task `key`; links the current session_id + project (from cwd). Resuming a paused task reactivates it. Safe/idempotent — call freely.\n• note — append a journal note; links the session WITHOUT reopening a paused task.\n• status — set active|paused|done|cancelled. GUARDRAIL: only move to done or cancelled when the user EXPLICITLY says the work is finished or abandoned — never infer it, and never on conversation end. pause/resume are fine to infer.\n• list — list threads (optional status filter). • get — one thread's detail (journal, linked projects/sessions).\n\n`key` is normalized to UPPERCASE, so the same ticket is one thread no matter the surface (agent, dashboard, CLI).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action": map[string]any{
+						"type":        "string",
+						"enum":        []string{"start", "note", "status", "list", "get"},
+						"description": "What to do with the task thread.",
+					},
+					"key": map[string]any{
+						"type":        "string",
+						"description": "Task key (ticket/branch id, e.g. PROJ-123). Required for start/note/status/get.",
+					},
+					"note": map[string]any{
+						"type":        "string",
+						"description": "Journal note to append (for action=note, or optionally on start/status).",
+					},
+					"status": map[string]any{
+						"type":        "string",
+						"enum":        []string{"active", "paused", "done", "cancelled"},
+						"description": "New status (required for action=status). done/cancelled only on explicit user intent.",
+					},
+					"external_ref": map[string]any{
+						"type":        "string",
+						"description": "Optional external reference (Jira/GitHub link, branch) set on start.",
+					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "Current session id, linked to the thread on start/note/status.",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Current working directory; resolves the project linked to the thread.",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Max threads for action=list (default 50).",
+					},
+				},
+				"required": []string{"action"},
+			},
+		},
+		{
 			Name:        "anchored_kg_query",
 			Description: "Query the knowledge graph for an entity's relationships. Use IN ADDITION to anchored_search whenever the user names a specific project, service, repo, person, API, library, or environment — anchored_kg_query returns structured edges (depends_on, deployed_on, owns, uses) that prose search misses. Example triggers: \"how does X integrate with Y?\", \"what's the relationship between A and B?\", \"who owns service X?\", \"what depends on this library?\". Cheap; pair with anchored_search for full picture.",
 			InputSchema: map[string]any{
