@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.12.0] - 2026-07-15
+
+Task management lands across every surface — dashboard, MCP tool, and CLI now
+share one cross-project task-thread store — alongside a dashboard visual
+refresh and a fix that stops orphaned stdio servers from leaking memory.
+
+### Added
+
+- **Task management in the dashboard** — a new Tasks tab with a Kanban board
+  (active / paused / done / cancelled), native drag-and-drop status changes,
+  and a create/detail modal with a journal timeline. Surfaces the existing
+  cross-project `task_threads` store; manual creation coexists with
+  agent/CLI-created threads via same-key upsert.
+- **`anchored_task` MCP tool** — lets agents manage task threads during a
+  session (`start` / `note` / `status` / `list` / `get`), linking the current
+  session and project on every action. A routing-block guardrail keeps the
+  agent from marking a task done/cancelled without explicit user intent, and a
+  task is never closed just because a conversation ends.
+- **Task API** (`/api/tasks`) on the dashboard — list (with status filter),
+  create, get, patch (status + journal/ref/project), and soft-cancel, behind
+  the existing DNS-rebinding / CSRF / token guard.
+- **`anchored bootstrap --skip-embeddings`** and an automatic embedding
+  backfill after bootstrap, so a freshly seeded store is searchable without a
+  separate step (#4).
+- **`make sync-bin` / `sync-bin-dry`** — refresh every installed `anchored`
+  binary with a freshly built one (#4).
+- **VS Code Copilot** setup docs (MCP + hooks) in the README (#4).
+
+### Changed
+
+- **Dashboard visual redesign** — dark-first layout with a left sidebar
+  (replacing the top tabs), a cyan accent, and monospaced data. All existing
+  views are preserved.
+
+### Fixed
+
+- **Orphaned stdio servers now terminate on client exit.** The MCP server only
+  stopped on stdin EOF, so a crashed or lingering client left it running and
+  pinning the ~450MB ONNX model in RAM. It now shuts down on SIGINT/SIGTERM,
+  polls for parent-process death (with `PR_SET_PDEATHSIG` on Linux), and has a
+  forced-exit backstop — all preserving the existing EOF path. Opt out of the
+  parent watchdog with `ANCHORED_NO_PARENT_WATCH=1`.
+- **ONNX model detection** now handles the nested `<dir>/<model>/model.onnx`
+  layout in `doctor` and `init` via a shared `findONNXModel`, fixing a false
+  "model not found" in `init` and a cross-directory mismatch in `doctor` (#4).
+
 ## [0.11.0] - 2026-07-06
 
 Real Cursor activation and a fix for the embedding backfill that had left the
