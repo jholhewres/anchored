@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // handleTokens surfaces the v0.13 recall telemetry (recall_logs) in the
@@ -34,9 +37,12 @@ type hostConnection struct {
 
 // knownConnectionHosts is the set of hosts anchored can register into via
 // `anchored init --tool <name>`, shown in the dashboard's Connections view.
+// Purely project-scoped hosts (e.g. vscode, whose config lives at
+// cwd/.vscode/mcp.json) are omitted: the dashboard server can't know the user's
+// project directory, so its registration status can't be reported reliably.
 var knownConnectionHosts = []string{
 	"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf",
-	"cline", "vscode", "codex", "devin",
+	"cline", "codex", "devin",
 	"openclaw", "hermes", "devclaw", "gatorclaw", "supergator",
 }
 
@@ -56,9 +62,10 @@ func (a *dashboardAPI) handleConnections(w http.ResponseWriter, r *http.Request)
 	dashWriteJSON(w, http.StatusOK, map[string]any{"hosts": out})
 }
 
-// isAnchoredRegistered reports whether the host's MCP config already contains an
-// anchored server entry. Best-effort and read-only — any read/parse error is
-// treated as "not registered" rather than surfaced.
+// isAnchoredRegistered reports whether the host's MCP config actually contains
+// an anchored server entry (not just a stray mention of the word). Read-only;
+// any read/parse error is treated as "not registered". Parses by the host's
+// config format so an unrelated "anchored" label can't false-positive.
 func isAnchoredRegistered(t, cwd string) bool {
 	path := getToolMCPPath(t, cwd)
 	if path == "" {
@@ -68,16 +75,56 @@ func isAnchoredRegistered(t, cwd string) bool {
 	if err != nil {
 		return false
 	}
-	// A substring check is sufficient here: every registration writes a server
-	// keyed or named "anchored", and this view is advisory (the source of truth
-	// is `anchored init`). Avoids format-specific parsing across JSON/YAML/TOML.
-	return containsAnchoredEntry(string(data))
+	switch getToolMCPConfig(t).format {
+	case "yaml-map":
+		return yamlMapHasAnchored(data, "mcp_servers")
+	case "yaml-array":
+		return yamlArrayHasAnchored(data, "mcp")
+	default:
+		if getToolMCPConfig(t).isTOML {
+			return strings.Contains(string(data), "[mcp_servers.anchored]")
+		}
+		return jsonMapHasAnchored(data, getToolMCPConfig(t).rootKey)
+	}
 }
 
-func containsAnchoredEntry(s string) bool {
-	for _, marker := range []string{`"anchored"`, "name: anchored", "[mcp_servers.anchored]", "anchored:"} {
-		if strings.Contains(s, marker) {
-			return true
+// jsonMapHasAnchored reports whether cfg[rootKey] is a map containing an
+// "anchored" server entry.
+func jsonMapHasAnchored(data []byte, rootKey string) bool {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	var servers map[string]json.RawMessage
+	if json.Unmarshal(doc[rootKey], &servers) != nil {
+		return false
+	}
+	_, ok := servers["anchored"]
+	return ok
+}
+
+func yamlMapHasAnchored(data []byte, rootKey string) bool {
+	doc := map[string]any{}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	servers, _ := doc[rootKey].(map[string]any)
+	_, ok := servers["anchored"]
+	return ok
+}
+
+func yamlArrayHasAnchored(data []byte, rootKey string) bool {
+	doc := map[string]any{}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	section, _ := doc[rootKey].(map[string]any)
+	list, _ := section["servers"].([]any)
+	for _, it := range list {
+		if e, _ := it.(map[string]any); e != nil {
+			if name, _ := e["name"].(string); name == "anchored" {
+				return true
+			}
 		}
 	}
 	return false

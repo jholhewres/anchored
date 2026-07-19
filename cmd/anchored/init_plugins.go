@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -172,15 +173,13 @@ func installOpenClawPlugin(home string) {
 	slog.Info("installed anchored OpenClaw plugin", "dir", dir)
 }
 
-// enableOpenClawSlot sets plugins.slots.memory="anchored" and
-// plugins.entries.anchored.enabled=true, preserving all other config.
+// enableOpenClawSlot sets plugins.slots.memory="anchored" and marks
+// plugins.entries.anchored enabled, preserving all other config — including
+// any sibling fields already stored under the anchored entry.
 func enableOpenClawSlot(configPath string) error {
-	doc := map[string]any{}
-	prev, err := os.ReadFile(configPath)
-	if err == nil && len(prev) > 0 {
-		if e := json.Unmarshal(prev, &doc); e != nil {
-			return e
-		}
+	doc, prev, err := readJSONDoc(configPath)
+	if err != nil {
+		return err
 	}
 	plugins, _ := doc["plugins"].(map[string]any)
 	if plugins == nil {
@@ -195,22 +194,19 @@ func enableOpenClawSlot(configPath string) error {
 	if entries == nil {
 		entries = map[string]any{}
 	}
-	entries["anchored"] = map[string]any{"enabled": true}
+	// Merge into the existing entry rather than replacing it, so any per-plugin
+	// fields the user or OpenClaw stored under entries.anchored survive.
+	entry, _ := entries["anchored"].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{}
+	}
+	entry["enabled"] = true
+	entries["anchored"] = entry
 	plugins["slots"] = slots
 	plugins["entries"] = entries
 	doc["plugins"] = plugins
 
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return err
-	}
-	if len(prev) > 0 {
-		_ = os.WriteFile(configPath+".bak", prev, 0644)
-	}
-	return os.WriteFile(configPath, append(out, '\n'), 0644)
+	return writeJSONDoc(configPath, doc, prev)
 }
 
 // installHermesPlugin writes the Python plugin and sets memory.provider in
@@ -252,7 +248,9 @@ func installPiPlugin(home string) {
 		return
 	}
 	settings := filepath.Join(home, ".pi", "agent", "settings.json")
-	if err := registerPiExtension(settings, "~/.pi/agent/extensions/anchored"); err != nil {
+	// Register the absolute extension path — pi may not tilde-expand entries,
+	// and everywhere else in init we resolve absolute paths.
+	if err := registerPiExtension(settings, dir); err != nil {
 		slog.Warn("failed to register pi extension", "error", err)
 		return
 	}
@@ -262,12 +260,9 @@ func installPiPlugin(home string) {
 // registerPiExtension appends extPath to the extensions[] array in settings.json
 // if not already present, preserving other settings.
 func registerPiExtension(settingsPath, extPath string) error {
-	doc := map[string]any{}
-	prev, err := os.ReadFile(settingsPath)
-	if err == nil && len(prev) > 0 {
-		if e := json.Unmarshal(prev, &doc); e != nil {
-			return e
-		}
+	doc, prev, err := readJSONDoc(settingsPath)
+	if err != nil {
+		return err
 	}
 	list, _ := doc["extensions"].([]any)
 	for _, it := range list {
@@ -276,16 +271,43 @@ func registerPiExtension(settingsPath, extPath string) error {
 		}
 	}
 	doc["extensions"] = append(list, extPath)
+	return writeJSONDoc(settingsPath, doc, prev)
+}
 
+// readJSONDoc parses a JSON config into a generic map using a number-preserving
+// decoder (json.Number) so foreign integer fields larger than 2^53 aren't
+// silently rewritten as floats on the round-trip. A missing/empty file yields
+// an empty document. Returns the doc and the original bytes (for backupOnce).
+func readJSONDoc(path string) (map[string]any, []byte, error) {
+	prev, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil, nil
+		}
+		return nil, nil, err
+	}
+	doc := map[string]any{}
+	if len(prev) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(prev))
+		dec.UseNumber()
+		if e := dec.Decode(&doc); e != nil {
+			return nil, nil, e
+		}
+	}
+	return doc, prev, nil
+}
+
+// writeJSONDoc marshals doc to path (creating parent dirs), preserving the
+// user's original in path+".bak" via backupOnce so a second write in the same
+// init run can't clobber the true original.
+func writeJSONDoc(path string, doc map[string]any, prev []byte) error {
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	if len(prev) > 0 {
-		_ = os.WriteFile(settingsPath+".bak", prev, 0644)
-	}
-	return os.WriteFile(settingsPath, append(out, '\n'), 0644)
+	backupOnce(path, prev)
+	return os.WriteFile(path, append(out, '\n'), 0644)
 }

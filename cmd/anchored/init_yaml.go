@@ -135,8 +135,15 @@ func readYAMLDoc(configPath string) (map[string]any, []byte, error) {
 	return doc, data, nil
 }
 
-// writeYAMLDoc marshals doc to configPath, creating parent dirs and backing up
-// prev (the prior file bytes) to configPath+".bak" when a file existed.
+// writeYAMLDoc marshals doc to configPath, creating parent dirs and preserving
+// the user's original in configPath+".bak".
+//
+// NOTE: this round-trips through a generic map, so it preserves the config's
+// DATA but not YAML comments or key ordering — the rewritten file is
+// alphabetized and stripped of comments. The .bak (the true original, kept via
+// backupOnce) is the recovery path. A single `anchored init` run may write the
+// same file twice (MCP registration then a plugin edit); backupOnce ensures the
+// .bak still holds the pre-init original after both writes.
 func writeYAMLDoc(configPath string, doc map[string]any, prev []byte) error {
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -146,11 +153,24 @@ func writeYAMLDoc(configPath string, doc map[string]any, prev []byte) error {
 	if err != nil {
 		return fmt.Errorf("marshal yaml: %w", err)
 	}
-	if _, statErr := os.Stat(configPath); statErr == nil {
-		_ = os.WriteFile(configPath+".bak", prev, 0644)
-	}
+	backupOnce(configPath, prev)
 	if err := os.WriteFile(configPath, out, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", configPath, err)
 	}
 	return nil
+}
+
+// backupOnce writes prev to path+".bak" only if the target file exists and no
+// .bak is present yet. This keeps the .bak pinned to the user's ORIGINAL config
+// even when `anchored init` rewrites the same file more than once in a run
+// (e.g. MCP registration followed by a plugin edit) — a later write must not
+// clobber the backup with intermediate content.
+func backupOnce(path string, prev []byte) {
+	if _, err := os.Stat(path); err != nil {
+		return // no original file → nothing to back up
+	}
+	if _, err := os.Stat(path + ".bak"); err == nil {
+		return // backup already captured the original
+	}
+	_ = os.WriteFile(path+".bak", prev, 0644)
 }

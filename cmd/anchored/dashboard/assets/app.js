@@ -135,9 +135,10 @@ function renderOverviewCards(stats, health, tokens) {
     card("Cobertura embedding", pct.toFixed(0) + "%", `${health.memories?.with_embedding}/${health.memories?.total} com vetor`),
     card("Sync dirty", health.memories?.sync_dirty ?? 0, `último sync: ${fmtDate(health.sync?.last_sync_at)}`),
   ];
-  // Token savings (v0.13 recall telemetry). Only shown once there's data, so a
-  // fresh install doesn't display a misleading 0%.
-  if (tokens && tokens.injections > 0) {
+  // Token savings (v0.13 recall telemetry). Requires both injections and a
+  // non-zero baseline (a project with no CLAUDE.md/AGENTS.md/skills has no
+  // baseline to compare against), so a fresh install never shows a hollow 0%.
+  if (tokens && tokens.injections > 0 && tokens.baseline_tokens > 0) {
     const saved = Math.max(0, (tokens.baseline_tokens || 0) - (tokens.injected_tokens || 0));
     cards.push(card(
       "Tokens economizados (7d)",
