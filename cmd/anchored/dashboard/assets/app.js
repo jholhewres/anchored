@@ -61,6 +61,7 @@ const preview = (s, n = 160) => (s && s.length > n ? s.slice(0, n) + "…" : s |
 const TAB_TITLES = {
   overview: "Overview", memories: "Memórias", tasks: "Tasks", kg: "Knowledge Graph",
   system: "Sistema", dream: "Consolidação", artifacts: "Artifacts", activity: "Atividade",
+  connections: "Conexões",
 };
 const tabs = document.querySelectorAll("nav.tabs button");
 tabs.forEach((b) => b.addEventListener("click", () => {
@@ -71,7 +72,7 @@ tabs.forEach((b) => b.addEventListener("click", () => {
   });
   const title = el("view-title");
   if (title) title.textContent = TAB_TITLES[name] || name;
-  const loaders = { overview: loadOverview, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity };
+  const loaders = { overview: loadOverview, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity, connections: loadConnections };
   if (loaders[name] && !loaders[name].loaded) loaders[name]();
 }));
 
@@ -88,9 +89,13 @@ const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#39c5cf
 async function loadOverview() {
   loadOverview.loaded = true;
   try {
-    const [stats, health] = await Promise.all([fetchJSON("/api/stats"), fetchJSON("/api/health")]);
+    const [stats, health, tokens] = await Promise.all([
+      fetchJSON("/api/stats"),
+      fetchJSON("/api/health"),
+      fetchJSON("/api/tokens").catch(() => null),
+    ]);
     setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)}`);
-    renderOverviewCards(stats, health);
+    renderOverviewCards(stats, health, tokens);
     renderCategoryChart(stats.by_category || {});
     renderProjectChart(stats.by_project || {});
     setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)} · ${health.embedding_coverage?.toFixed(0)}% embed`);
@@ -120,19 +125,68 @@ async function loadEntities() {
   } catch (_) { el("overview-entities").innerHTML = `<span class="muted">indisponível</span>`; }
 }
 
-function renderOverviewCards(stats, health) {
+function renderOverviewCards(stats, health, tokens) {
   const cats = Object.keys(stats.by_category || {}).length;
   const projs = Object.keys(stats.by_project || {}).length;
   const pct = health.embedding_coverage ?? 0;
-  el("overview-cards").innerHTML = [
+  const cards = [
     card("Total de memórias", stats.total_memories ?? 0, `${cats} categorias · ${projs} projetos`),
     card("Projetos", projs, "detectados"),
     card("Cobertura embedding", pct.toFixed(0) + "%", `${health.memories?.with_embedding}/${health.memories?.total} com vetor`),
     card("Sync dirty", health.memories?.sync_dirty ?? 0, `último sync: ${fmtDate(health.sync?.last_sync_at)}`),
-  ].join("");
+  ];
+  // Token savings (v0.13 recall telemetry). Only shown once there's data, so a
+  // fresh install doesn't display a misleading 0%.
+  if (tokens && tokens.injections > 0) {
+    const saved = Math.max(0, (tokens.baseline_tokens || 0) - (tokens.injected_tokens || 0));
+    cards.push(card(
+      "Tokens economizados (7d)",
+      fmtCount(saved),
+      `${(tokens.savings_pct || 0).toFixed(0)}% · ${fmtCount(tokens.injected_tokens)} injetados vs ${fmtCount(tokens.baseline_tokens)} baseline`,
+      "accent",
+    ));
+  }
+  el("overview-cards").innerHTML = cards.join("");
 }
+// fmtCount renders large counts compactly (1.6k, 412k).
+const fmtCount = (n) => {
+  n = Number(n) || 0;
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0) + "k";
+  return (n / 1e6).toFixed(1) + "M";
+};
 const card = (label, value, sub, kind = "") =>
   `<div class="card ${kind}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
+
+// ---------------- connections ----------------
+async function loadConnections() {
+  loadConnections.loaded = true;
+  const host = el("connections-list");
+  if (!host) return;
+  host.innerHTML = `<p class="muted">carregando…</p>`;
+  try {
+    const d = await fetchJSON("/api/connections");
+    const hosts = d.hosts || [];
+    const status = (h) => {
+      if (h.registered) return { chip: "ok", label: "conectado" };
+      if (h.installed) return { chip: "warn", label: "instalado — não registrado" };
+      return { chip: "muted", label: "ausente" };
+    };
+    host.innerHTML = hosts.map((h) => {
+      const s = status(h);
+      const hint = h.installed && !h.registered
+        ? `<code>anchored init --tool ${esc(h.name)}</code>`
+        : "";
+      return `<div class="conn-row">
+        <span class="conn-name">${esc(h.name)}</span>
+        <span class="chip ${s.chip}">${esc(s.label)}</span>
+        <span class="conn-hint">${hint}</span>
+      </div>`;
+    }).join("") || `<p class="empty">nenhum host conhecido</p>`;
+  } catch (e) {
+    host.innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`;
+  }
+}
 
 function renderCategoryChart(byCat) {
   const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);

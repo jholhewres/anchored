@@ -47,6 +47,8 @@ func (a *dashboardAPI) routes() http.Handler {
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/imports", a.handleImports)
 	mux.HandleFunc("GET /api/health", a.handleHealth)
+	mux.HandleFunc("GET /api/tokens", a.handleTokens)
+	mux.HandleFunc("GET /api/connections", a.handleConnections)
 	mux.HandleFunc("GET /api/tasks", a.handleTasksList)
 	mux.HandleFunc("POST /api/tasks", a.handleTaskCreate)
 	mux.HandleFunc("GET /api/tasks/{key}", a.handleTaskGet)

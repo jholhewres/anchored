@@ -362,3 +362,41 @@ button.restore { color: var(--accent2); border-color: var(--accent2); }
   .kanban { grid-template-columns: 1fr; }
   main { padding: 16px; }
 }
+
+/* ---- v0.14: connections view + accent card ---- */
+.card.accent::before { background: var(--accent2); opacity: .7; }
+.conn-list { display: flex; flex-direction: column; gap: 8px; }
+.conn-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #21262d);
+  border-radius: 8px;
+  background: var(--panel, #0d1117);
+}
+.conn-name { font-weight: 600; }
+.conn-hint code {
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(255,255,255,.05);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+.chip.ok   { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 16%, transparent); }
+.chip.warn { color: #d29922; background: color-mix(in srgb, #d29922 16%, transparent); }
+.chip.muted{ color: var(--muted, #8b949e); background: rgba(255,255,255,.05); }
+
+@media (max-width: 560px) {
+  .conn-row { grid-template-columns: 1fr auto; }
+  .conn-hint { grid-column: 1 / -1; }
+}

@@ -20,6 +20,7 @@
         <button data-tab="dream"><span class="ico">✷</span> Consolidação</button>
         <button data-tab="artifacts"><span class="ico">▤</span> Artifacts</button>
         <button data-tab="activity"><span class="ico">⎇</span> Atividade</button>
+        <button data-tab="connections"><span class="ico">⇄</span> Conexões</button>
       </nav>
       <div class="sidebar-foot">
         <span class="meta" id="db-meta"></span>
@@ -200,6 +201,14 @@
         <h2 style="padding:16px 16px 0">Histórico de imports</h2>
         <table><thead><tr><th>Origem</th><th>Path</th><th>Status</th><th>Memórias</th><th>Entidades</th><th>Início</th><th>Fim</th></tr></thead>
           <tbody id="act-imports"></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-connections" class="tab">
+      <div class="panel">
+        <h2>Hosts &amp; ferramentas</h2>
+        <p class="muted" style="margin:0 0 12px">Onde o anchored está registrado como servidor MCP. Registre um host com <code>anchored init --tool &lt;nome&gt;</code>.</p>
+        <div id="connections-list" class="conn-list"></div>
       </div>
     </section>
       </main>
