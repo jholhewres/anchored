@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jholhewres/anchored/pkg/mcp"
 )
 
 // formatV renders a version string with exactly one leading "v", regardless
@@ -289,8 +291,16 @@ func checkConfig(home string, cfg interface{}) {
 	}
 
 	identityFile := filepath.Join(home, ".anchored", "identity.md")
-	if _, err := os.Stat(identityFile); err == nil {
-		printCheck(true, "identity.md present", "", "")
+	if data, err := os.ReadFile(identityFile); err == nil {
+		if mcp.IdentityHasContent(strings.TrimSpace(string(data))) {
+			printCheck(true, "identity.md present", "", "")
+		} else {
+			// The file exists but is still the install template — the identity
+			// layer falls back to synthesized preferences, so it's not fatal,
+			// but a curated identity is better.
+			printCheck(false, "identity.md is an empty template", "L0 uses synthesized preferences until filled",
+				"personalize with: anchored identity edit")
+		}
 	} else {
 		printCheck(false, "identity.md missing", "L0 layer will be empty",
 			"create with: anchored identity edit")

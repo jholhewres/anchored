@@ -353,6 +353,18 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 	// decision isn't buried under fresh low-signal noise; then keep the top 5.
 	recentMems = rankBundleMemories(recentMems, 5)
 
+	// No curated identity file? Synthesize one from stored preferences so the
+	// <identity> section reflects what the user actually taught us instead of
+	// shipping the empty install template. Skip anything the bundle already
+	// shows in <recent> so the same preference isn't repeated twice.
+	if identity == "" {
+		shown := make(map[string]bool, len(recentMems))
+		for _, m := range recentMems {
+			shown[m.ID] = true
+		}
+		identity = s.synthesizeIdentity(ctx, shown)
+	}
+
 	var wsSummary string
 	if s.sessions != nil && p.SessionID != "" {
 		if ws, wErr := s.sessions.GetWorkingSet(ctx, p.SessionID); wErr == nil && !ws.Empty() {
@@ -435,6 +447,47 @@ func rankBundleMemories(mems []memory.Memory, n int) []memory.Memory {
 	return ranked
 }
 
+// synthesizeIdentity builds an identity block from stored preference memories
+// when ~/.anchored/identity.md has nothing curated to say. Preferences are
+// user-level knowledge, so the lookup is global (all projects), ranked by the
+// same importance/pin/recency logic as the recent bundle. `exclude` holds ids
+// the bundle already shows in <recent> so a preference isn't repeated. Returns
+// "" when there's nothing worth showing, leaving the <identity> section empty.
+func (s *Server) synthesizeIdentity(ctx context.Context, exclude map[string]bool) string {
+	const (
+		maxPrefs   = 5
+		perPrefCap = 160
+	)
+	prefs, err := s.mem.List(ctx, memory.ListOptions{Category: "preference", Limit: 50})
+	if err != nil {
+		s.logger.Warn("anchored_context: failed to list preferences for identity", "error", err)
+		return ""
+	}
+	// Over-rank so exclusions don't starve us below maxPrefs.
+	ranked := rankBundleMemories(prefs, maxPrefs+len(exclude))
+	var sb strings.Builder
+	count := 0
+	for _, m := range ranked {
+		if count >= maxPrefs {
+			break
+		}
+		if exclude[m.ID] {
+			continue
+		}
+		content := truncateRunes(strings.ReplaceAll(strings.TrimSpace(m.Content), "\n", " "), perPrefCap)
+		if content == "" {
+			continue
+		}
+		sb.WriteString("- " + content + "\n")
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+	return "## Preferences (learned)\n" + sb.String() +
+		"(auto-generated from stored preferences — run `anchored identity edit` to write a curated identity)"
+}
+
 func readIdentityFile() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -444,7 +497,38 @@ func readIdentityFile() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	content := strings.TrimSpace(string(data))
+	if !IdentityHasContent(content) {
+		// The file is still the pristine install template (headers plus empty
+		// "- Name:" style bullets, nothing filled in). Emitting that skeleton
+		// wastes bundle budget and reads as a bug ("why is my identity empty?"),
+		// so treat it exactly like a missing file and let the caller fall back
+		// to synthesizing an identity from stored preferences.
+		return ""
+	}
+	return content
+}
+
+// IdentityHasContent reports whether an identity.md body carries any real
+// information beyond the install template. Markdown headers, blank lines, and
+// dangling bullets with no value ("- Name:", "- Preferences:") or a lone list
+// marker ("-", "*") are all template scaffolding and don't count. Exported so
+// the doctor command can flag a template-only file instead of calling it healthy.
+func IdentityHasContent(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// A bullet with nothing after the label ("- Name:", "- Preferences:")
+		// or an empty list marker ("-", "*") is scaffolding, not content.
+		trimmed := strings.TrimLeft(line, "-*+ \t")
+		if trimmed == "" || strings.HasSuffix(trimmed, ":") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Server) lookupProjectMeta(ctx context.Context, projectID string) (name, path string) {
