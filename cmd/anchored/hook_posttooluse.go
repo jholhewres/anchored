@@ -62,10 +62,35 @@ type PostToolUseDeps struct {
 	GateEnforced   bool
 }
 
-// ExecContexter is the small slice of *sql.DB the hook actually needs;
-// tests can satisfy it with an in-memory DB or a fake.
+// ExecContexter is the small slice of *sql.DB the hook actually needs:
+// inserting an event and querying for a recent duplicate. Every caller passes
+// a real *sql.DB, so both methods are always available; tests use an in-memory
+// database.
 type ExecContexter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// postToolUseDedupWindow is how long two byte-identical tool-call events
+// (same session + tool + summary) are collapsed into one. Claude Code can fire
+// the same PostToolUse repeatedly during a tight edit/read loop; without this
+// the timeline fills with duplicates that add no signal.
+const postToolUseDedupWindow = "-5 minutes"
+
+// postToolUseDedupSQL matches a recent non-artifact tool_call with the same
+// identifying triple. Uses only existing columns — no schema migration.
+const postToolUseDedupSQL = `SELECT 1 FROM session_events
+	WHERE session_id = ? AND event_type = 'tool_call' AND tool_name = ? AND summary = ?
+	AND created_at > datetime('now', ?) LIMIT 1`
+
+// isRecentDuplicatePostToolUse reports whether an identical tool_call event was
+// recorded within the dedup window. Fail-open: any query error returns false so
+// the caller still inserts — deduplication must never drop a real event.
+func isRecentDuplicatePostToolUse(db ExecContexter, sessionID, toolName, summary string) bool {
+	var one int
+	err := db.QueryRowContext(context.Background(), postToolUseDedupSQL,
+		sessionID, toolName, summary, postToolUseDedupWindow).Scan(&one)
+	return err == nil && one == 1
 }
 
 // runHookPostToolUse is the production entrypoint: parses flags, opens the
@@ -270,6 +295,18 @@ func recordPostToolUseEvent(deps PostToolUseDeps) {
 	}
 
 	summary := summarizeToolEvent(input.ToolResponse, input.ToolInput, 500)
+
+	// Collapse a byte-identical tool call fired again within the dedup window.
+	// Fail-open (isRecentDuplicatePostToolUse returns false on any error), so a
+	// flaky query can never suppress a genuine event.
+	if isRecentDuplicatePostToolUse(deps.DB, sessionID, input.ToolName, summary) {
+		dlog.Event("hook.posttooluse", map[string]any{
+			"stage": "dedup_skip", "session_id": sessionID, "tool": input.ToolName,
+		})
+		writePostToolUseResp(deps.Stdout, map[string]any{"recorded": false, "reason": "duplicate"})
+		return
+	}
+
 	metadata := buildPostToolUseMetadata(cwdVal, input.HookEventName, len(body))
 	eventID := deps.NewID()
 
