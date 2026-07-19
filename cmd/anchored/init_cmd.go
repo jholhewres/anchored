@@ -11,7 +11,7 @@ import (
 
 func runInit(args []string) {
 	fs := newFlagSet("init")
-	tool := fs.String("tool", "all", "Target tool: claude-code, cursor, opencode, agy, gemini, windsurf, cline, vscode, codex, devin, all")
+	tool := fs.String("tool", "all", "Target tool: claude-code, cursor, opencode, agy, gemini, windsurf, cline, vscode, codex, devin, openclaw, hermes, devclaw, gatorclaw, supergator, all")
 	cwd := fs.String("cwd", "", "current working directory (used for workspace-scoped tools)")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
@@ -71,8 +71,18 @@ func parseToolFlag(tool string) []string {
 		return []string{"codex"}
 	case "devin":
 		return []string{"devin"}
+	case "openclaw":
+		return []string{"openclaw"}
+	case "hermes":
+		return []string{"hermes"}
+	case "devclaw":
+		return []string{"devclaw"}
+	case "gatorclaw":
+		return []string{"gatorclaw"}
+	case "supergator":
+		return []string{"supergator"}
 	case "all":
-		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin"}
+		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin", "openclaw", "hermes", "devclaw", "gatorclaw", "supergator"}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown tool: %s\n", tool)
 		os.Exit(1)
@@ -117,6 +127,18 @@ func isToolInstalled(t string, cwd string) bool {
 		_, err1 := os.Stat(filepath.Join(home, ".devin"))
 		_, err2 := os.Stat(filepath.Join(cwd, ".devin"))
 		return err1 == nil || err2 == nil
+	case "openclaw":
+		_, err := os.Stat(filepath.Join(home, ".openclaw"))
+		return err == nil
+	case "hermes":
+		_, err := os.Stat(filepath.Join(home, ".hermes"))
+		return err == nil
+	case "devclaw", "gatorclaw", "supergator":
+		// claw-family agents (devclaw and its derivatives) keep their config in
+		// ~/.<name>/config.yaml. Detect by the home dir only — matching a bare
+		// cwd/config.yaml would false-positive under `--tool all` on any repo.
+		_, err := os.Stat(filepath.Join(home, "."+t))
+		return err == nil
 	}
 	return false
 }
@@ -160,6 +182,12 @@ func getToolMCPPath(t string, cwd string) string {
 			return p
 		}
 		return filepath.Join(home, ".devin", "config.json")
+	case "openclaw":
+		return filepath.Join(home, ".openclaw", "openclaw.json")
+	case "hermes":
+		return filepath.Join(home, ".hermes", "config.yaml")
+	case "devclaw", "gatorclaw", "supergator":
+		return filepath.Join(home, "."+t, "config.yaml")
 	}
 	return ""
 }
@@ -169,6 +197,10 @@ type mcpConfig struct {
 	rootKey     string // "mcpServers" or "servers" (VS Code)
 	requireType bool   // VS Code requires "type": "stdio"
 	isTOML      bool   // Codex uses TOML
+	// format selects the serializer: "" (JSON, the default), "yaml-map" for a
+	// top-level map keyed by server name (Hermes: mcp_servers), or "yaml-array"
+	// for a list of server objects under a nested key (claw-family: mcp.servers).
+	format string
 }
 
 func getToolMCPConfig(t string) mcpConfig {
@@ -177,7 +209,14 @@ func getToolMCPConfig(t string) mcpConfig {
 		return mcpConfig{rootKey: "servers", requireType: true}
 	case "codex":
 		return mcpConfig{isTOML: true}
+	case "hermes":
+		return mcpConfig{rootKey: "mcp_servers", format: "yaml-map"}
+	case "devclaw", "gatorclaw", "supergator":
+		// devclaw & derivatives nest a servers array under the top-level `mcp` key.
+		return mcpConfig{rootKey: "mcp", format: "yaml-array"}
 	default:
+		// claude-code, cursor, opencode, agy, gemini, windsurf, cline, devin,
+		// and openclaw all use the standard JSON `mcpServers` map.
 		return mcpConfig{rootKey: "mcpServers"}
 	}
 }
@@ -185,10 +224,16 @@ func getToolMCPConfig(t string) mcpConfig {
 func registerMCP(t string, cwd string) error {
 	mc := getToolMCPConfig(t)
 
-	if mc.isTOML {
+	switch {
+	case mc.isTOML:
 		return registerMCPTOML(t, cwd)
+	case mc.format == "yaml-map":
+		return registerMCPYAMLMap(t, cwd, mc.rootKey)
+	case mc.format == "yaml-array":
+		return registerMCPYAMLArray(t, cwd, mc.rootKey)
+	default:
+		return registerMCPJSON(t, cwd, mc)
 	}
-	return registerMCPJSON(t, cwd, mc)
 }
 
 func registerMCPJSON(t string, cwd string, mc mcpConfig) error {
