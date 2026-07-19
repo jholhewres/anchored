@@ -400,3 +400,15 @@ button.restore { color: var(--accent2); border-color: var(--accent2); }
   .conn-row { grid-template-columns: 1fr auto; }
   .conn-hint { grid-column: 1 / -1; }
 }
+
+/* ---- v0.14: contain wide content, no sideways body scroll ---- */
+body { overflow-x: hidden; }
+/* Wide tables scroll inside their own panel instead of pushing the page. */
+.panel { overflow-x: auto; }
+.panel > table { min-width: 480px; }
+/* Consistent muted empty text inside inline lists. */
+.muted { color: var(--text-dim); }
+@media (max-width: 560px) {
+  .card-grid { grid-template-columns: 1fr; }
+  .main, main { padding-left: 12px; padding-right: 12px; }
+}
