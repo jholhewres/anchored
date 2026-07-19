@@ -148,6 +148,13 @@ func runHookSessionStart(args []string) {
 		additional += "\n\n<anchored_context>\n" + richBlock + "\n</anchored_context>"
 	}
 
+	// Token telemetry for `anchored stats --tokens`: how many tokens this
+	// injection cost vs. the static-context baseline it stands in for.
+	// Best-effort and local; never blocks the hook.
+	recordRecall(hc.db, projectID, "sessionstart",
+		contextbudget.ApproxTokens(richBlock),
+		projectBaselineTokens(hc.db, projectID, cwdVal, time.Now()))
+
 	dlog.Event("hook.sessionstart", map[string]any{
 		"stage":         "emitted",
 		"project_id":    projectID,

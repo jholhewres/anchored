@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 func runStats(args []string) {
 	fs := newFlagSet("stats")
 	configPath := fs.String("config", "", "path to config file")
+	tokens := fs.Bool("tokens", false, "show context-token savings (injected vs. static baseline) over the last 7 days")
 	fs.Parse(args)
 
 	_, _, svc, err := initService(*configPath)
@@ -20,6 +22,11 @@ func runStats(args []string) {
 	defer svc.Close()
 
 	ctx := context.Background()
+
+	if *tokens {
+		printTokenStats(svc.StoreDB())
+		return
+	}
 
 	stats, err := svc.Stats(ctx)
 	if err != nil {
@@ -42,4 +49,24 @@ func runStats(args []string) {
 			fmt.Printf("  %s: %d\n", proj, count)
 		}
 	}
+}
+
+// printTokenStats renders the 7-day context-token telemetry: how many tokens
+// anchored injected vs. what the static-context baseline would have cost.
+func printTokenStats(db *sql.DB) {
+	const days = 7
+	s, err := queryRecallSummary(db, days)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "token stats error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Context tokens — last %d days\n", days)
+	if s.Injections == 0 {
+		fmt.Println("  no recall telemetry yet (start a session or send a prompt with anchored hooks installed)")
+		return
+	}
+	fmt.Printf("  Injections:       %d\n", s.Injections)
+	fmt.Printf("  Injected tokens:  %d\n", s.InjectedTokens)
+	fmt.Printf("  Baseline tokens:  %d  (static CLAUDE.md/AGENTS.md + skills)\n", s.BaselineTokens)
+	fmt.Printf("  Savings:          %.0f%%\n", s.SavingsPct())
 }

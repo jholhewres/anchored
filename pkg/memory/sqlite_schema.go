@@ -109,6 +109,25 @@ func initSchema() string {
 			name TEXT NOT NULL UNIQUE,
 			applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// recall_logs records, per context injection, how many tokens were sent
+		// to the agent vs. the static-context baseline — the raw material for the
+		// "tokens saved" telemetry surfaced by `anchored stats --tokens`.
+		`CREATE TABLE IF NOT EXISTS recall_logs (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			surface TEXT,
+			tokens_injected INTEGER NOT NULL DEFAULT 0,
+			baseline_tokens INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_recall_logs_project_created ON recall_logs(project_id, created_at)`,
+		// project_baseline caches the static-context token count per project so
+		// the baseline is recomputed from disk at most once per day.
+		`CREATE TABLE IF NOT EXISTS project_baseline (
+			project_id TEXT PRIMARY KEY,
+			baseline_tokens INTEGER NOT NULL DEFAULT 0,
+			computed_on TEXT NOT NULL DEFAULT ''
+		)`,
 		`CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
 			INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.rowid, new.content, new.keywords);
 		END`,

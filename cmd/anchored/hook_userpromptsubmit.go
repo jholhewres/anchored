@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jholhewres/anchored/pkg/contextbudget"
 	"unicode"
 	"unicode/utf8"
 
@@ -280,7 +282,16 @@ func autoRecallPreview(configPath, cwd, prompt, sessionID string, dlog *debuglog
 		}
 	}
 
-	return renderRecallPreview(expandedQ, in.Kind, hits, arts, kgLine, adaptiveMode, hc.cfg.Plugin.HookBudget())
+	preview := renderRecallPreview(expandedQ, in.Kind, hits, arts, kgLine, adaptiveMode, hc.cfg.Plugin.HookBudget())
+
+	// Record token telemetry for `anchored stats --tokens`. Best-effort and
+	// fast (local writes); happens before the caller emits so it never delays
+	// the injected context beyond a sub-millisecond insert.
+	recordRecall(hc.db, projectID, "userpromptsubmit",
+		contextbudget.ApproxTokens(preview),
+		projectBaselineTokens(hc.db, projectID, cwdVal, time.Now()))
+
+	return preview
 }
 
 // injectionWriteTimeout bounds the DB writes of injection tracking.
