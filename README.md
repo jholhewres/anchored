@@ -6,7 +6,7 @@
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8?style=for-the-badge&logo=go)]
 [![Release](https://img.shields.io/github/v/release/jholhewres/anchored?style=for-the-badge)](https://github.com/jholhewres/anchored/releases)
 
-Anchored gives Claude Code, Cursor, OpenCode, Gemini CLI, Codex, VS Code Copilot, and other MCP-compatible tools one shared memory database on your machine.
+Anchored gives Claude Code, Cursor, OpenCode, Gemini CLI, Codex, VS Code Copilot, OpenClaw, Hermes, the devclaw-family agents, and other MCP-compatible tools one shared memory database on your machine.
 
 - Local-first: no account, no cloud dependency, no required API key.
 - One binary: `anchored` is both the CLI and MCP server.
@@ -41,6 +41,9 @@ Behind those categories, Anchored stores lifecycle metadata (`memory_type`, `kin
 - **Dream review** — explicit/manual duplicate and contradiction analysis. Dedup can soft-delete; contradictions require manual review.
 - **Privacy-first sync** — remote preview/sync block local paths, secrets, personal preferences, episodic/operational data, and low-quality memories by default.
 - **Sandbox and indexing tools** — run code, process files, fetch docs, and index large output without flooding the model context.
+- **Token telemetry** — every context injection records tokens injected vs. the static-context baseline it replaces; see it with `anchored stats --tokens` or the dashboard's Tokens card.
+- **Broad host support** — one command registers Anchored into Claude Code, Cursor, OpenCode, Gemini, Windsurf, Cline, VS Code, Codex, Devin, OpenClaw, Hermes, and the devclaw-family agents, with deep memory plugins for hosts that support one.
+- **Local dashboard** — `anchored dashboard` serves a local UI: memories, knowledge graph, tasks, token savings, and a Connections view showing which hosts Anchored is wired into.
 - **Inspection and export** — inspect exact metadata, list memories, export JSON/JSONL, restore curation backups, and purge safely.
 - **Multi-source import** — Claude Code JSONL, OpenCode SQLite, Cursor `.mdc`, and DevClaw.
 
@@ -112,23 +115,44 @@ anchored init --tool cline
 anchored init --tool vscode --cwd /path/to/project
 anchored init --tool codex
 anchored init --tool devin
+anchored init --tool openclaw
+anchored init --tool hermes
+anchored init --tool devclaw      # also: gatorclaw, supergator
+anchored init --tool pi
 ```
 
 Supported config locations:
 
-| Tool | Config file |
+| Tool | Config file | Format |
+|---|---|---|
+| Claude Code | `~/.claude.json` | JSON `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` | JSON `mcpServers` |
+| OpenCode | `~/.config/opencode/opencode.json` | JSON `mcpServers` |
+| Gemini CLI | `~/.gemini/settings.json` | JSON `mcpServers` |
+| Antigravity 2.0 | `~/.gemini/config/mcp_config.json` | JSON `mcpServers` |
+| Antigravity CLI (`agy`) | `~/.gemini/antigravity-cli/mcp_config.json` | JSON `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | JSON `mcpServers` |
+| Cline | `~/.cline/mcp.json` | JSON `mcpServers` |
+| VS Code Copilot | `.vscode/mcp.json` | JSON `servers` |
+| Codex CLI | `~/.codex/config.toml` | TOML |
+| Devin | `.devin/config.json` | JSON `mcpServers` |
+| OpenClaw | `~/.openclaw/openclaw.json` | JSON `mcpServers` |
+| Hermes | `~/.hermes/config.yaml` | YAML `mcp_servers` |
+| devclaw / gatorclaw / supergator | `~/.<host>/config.yaml` | YAML `mcp.servers[]` |
+| pi | `~/.pi/agent/extensions/anchored/` | TS extension (no MCP) |
+
+For hosts with a memory-plugin slot, `init` also installs a **deep plugin** that
+bridges the agent lifecycle to the local `anchored` binary (recall via
+`anchored search`, capture via `anchored save`) — no daemon:
+
+| Host | Deep plugin |
 |---|---|
-| Claude Code | `~/.claude.json` |
-| Cursor | `~/.cursor/mcp.json` |
-| OpenCode | `~/.config/opencode/opencode.json` |
-| Gemini CLI | `~/.gemini/settings.json` |
-| Antigravity 2.0 | `~/.gemini/config/mcp_config.json` |
-| Antigravity CLI (`agy`) | `~/.gemini/antigravity-cli/mcp_config.json` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Cline | `~/.cline/mcp.json` |
-| VS Code Copilot | `.vscode/mcp.json` |
-| Codex CLI | `~/.codex/config.toml` |
-| Devin | `.devin/config.json` |
+| OpenClaw | `~/.openclaw/extensions/anchored/` + `plugins.slots.memory = anchored` |
+| Hermes | `~/.hermes/plugins/anchored/` + `memory.provider = anchored` |
+| pi | `~/.pi/agent/extensions/anchored/index.ts` (pi has no MCP surface) |
+
+Every registration preserves foreign config, backs up to `.bak`, and is
+idempotent.
 
 Most tools use this JSON shape:
 
@@ -271,6 +295,8 @@ anchored serve                   Start MCP server over STDIO
 anchored init [--tool]           Register Anchored with supported tools
 anchored doctor [--cwd]          Diagnose binary, model, DB, and MCP registration
 anchored stats                   Show memory counts and import status
+anchored stats --tokens          Show context tokens injected vs. baseline (7d)
+anchored dashboard [--addr]      Serve the local dashboard UI
 
 anchored save <content>          Save a memory
 anchored search <query>          Search memories
