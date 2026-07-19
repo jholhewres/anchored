@@ -1,0 +1,6 @@
+{
+  "name": "anchored-openclaw",
+  "version": "0.14.0",
+  "type": "module",
+  "main": "plugin.mjs"
+}

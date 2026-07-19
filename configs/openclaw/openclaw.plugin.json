@@ -1,0 +1,7 @@
+{
+  "id": "anchored",
+  "kind": "memory",
+  "name": "anchored",
+  "description": "Persistent cross-tool memory for OpenClaw via the local anchored binary.",
+  "version": "0.14.0"
+}

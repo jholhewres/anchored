@@ -33,8 +33,12 @@ func runInit(args []string) {
 			slog.Info("tool not installed, skipping", "tool", t)
 			continue
 		}
-		if err := registerMCP(t, cwdVal); err != nil {
-			slog.Error("failed to register MCP", "tool", t, "error", err)
+		// pi has no MCP config surface — it's wired purely through its TS
+		// extension (installed below), so skip MCP registration for it.
+		if getToolMCPPath(t, cwdVal) != "" {
+			if err := registerMCP(t, cwdVal); err != nil {
+				slog.Error("failed to register MCP", "tool", t, "error", err)
+			}
 		}
 		// Cursor needs more than MCP registration to activate: hooks.json
 		// (capture + guards) and the always-on rule (the agent-side trigger,
@@ -42,6 +46,19 @@ func runInit(args []string) {
 		if t == "cursor" {
 			if home, err := os.UserHomeDir(); err == nil {
 				installCursorArtifacts(home)
+			}
+		}
+		// Deep host plugins call the anchored binary directly (recall via
+		// `anchored search`, capture via `anchored save`) — installed on top of
+		// the MCP registration for the hosts that support a memory plugin.
+		if home, err := os.UserHomeDir(); err == nil {
+			switch t {
+			case "openclaw":
+				installOpenClawPlugin(home)
+			case "hermes":
+				installHermesPlugin(home)
+			case "pi":
+				installPiPlugin(home)
 			}
 		}
 	}
@@ -81,8 +98,10 @@ func parseToolFlag(tool string) []string {
 		return []string{"gatorclaw"}
 	case "supergator":
 		return []string{"supergator"}
+	case "pi":
+		return []string{"pi"}
 	case "all":
-		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin", "openclaw", "hermes", "devclaw", "gatorclaw", "supergator"}
+		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin", "openclaw", "hermes", "devclaw", "gatorclaw", "supergator", "pi"}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown tool: %s\n", tool)
 		os.Exit(1)
@@ -132,6 +151,9 @@ func isToolInstalled(t string, cwd string) bool {
 		return err == nil
 	case "hermes":
 		_, err := os.Stat(filepath.Join(home, ".hermes"))
+		return err == nil
+	case "pi":
+		_, err := os.Stat(filepath.Join(home, ".pi"))
 		return err == nil
 	case "devclaw", "gatorclaw", "supergator":
 		// claw-family agents (devclaw and its derivatives) keep their config in
