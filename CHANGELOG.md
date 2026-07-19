@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.0] - 2026-07-19
+
+Broadens which agent hosts anchored plugs into, and surfaces more of the memory
+layer in the local dashboard.
+
+### Added
+
+- **More hosts in `anchored init --tool`** — registers the anchored MCP server
+  into **OpenClaw** (`~/.openclaw/openclaw.json`), **Hermes**
+  (`~/.hermes/config.yaml`), and the **claw-family** agents **devclaw /
+  gatorclaw / supergator** (`~/.<host>/config.yaml`, a `servers[]` array under
+  `mcp`). New YAML map/array writers preserve foreign keys and are idempotent.
+- **Deep host plugins** — for hosts with a memory slot, `init` also installs a
+  plugin that bridges the agent lifecycle to the local anchored binary (recall
+  via `anchored search`, capture via `anchored save`), no REST daemon:
+  OpenClaw (`.mjs`), Hermes (Python), and **pi** (a TS extension, since pi has
+  no MCP surface).
+- **Dashboard: tokens-saved card** — the Overview shows context tokens injected
+  vs. the static-context baseline over the last 7 days, from the v0.13
+  `recall_logs` telemetry (`GET /api/tokens`).
+- **Dashboard: Conexões tab** — lists every host anchored can register into and
+  whether it's installed / registered, with the exact `anchored init --tool`
+  hint (`GET /api/connections`).
+
+### Changed
+
+- **Dashboard polish** — wide tables scroll inside their own panel instead of
+  pushing the page sideways, the body never scrolls horizontally, and card
+  grids collapse to a single column on small screens.
+
 ## [0.13.0] - 2026-07-19
 
 Context-quality release: the agent's work is now seen and the memory layer's
