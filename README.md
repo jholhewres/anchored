@@ -6,7 +6,7 @@
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8?style=for-the-badge&logo=go)]
 [![Release](https://img.shields.io/github/v/release/jholhewres/anchored?style=for-the-badge)](https://github.com/jholhewres/anchored/releases)
 
-Anchored gives Claude Code, Cursor, OpenCode, Gemini CLI, Codex, VS Code Copilot, OpenClaw, Hermes, the devclaw-family agents, and other MCP-compatible tools one shared memory database on your machine.
+Anchored gives Claude Code, Cursor, OpenCode, Gemini CLI, Codex, VS Code Copilot, OpenClaw, Hermes, devclaw, gatorclaw, and other MCP-compatible tools one shared memory database on your machine.
 
 - Local-first: no account, no cloud dependency, no required API key.
 - One binary: `anchored` is both the CLI and MCP server.
@@ -42,7 +42,7 @@ Behind those categories, Anchored stores lifecycle metadata (`memory_type`, `kin
 - **Privacy-first sync** — remote preview/sync block local paths, secrets, personal preferences, episodic/operational data, and low-quality memories by default.
 - **Sandbox and indexing tools** — run code, process files, fetch docs, and index large output without flooding the model context.
 - **Token telemetry** — every context injection records tokens injected vs. the static-context baseline it replaces; see it with `anchored stats --tokens` or the dashboard's Tokens card.
-- **Broad host support** — one command registers Anchored into Claude Code, Cursor, OpenCode, Gemini, Windsurf, Cline, VS Code, Codex, Devin, OpenClaw, Hermes, and the devclaw-family agents, with deep memory plugins for hosts that support one.
+- **Broad host support** — one command registers Anchored into Claude Code, Cursor, OpenCode, Gemini, Windsurf, Cline, VS Code, Codex, Devin, OpenClaw, Hermes, devclaw, gatorclaw, with deep memory plugins for hosts that support one.
 - **Local dashboard** — `anchored dashboard` serves a local UI: memories, knowledge graph, tasks, token savings, and a Connections view showing which hosts Anchored is wired into.
 - **Inspection and export** — inspect exact metadata, list memories, export JSON/JSONL, restore curation backups, and purge safely.
 - **Multi-source import** — Claude Code JSONL, OpenCode SQLite, Cursor `.mdc`, and DevClaw.
@@ -117,7 +117,8 @@ anchored init --tool codex
 anchored init --tool devin
 anchored init --tool openclaw
 anchored init --tool hermes
-anchored init --tool devclaw      # also: gatorclaw, supergator
+anchored init --tool devclaw
+anchored init --tool gatorclaw
 anchored init --tool pi
 ```
 
@@ -138,7 +139,8 @@ Supported config locations:
 | Devin | `.devin/config.json` | JSON `mcpServers` |
 | OpenClaw | `~/.openclaw/openclaw.json` | JSON `mcpServers` |
 | Hermes | `~/.hermes/config.yaml` | YAML `mcp_servers` |
-| devclaw / gatorclaw / supergator | `~/.<host>/config.yaml` | YAML `mcp.servers[]` |
+| devclaw | `~/.devclaw/config.yaml` | YAML `mcp.servers[]` |
+| gatorclaw | `~/.gatorclaw/config.yaml` | YAML `mcp.servers[]` |
 | pi | `~/.pi/agent/extensions/anchored/` | TS extension (no MCP) |
 
 For hosts with a memory-plugin slot, `init` also installs a **deep plugin** that

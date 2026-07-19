@@ -43,7 +43,7 @@ type hostConnection struct {
 var knownConnectionHosts = []string{
 	"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf",
 	"cline", "codex", "devin",
-	"openclaw", "hermes", "devclaw", "gatorclaw", "supergator",
+	"openclaw", "hermes", "devclaw", "gatorclaw",
 }
 
 // handleConnections reports, for each known host, whether the tool is installed

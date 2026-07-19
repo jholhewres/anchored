@@ -11,7 +11,7 @@ import (
 
 func runInit(args []string) {
 	fs := newFlagSet("init")
-	tool := fs.String("tool", "all", "Target tool: claude-code, cursor, opencode, agy, gemini, windsurf, cline, vscode, codex, devin, openclaw, hermes, devclaw, gatorclaw, supergator, all")
+	tool := fs.String("tool", "all", "Target tool: claude-code, cursor, opencode, agy, gemini, windsurf, cline, vscode, codex, devin, openclaw, hermes, devclaw, gatorclaw, pi, all")
 	cwd := fs.String("cwd", "", "current working directory (used for workspace-scoped tools)")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
@@ -96,12 +96,10 @@ func parseToolFlag(tool string) []string {
 		return []string{"devclaw"}
 	case "gatorclaw":
 		return []string{"gatorclaw"}
-	case "supergator":
-		return []string{"supergator"}
 	case "pi":
 		return []string{"pi"}
 	case "all":
-		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin", "openclaw", "hermes", "devclaw", "gatorclaw", "supergator", "pi"}
+		return []string{"claude-code", "cursor", "opencode", "agy", "gemini", "windsurf", "cline", "vscode", "codex", "devin", "openclaw", "hermes", "devclaw", "gatorclaw", "pi"}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown tool: %s\n", tool)
 		os.Exit(1)
@@ -155,7 +153,7 @@ func isToolInstalled(t string, cwd string) bool {
 	case "pi":
 		_, err := os.Stat(filepath.Join(home, ".pi"))
 		return err == nil
-	case "devclaw", "gatorclaw", "supergator":
+	case "devclaw", "gatorclaw":
 		// claw-family agents (devclaw and its derivatives) keep their config in
 		// ~/.<name>/config.yaml. Detect by the home dir only — matching a bare
 		// cwd/config.yaml would false-positive under `--tool all` on any repo.
@@ -208,7 +206,7 @@ func getToolMCPPath(t string, cwd string) string {
 		return filepath.Join(home, ".openclaw", "openclaw.json")
 	case "hermes":
 		return filepath.Join(home, ".hermes", "config.yaml")
-	case "devclaw", "gatorclaw", "supergator":
+	case "devclaw", "gatorclaw":
 		return filepath.Join(home, "."+t, "config.yaml")
 	}
 	return ""
@@ -233,7 +231,7 @@ func getToolMCPConfig(t string) mcpConfig {
 		return mcpConfig{isTOML: true}
 	case "hermes":
 		return mcpConfig{rootKey: "mcp_servers", format: "yaml-map"}
-	case "devclaw", "gatorclaw", "supergator":
+	case "devclaw", "gatorclaw":
 		// devclaw & derivatives nest a servers array under the top-level `mcp` key.
 		return mcpConfig{rootKey: "mcp", format: "yaml-array"}
 	default:

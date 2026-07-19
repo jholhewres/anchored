@@ -13,9 +13,9 @@ layer in the local dashboard.
 
 - **More hosts in `anchored init --tool`** — registers the anchored MCP server
   into **OpenClaw** (`~/.openclaw/openclaw.json`), **Hermes**
-  (`~/.hermes/config.yaml`), and the **claw-family** agents **devclaw /
-  gatorclaw / supergator** (`~/.<host>/config.yaml`, a `servers[]` array under
-  `mcp`). New YAML map/array writers preserve foreign keys and are idempotent.
+  (`~/.hermes/config.yaml`), and the devclaw-derived agents **devclaw** and
+  **gatorclaw** (`~/.<host>/config.yaml`, a `servers[]` array under `mcp`). New
+  YAML map/array writers preserve foreign keys and are idempotent.
 - **Deep host plugins** — for hosts with a memory slot, `init` also installs a
   plugin that bridges the agent lifecycle to the local anchored binary (recall
   via `anchored search`, capture via `anchored save`), no REST daemon:
