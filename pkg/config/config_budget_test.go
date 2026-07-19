@@ -13,6 +13,30 @@ func TestPluginConfig_SessionStartBudget_Defaults(t *testing.T) {
 	}
 }
 
+func TestPluginConfig_SessionStartBudgetTokensResolved(t *testing.T) {
+	tokens := func(n int) *int { return &n }
+
+	// nil/nil → default 2000
+	var def PluginConfig
+	if got := def.SessionStartBudgetTokensResolved(); got != 2000 {
+		t.Errorf("default = %d, want 2000", got)
+	}
+	// explicit token value wins (including 0 = opt-out)
+	if got := (PluginConfig{SessionStartBudgetTokens: tokens(1500)}).SessionStartBudgetTokensResolved(); got != 1500 {
+		t.Errorf("explicit tokens = %d, want 1500", got)
+	}
+	if got := (PluginConfig{SessionStartBudgetTokens: tokens(0)}).SessionStartBudgetTokensResolved(); got != 0 {
+		t.Errorf("explicit token opt-out = %d, want 0", got)
+	}
+	// legacy bytes convert ÷4 when tokens unset (preserving 0 opt-out)
+	if got := (PluginConfig{SessionStartBudgetBytes: tokens(8000)}).SessionStartBudgetTokensResolved(); got != 2000 {
+		t.Errorf("legacy bytes 8000 = %d tokens, want 2000", got)
+	}
+	if got := (PluginConfig{SessionStartBudgetBytes: tokens(0)}).SessionStartBudgetTokensResolved(); got != 0 {
+		t.Errorf("legacy bytes opt-out = %d, want 0", got)
+	}
+}
+
 func TestPluginConfig_AutoSaveStopEnabled_Defaults(t *testing.T) {
 	var p PluginConfig
 	if !p.AutoSaveStopEnabled() {

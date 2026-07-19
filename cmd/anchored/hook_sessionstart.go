@@ -121,11 +121,12 @@ func runHookSessionStart(args []string) {
 	projectID := hc.ResolveProject(cwdVal)
 	ctx := context.Background()
 
-	// When sessionstart_budget_bytes == 0 the user has opted out of the rich
-	// block; fall back to the original plain format (RoutingBlock + events).
-	budget := 7000
+	// When the resolved budget is 0 the user has opted out of the rich block;
+	// fall back to the original plain format (RoutingBlock + events). Budget is
+	// measured in approximate tokens (default 2000).
+	budget := 2000
 	if cfg != nil {
-		budget = cfg.Plugin.SessionStartBudget()
+		budget = cfg.Plugin.SessionStartBudgetTokensResolved()
 	}
 
 	if budget == 0 {
@@ -152,7 +153,7 @@ func runHookSessionStart(args []string) {
 		"project_id":    projectID,
 		"context_bytes": len(richBlock),
 		"dropped_items": dropped,
-		"budget_bytes":  budget,
+		"budget_tokens": budget,
 	})
 	emitSessionStart(additional)
 }

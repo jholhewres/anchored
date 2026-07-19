@@ -3,7 +3,20 @@ package contextbudget
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
+
+// ApproxTokens estimates the token cost of a string with the standard ~4
+// chars/token heuristic (rounding up so any non-empty text costs >=1). It is
+// deliberately tokenizer-agnostic: exact per-model tokenization is not worth
+// the dependency for budgeting, and the estimate is stable and cheap. Shared
+// so recall telemetry and the assembler agree on how a block is counted.
+func ApproxTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	return (utf8.RuneCountInString(s) + 3) / 4
+}
 
 // Item is a pre-rendered context block.
 type Item struct {
@@ -19,7 +32,11 @@ type Tier struct {
 	MinItems int // number of items guaranteed before lower tiers consume budget
 }
 
-// Assemble assembles tiers into a single string within budgetBytes.
+// Assemble assembles tiers into a single string within budgetTokens.
+//
+// Cost is measured in approximate tokens (see ApproxTokens), not bytes, so the
+// budget lines up with what actually fills a model's context window regardless
+// of how many bytes a multi-byte-heavy block occupies.
 //
 // Rules:
 //   - Items within each tier are sorted by Priority ascending (stable).
@@ -32,8 +49,8 @@ type Tier struct {
 //   - Deterministic: same input → same output.
 //   - Output: blocks concatenated with "\n" in tier→priority order, plus total dropped.
 //
-// budgetBytes <= 0 returns ("", total non-empty items).
-func Assemble(tiers []Tier, budgetBytes int) (out string, dropped int) {
+// budgetTokens <= 0 returns ("", total non-empty items).
+func Assemble(tiers []Tier, budgetTokens int) (out string, dropped int) {
 	// Build sorted copies of each tier's non-empty items.
 	type tierItems struct {
 		items    []Item
@@ -56,7 +73,7 @@ func Assemble(tiers []Tier, budgetBytes int) (out string, dropped int) {
 		sorted[i] = tierItems{items: items, minItems: t.MinItems}
 	}
 
-	if budgetBytes <= 0 {
+	if budgetTokens <= 0 {
 		return "", totalNonEmpty
 	}
 
@@ -65,16 +82,16 @@ func Assemble(tiers []Tier, budgetBytes int) (out string, dropped int) {
 		included[i] = make([]bool, len(ti.items))
 	}
 
-	remaining := budgetBytes
+	remaining := budgetTokens
 
-	// costOf returns the byte cost of adding text to the output so far.
+	// costOf returns the token cost of adding text to the output so far.
 	// The separator "\n" is added before every item except the very first.
 	hasAny := false
 	cost := func(text string) int {
 		if hasAny {
-			return len("\n") + len(text)
+			return ApproxTokens("\n") + ApproxTokens(text)
 		}
-		return len(text)
+		return ApproxTokens(text)
 	}
 
 	// Pass 1: reserve MinItems for each tier.
