@@ -18,6 +18,10 @@ type HybridSearchConfig struct {
 	MMRLambda                 float64
 	TemporalDecayEnabled      bool
 	TemporalDecayHalfLifeDays int
+	// DiversifyPerOrigin caps how many results may come from the same origin
+	// (source session, or creation day when the session is unknown) so a single
+	// prolix session can't dominate the top-k. 0 disables the cap.
+	DiversifyPerOrigin int
 }
 
 func DefaultHybridSearchConfig() HybridSearchConfig {
@@ -30,6 +34,7 @@ func DefaultHybridSearchConfig() HybridSearchConfig {
 		MMRLambda:                 0.7,
 		TemporalDecayEnabled:      true,
 		TemporalDecayHalfLifeDays: 30,
+		DiversifyPerOrigin:        3,
 	}
 }
 
@@ -116,11 +121,44 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 		return fused[i].Score > fused[j].Score
 	})
 
+	// Diversify by origin before truncation so one prolix session can't fill
+	// the top-k. Runs on the score-sorted list, so the highest-scoring result
+	// from each origin is the one kept.
+	if cfg.DiversifyPerOrigin > 0 {
+		fused = diversifyByOrigin(fused, cfg.DiversifyPerOrigin)
+	}
+
 	if len(fused) > maxResults {
 		fused = fused[:maxResults]
 	}
 
 	return fused, nil
+}
+
+// resultOrigin identifies which session (or, lacking one, which day) produced a
+// memory, so diversification can cap how many come from the same source.
+func resultOrigin(m Memory) string {
+	if m.SourceID != nil && *m.SourceID != "" {
+		return "sid:" + *m.SourceID
+	}
+	return "day:" + m.CreatedAt.Format("2006-01-02")
+}
+
+// diversifyByOrigin keeps at most perOrigin results per origin, preserving the
+// input order (which the caller has already sorted by score). A perOrigin <= 0
+// is treated as "no cap" by the caller, so this always enforces a real limit.
+func diversifyByOrigin(results []SearchResult, perOrigin int) []SearchResult {
+	counts := make(map[string]int, len(results))
+	out := results[:0:0]
+	for _, r := range results {
+		origin := resultOrigin(r.Memory)
+		if counts[origin] >= perOrigin {
+			continue
+		}
+		counts[origin]++
+		out = append(out, r)
+	}
+	return out
 }
 
 func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResults int, queryEntities []string, opts SearchOptions) ([]SearchResult, error) {
