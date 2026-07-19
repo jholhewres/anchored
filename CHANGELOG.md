@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.13.0] - 2026-07-19
+
+Context-quality release: the agent's work is now seen and the memory layer's
+value is measured. Identity fills itself from what you've taught anchored,
+duplicate tool events stop cluttering the timeline, retrieval stops letting one
+session dominate, budgeting counts tokens instead of bytes, and a new telemetry
+surface shows how many context tokens anchored saves.
+
+### Added
+
+- **Identity synthesized from preferences** — when `~/.anchored/identity.md` is
+  still the install template, `anchored_context` now fills the `<identity>`
+  block from your top preference memories instead of shipping an empty
+  skeleton. A curated identity file keeps full precedence; `anchored doctor`
+  reports a template-only file instead of calling it healthy.
+- **Context-token telemetry** — every context injection records tokens injected
+  vs. the static-context baseline (CLAUDE.md/AGENTS.md + skills) it stands in
+  for, in a new `recall_logs` table (baseline cached per project, recomputed at
+  most daily). `anchored stats --tokens` reports injected vs. baseline and
+  savings % over the last 7 days.
+
+### Changed
+
+- **Retrieval diversifies by origin** — hybrid search now caps how many results
+  come from the same source session (default 3), so one prolix session can't
+  dominate the top-k. Set `DiversifyPerOrigin` to 0 to disable.
+- **Context budget measured in tokens** — the SessionStart rich block is now
+  budgeted in approximate tokens (default 2000, `sessionstart_budget_tokens`)
+  rather than bytes, matching what actually fills the model's context window.
+  Legacy `sessionstart_budget_bytes` configs are converted automatically.
+
+### Fixed
+
+- **Duplicate PostToolUse events** — a byte-identical tool call fired again
+  within 5 minutes (same session + tool + summary) is no longer recorded twice,
+  keeping the session timeline clean. Fail-open: a genuine event is never
+  dropped.
+
 ## [0.12.0] - 2026-07-15
 
 Task management lands across every surface — dashboard, MCP tool, and CLI now
