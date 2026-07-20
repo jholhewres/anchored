@@ -121,6 +121,21 @@ func runHookSessionStart(args []string) {
 	projectID := hc.ResolveProject(cwdVal)
 	ctx := context.Background()
 
+	// Register/resume this session so the cockpit can show it live. StartSession
+	// itself is unchanged; provider/model come from the environment (this is
+	// what distinguishes Claude Code on Anthropic from Claude Code + GLM).
+	// Best-effort: a failure here never blocks the session start.
+	if resolvedSessionID != "" {
+		mgr := session.NewManager(hc.db, nil)
+		if sid, sErr := mgr.StartSession(ctx, "claude-code", resolvedSessionID, projectID, cwdVal); sErr == nil {
+			if provider, model := detectProvider(os.Getenv); provider != "" {
+				_ = mgr.UpdateSessionMeta(ctx, sid, provider, model)
+			}
+		} else {
+			dlog.Event("hook.sessionstart", map[string]any{"stage": "start_session_failed", "error": sErr.Error()})
+		}
+	}
+
 	// When the resolved budget is 0 the user has opted out of the rich block;
 	// fall back to the original plain format (RoutingBlock + events). Budget is
 	// measured in approximate tokens (default 2000).
