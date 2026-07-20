@@ -60,7 +60,7 @@ const preview = (s, n = 160) => (s && s.length > n ? s.slice(0, n) + "…" : s |
 // ---------------- tabs ----------------
 const TAB_TITLES = {
   overview: "Overview", cockpit: "Cockpit", memories: "Memories", tasks: "Tasks", kg: "Knowledge Graph",
-  system: "System", dream: "Curation", artifacts: "Artifacts", activity: "Activity",
+  projects: "Projects", system: "System", dream: "Curation", artifacts: "Artifacts", activity: "Activity",
   connections: "Connectors",
 };
 const tabs = document.querySelectorAll("nav.tabs button");
@@ -72,7 +72,7 @@ tabs.forEach((b) => b.addEventListener("click", () => {
   });
   const title = el("view-title");
   if (title) title.textContent = TAB_TITLES[name] || name;
-  const loaders = { overview: loadOverview, cockpit: loadCockpit, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity, connections: loadConnections };
+  const loaders = { overview: loadOverview, cockpit: loadCockpit, memories: loadMemories, tasks: loadTasks, kg: loadKG, projects: loadProjects, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity, connections: loadConnections };
   if (loaders[name] && !loaders[name].loaded) loaders[name]();
 }));
 
@@ -312,6 +312,45 @@ async function cmCreate() {
   el("cm-close").addEventListener("click", closeCockpitModal);
   el("cockpit-modal").addEventListener("click", (e) => { if (e.target.id === "cockpit-modal") closeCockpitModal(); });
 })();
+
+// ---------------- projects ----------------
+async function loadProjects() {
+  loadProjects.loaded = true;
+  const tb = el("projects-tbody");
+  tb.innerHTML = `<tr><td colspan="6" class="muted" style="padding:14px">loading…</td></tr>`;
+  try {
+    const [pd, live] = await Promise.all([
+      fetchJSON("/api/projects"),
+      fetchJSON("/api/sessions/live").catch(() => ({ sessions: [] })),
+    ]);
+    const items = pd.items || [];
+    // count live sessions per project id
+    const liveByProj = {};
+    (live.sessions || []).forEach((s) => { if (s.project_id) liveByProj[s.project_id] = (liveByProj[s.project_id] || 0) + 1; });
+    el("projects-sub").textContent =
+      `${items.length} projects · ${items.filter((p) => p.remote_key).length} linked`;
+    tb.innerHTML = items.length
+      ? items.map((p) => {
+        const link = p.remote_key
+          ? `<span class="chip live">🔗 linked</span>`
+          : `<span class="chip">⛓ local-only</span>`;
+        const n = liveByProj[p.id] || 0;
+        const liveCell = n ? `<span class="chip live">${n} open</span>` : `<span class="muted">—</span>`;
+        return `<tr>
+          <td><b>${esc(p.name || shortName(p.id))}</b></td>
+          <td>${link}</td>
+          <td class="mono">${p.memories ?? 0}</td>
+          <td>${liveCell}</td>
+          <td class="muted">${fmtDate(p.last_activity)}</td>
+          <td class="mono muted" style="font-size:11px">${esc(p.path || "")}</td>
+        </tr>`;
+      }).join("")
+      : `<tr><td colspan="6" class="empty">no projects yet</td></tr>`;
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="6" class="empty">error: ${esc(e.message)}</td></tr>`;
+  }
+}
+document.addEventListener("click", (e) => { if (e.target && e.target.id === "projects-refresh") loadProjects(); });
 
 // ---------------- connections ----------------
 async function loadConnections() {

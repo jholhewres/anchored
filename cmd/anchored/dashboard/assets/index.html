@@ -15,6 +15,7 @@
         <button data-tab="overview" class="active"><span class="ico">◧</span> Overview</button>
         <button data-tab="cockpit"><span class="ico">◉</span> Cockpit</button>
         <button data-tab="tasks" class="primary-tab"><span class="ico">◪</span> Tasks</button>
+        <button data-tab="projects"><span class="ico">▦</span> Projects</button>
         <div class="nav-group">Knowledge</div>
         <button data-tab="memories"><span class="ico">❒</span> Memories</button>
         <button data-tab="kg"><span class="ico">⬡</span> Knowledge Graph</button>
@@ -76,6 +77,22 @@
         <button class="btn" id="cockpit-refresh">Refresh</button>
       </div>
       <div id="cockpit-list" class="sessions"></div>
+    </section>
+
+    <!-- PROJECTS -->
+    <section id="tab-projects" class="tab">
+      <div class="sechead">
+        <h2>Projects</h2>
+        <span class="sechead-sub" id="projects-sub">every project anchored has memory for — linked to a remote or local-only</span>
+        <span class="spacer"></span>
+        <button class="btn" id="projects-refresh">Refresh</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>Project</th><th>Link</th><th>Memories</th><th>Live</th><th>Last activity</th><th>Path</th></tr></thead>
+          <tbody id="projects-tbody"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- MEMORIES -->
