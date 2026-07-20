@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -24,6 +25,9 @@ type taskView struct {
 	SessionCount int      `json:"session_count"`
 	CreatedAt    string   `json:"created_at"`
 	UpdatedAt    string   `json:"updated_at"`
+	// LiveSessionID is the id of a currently-live session linked to this task,
+	// if any — lets the board show "active now" and jump to the session.
+	LiveSessionID string `json:"live_session_id,omitempty"`
 }
 
 func (a *dashboardAPI) toTaskView(t session.TaskThread, names map[string]string) taskView {
@@ -78,11 +82,30 @@ func (a *dashboardAPI) handleTasksList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	names := a.projectNameMap(r)
+	liveByTask := a.liveSessionByTask(r.Context()) // task_key -> live session id
 	out := make([]taskView, 0, len(threads))
 	for _, t := range threads {
-		out = append(out, a.toTaskView(t, names))
+		v := a.toTaskView(t, names)
+		v.LiveSessionID = liveByTask[t.TaskKey]
+		out = append(out, v)
 	}
 	dashWriteJSON(w, http.StatusOK, map[string]any{"items": out, "count": len(out)})
+}
+
+// liveSessionByTask maps each linked task to a currently-live session id.
+// Best-effort: returns an empty map on error so the board still renders.
+func (a *dashboardAPI) liveSessionByTask(ctx context.Context) map[string]string {
+	m := map[string]string{}
+	live, err := a.sessions.GetLiveSessions(ctx, cockpitIdleThreshold)
+	if err != nil {
+		return m
+	}
+	for _, s := range live {
+		if s.TaskKey != "" {
+			m[s.TaskKey] = s.ID
+		}
+	}
+	return m
 }
 
 func (a *dashboardAPI) handleTaskGet(w http.ResponseWriter, r *http.Request) {
