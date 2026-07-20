@@ -120,6 +120,23 @@ func Migrate(db *sql.DB) error {
 		{Name: "014_artifact_store", Up: ctxpkg.MigrationSQL014},
 		{Name: "015_working_sets", Up: ctxpkg.MigrationSQL015},
 		{Name: "016_task_threads", Up: ctxpkg.MigrationSQL016},
+		// Session Cockpit: richer session metadata (provider/model/intent for
+		// distinguishing e.g. Claude Code vs Claude Code + GLM) and the
+		// session<->task link. session_id is the PK, so a session maps to at
+		// most one task at a time; task_key repeats, so a task accumulates many
+		// sessions over its life.
+		{Name: "017_session_cockpit", Up: `
+			ALTER TABLE sessions ADD COLUMN provider TEXT;
+			ALTER TABLE sessions ADD COLUMN model TEXT;
+			ALTER TABLE sessions ADD COLUMN intent TEXT;
+			CREATE TABLE IF NOT EXISTS session_task_link (
+				session_id TEXT PRIMARY KEY,
+				task_key   TEXT NOT NULL,
+				linked_by  TEXT,
+				linked_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE INDEX IF NOT EXISTS idx_session_task_link_task ON session_task_link(task_key);
+		`},
 	}
 
 	for _, m := range migrations {
