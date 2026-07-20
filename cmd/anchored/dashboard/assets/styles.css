@@ -488,3 +488,14 @@ nav.tabs button.primary-tab .ico { color:var(--accent); opacity:1; }
 @media (max-width:620px){ .tm-grid{ grid-template-columns:1fr; } .tm-side{ border-left:none; border-top:1px solid var(--border); padding-left:0; padding-top:14px; } }
 .dot.live { background: var(--accent2); }
 .dot.idle { background: var(--warn); }
+
+/* cockpit link modal + task live indicator */
+.cm-session { margin-bottom:12px; font-size:12.5px; color:var(--text-dim); }
+.cm-list { display:flex; flex-direction:column; gap:5px; max-height:280px; overflow:auto; margin:10px 0; }
+.cm-item { display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:var(--bg-elev2); border:1px solid var(--border); border-radius:8px; padding:8px 11px; cursor:pointer; }
+.cm-item:hover { border-color:var(--accent); }
+.cm-item .cm-key { font-family:var(--mono); font-weight:650; font-size:12.5px; }
+.cm-item .cm-sub { color:var(--text-dim); font-size:11.5px; margin-left:2px; flex:1; }
+.cm-create { border-top:1px solid var(--border); padding-top:12px; margin-top:6px; }
+.cm-create .row { display:flex; gap:8px; margin-top:8px; }
+.tlive { font-size:10px; color:var(--accent2); font-weight:700; font-family:var(--mono); }

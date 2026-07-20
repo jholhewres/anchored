@@ -174,18 +174,19 @@ const AGO = (s) => {
   if (secs < 5400) return Math.round(secs / 60) + "m";
   return Math.round(secs / 3600) + "h";
 };
+let liveSessions = [];
 async function loadCockpit() {
   loadCockpit.loaded = true;
   const host = el("cockpit-list");
   host.innerHTML = `<p class="muted">loading…</p>`;
   try {
     const d = await fetchJSON("/api/sessions/live");
-    const sessions = d.sessions || [];
-    if (!sessions.length) {
+    liveSessions = d.sessions || [];
+    if (!liveSessions.length) {
       host.innerHTML = `<p class="empty">No live sessions. Open Claude Code, Cursor, Codex… and it shows up here.</p>`;
       return;
     }
-    host.innerHTML = sessions.map(cockpitCard).join("");
+    host.innerHTML = liveSessions.map(cockpitCard).join("");
   } catch (e) {
     host.innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`;
   }
@@ -213,7 +214,7 @@ function cockpitCard(s) {
       <span class="st"><span class="dot ${live ? "live pulse" : "idle"}"></span> ${live ? "active" : "idle"} · ${AGO(s.last_activity_at)}</span>
     </div>
     <div class="sc-b">
-      <div class="proj">${esc(s.project_id || "—")}${s.intent ? `<span class="intent">${esc(s.intent)}</span>` : ""}</div>
+      <div class="proj">${esc(s.project_id ? projectLabel(s.project_id) : "—")}${s.intent ? `<span class="intent">${esc(s.intent)}</span>` : ""}</div>
       <div class="evs">${evs}</div>
     </div>
     <div class="sc-f">${task}</div>
@@ -228,41 +229,89 @@ async function cockpitWrite(url, opts) {
   }
   return r.json();
 }
-async function linkSession(id) {
-  const key = prompt("Link to task (key, e.g. API-812):");
-  if (!key) return;
-  try {
-    await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task_key: key }) });
-    loadCockpit();
-  } catch (e) { alert("error: " + e.message); }
-}
-async function promoteSession(id) {
-  const key = prompt("Create task from session. Key (empty = generate):") ?? "";
-  try {
-    await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/promote-task",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
-    loadCockpit();
-  } catch (e) { alert("error: " + e.message); }
-}
 async function unlinkSession(id) {
   try {
     await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link", { method: "DELETE" });
+    showToast("session unlinked", "ok");
     loadCockpit();
-  } catch (e) { alert("error: " + e.message); }
+  } catch (e) { showToast("unlink failed: " + e.message, "err"); }
 }
 document.addEventListener("click", (e) => {
   if (e.target && e.target.id === "cockpit-refresh") { loadCockpit(); return; }
-  // Event delegation for cockpit card actions — the id travels in a data-*
-  // attribute, never inlined into an onclick string, so it can't cross into a
-  // JS context regardless of its value.
   const btn = e.target && e.target.closest ? e.target.closest("[data-cockpit]") : null;
   if (!btn) return;
   const id = btn.dataset.id;
-  if (btn.dataset.cockpit === "link") linkSession(id);
-  else if (btn.dataset.cockpit === "promote") promoteSession(id);
+  if (btn.dataset.cockpit === "link" || btn.dataset.cockpit === "promote") openCockpitLink(id);
   else if (btn.dataset.cockpit === "unlink") unlinkSession(id);
 });
+
+// ---- cockpit link/create-task modal (replaces prompt/alert) ----
+let cmSessionId = null;
+async function openCockpitLink(sessionId) {
+  cmSessionId = sessionId;
+  const s = liveSessions.find((x) => x.id === sessionId);
+  el("cm-session").innerHTML = s
+    ? `<span class="chip">${esc(s.tool || "session")}</span> ${esc(s.project_id ? projectLabel(s.project_id) : "—")}${s.intent ? ` · ${esc(s.intent)}` : ""}`
+    : "";
+  el("cm-search").value = "";
+  el("cm-newkey").value = "";
+  el("cockpit-modal").classList.add("open");
+  el("cm-list").innerHTML = `<div class="muted" style="padding:12px;text-align:center">loading tasks…</div>`;
+  // The board's task list may be empty if Tasks wasn't opened yet — fetch it.
+  try {
+    const d = await fetchJSON("/api/tasks?limit=1000");
+    tasks = d.items || [];
+  } catch (_) { /* keep whatever we have */ }
+  paintCmList("");
+  setTimeout(() => el("cm-search").focus(), 30);
+}
+function closeCockpitModal() { el("cockpit-modal").classList.remove("open"); cmSessionId = null; }
+function paintCmList(q) {
+  q = (q || "").trim().toLowerCase();
+  const open = (tasks || []).filter((t) => t.status !== "done" && t.status !== "cancelled");
+  const match = (t) => !q || (t.task_key || "").toLowerCase().includes(q) ||
+    (t.external_ref || "").toLowerCase().includes(q) ||
+    (t.project_names || []).some((n) => (n || "").toLowerCase().includes(q));
+  const rows = open.filter(match).slice(0, 30);
+  el("cm-list").innerHTML = rows.length
+    ? rows.map((t) => `<button class="cm-item" data-key="${esc(t.task_key)}">
+        <span class="cm-key">${esc(t.task_key)}</span>
+        <span class="cm-sub">${esc((t.project_names || []).map(shortName).join(", ") || t.external_ref || "")}</span>
+        <span class="chip ${t.status === "active" ? "live" : ""}">${esc(t.status)}</span>
+      </button>`).join("")
+    : `<div class="muted" style="padding:12px;text-align:center">no matching tasks — create one below</div>`;
+  el("cm-list").querySelectorAll(".cm-item").forEach((b) =>
+    b.addEventListener("click", () => cmLink(b.dataset.key)));
+}
+async function cmLink(key) {
+  try {
+    await cockpitWrite("/api/sessions/" + encodeURIComponent(cmSessionId) + "/link",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task_key: key }) });
+    showToast("linked to " + key, "ok");
+    closeCockpitModal();
+    loadCockpit();
+  } catch (e) { showToast("link failed: " + e.message, "err"); }
+}
+async function cmCreate() {
+  const key = el("cm-newkey").value.trim();
+  try {
+    const r = await cockpitWrite("/api/sessions/" + encodeURIComponent(cmSessionId) + "/promote-task",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    showToast("created & linked " + (r.task_key || ""), "ok");
+    closeCockpitModal();
+    loadCockpit();
+  } catch (e) { showToast("create failed: " + e.message, "err"); }
+}
+// wire the cockpit modal once
+(function wireCockpitModal() {
+  const search = el("cm-search");
+  if (!search) return;
+  search.addEventListener("input", () => paintCmList(search.value));
+  el("cm-create").addEventListener("click", cmCreate);
+  el("cm-newkey").addEventListener("keydown", (e) => { if (e.key === "Enter") cmCreate(); });
+  el("cm-close").addEventListener("click", closeCockpitModal);
+  el("cockpit-modal").addEventListener("click", (e) => { if (e.target.id === "cockpit-modal") closeCockpitModal(); });
+})();
 
 // ---------------- connections ----------------
 async function loadConnections() {
@@ -713,8 +762,9 @@ function taskCardHTML(t) {
     .map((n) => `<span class="tchip proj">${esc(shortName(n))}</span>`).join("");
   const extra = (t.project_names || []).length > 3 ? `<span class="tchip">+${t.project_names.length - 3}</span>` : "";
   const note = (t.journal || [])[0];
+  const liveDot = t.live_session_id ? `<span class="tlive" title="a live session is working on this">● live</span>` : "";
   return `<div class="tcard" draggable="true" data-key="${esc(t.task_key)}" data-status="${esc(t.status)}">
-    <div class="tkey">${esc(t.task_key)}</div>
+    <div class="tkey">${esc(t.task_key)} ${liveDot}</div>
     ${t.external_ref ? `<div class="tref">${esc(t.external_ref)}</div>` : ""}
     <div class="tmeta">
       ${projs}${extra}

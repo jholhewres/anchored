@@ -293,6 +293,27 @@
     </div>
   </div>
 
+  <!-- cockpit: link session → task modal -->
+  <div class="modal-overlay" id="cockpit-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Link session to task</h3>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="cm-close" title="Close">✕</button>
+      </div>
+      <div class="cm-session" id="cm-session"></div>
+      <input type="search" id="cm-search" placeholder="search tasks by key / ref / project…" autocomplete="off" style="width:100%">
+      <div class="cm-list" id="cm-list"></div>
+      <div class="cm-create">
+        <div class="tm-side-title">Or create a new task</div>
+        <div class="row">
+          <input type="text" id="cm-newkey" placeholder="PROJ-123 (empty = auto-generate)" autocomplete="off" style="flex:1">
+          <button class="btn primary" id="cm-create">Create &amp; link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- card context menu -->
   <div id="ctxmenu" class="ctxmenu" hidden></div>
 
