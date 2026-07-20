@@ -75,6 +75,8 @@ func main() {
 		runBackfillEmbeddings(os.Args[2:])
 	case "dashboard":
 		runDashboard(os.Args[2:])
+	case "hub":
+		runHub(os.Args[2:])
 	case "maintenance":
 		runMaintenance(os.Args[2:])
 	case "--version", "-v":
