@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Session Cockpit (first slice): see every live coding session and bind one to a
+task on your personal board.
+
+### Added
+
+- **`anchored hub`** — an always-on local daemon that serves the dashboard and
+  runs upkeep workers (ending stale sessions, pruning old events) on a ticker,
+  so the live view stays honest even with no tool connected. `hub
+  install/uninstall/status` manage a systemd --user service; the per-tool
+  `serve --stdio` processes stay lightweight producers.
+- **Live sessions** — sessions now record provider/model/intent (telling Claude
+  Code on Anthropic apart from Claude Code + GLM, detected from the
+  environment). `GET /api/sessions/live` and a new **Cockpit** dashboard tab
+  show each open session with its tool, project, intent, recent activity and
+  active/idle state.
+- **Session ↔ task link** — bind a live session to a board task (1 session → 1
+  task; a task accumulates many sessions), create a task from a session, or
+  unlink, via the cockpit and `POST/DELETE /api/sessions/{id}/link` +
+  `/promote-task`. Notable session events flow into the linked task's journal;
+  `/api/tasks` now reports a `live_session_id` when a session is active on it.
+
 ## [0.14.0] - 2026-07-19
 
 Broadens which agent hosts anchored plugs into, and surfaces more of the memory
