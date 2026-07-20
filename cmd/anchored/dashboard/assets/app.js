@@ -59,7 +59,7 @@ const preview = (s, n = 160) => (s && s.length > n ? s.slice(0, n) + "…" : s |
 
 // ---------------- tabs ----------------
 const TAB_TITLES = {
-  overview: "Overview", memories: "Memórias", tasks: "Tasks", kg: "Knowledge Graph",
+  overview: "Overview", cockpit: "Cockpit", memories: "Memórias", tasks: "Tasks", kg: "Knowledge Graph",
   system: "Sistema", dream: "Consolidação", artifacts: "Artifacts", activity: "Atividade",
   connections: "Conexões",
 };
@@ -72,7 +72,7 @@ tabs.forEach((b) => b.addEventListener("click", () => {
   });
   const title = el("view-title");
   if (title) title.textContent = TAB_TITLES[name] || name;
-  const loaders = { overview: loadOverview, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity, connections: loadConnections };
+  const loaders = { overview: loadOverview, cockpit: loadCockpit, memories: loadMemories, tasks: loadTasks, kg: loadKG, system: loadSystem, dream: loadDream, artifacts: loadArtifacts, activity: loadActivity, connections: loadConnections };
   if (loaders[name] && !loaders[name].loaded) loaders[name]();
 }));
 
@@ -158,6 +158,83 @@ const fmtCount = (n) => {
 };
 const card = (label, value, sub, kind = "") =>
   `<div class="card ${kind}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
+
+// ---------------- cockpit ----------------
+const AGO = (s) => {
+  if (!s) return "—";
+  const secs = Math.max(0, (Date.now() - new Date(s).getTime()) / 1000);
+  if (secs < 90) return Math.round(secs) + "s";
+  if (secs < 5400) return Math.round(secs / 60) + "m";
+  return Math.round(secs / 3600) + "h";
+};
+async function loadCockpit() {
+  loadCockpit.loaded = true;
+  const host = el("cockpit-list");
+  host.innerHTML = `<p class="muted">carregando…</p>`;
+  try {
+    const d = await fetchJSON("/api/sessions/live");
+    const sessions = d.sessions || [];
+    if (!sessions.length) {
+      host.innerHTML = `<p class="empty">Nenhuma sessão viva. Abra o Claude Code, Cursor, Codex… e ela aparece aqui.</p>`;
+      return;
+    }
+    host.innerHTML = sessions.map(cockpitCard).join("");
+  } catch (e) {
+    host.innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`;
+  }
+}
+function cockpitCard(s) {
+  const dot = s.state === "active" ? "live" : "idle";
+  const evs = (s.recent_events || []).slice(0, 3).map((e) =>
+    `<div class="ev"><span class="mono">${esc(e.event_type)}${e.tool_name ? " · " + esc(e.tool_name) : ""}</span>${e.summary ? " — " + esc(preview(e.summary, 80)) : ""} <span class="tm">${AGO(e.created_at)}</span></div>`
+  ).join("") || `<div class="ev muted">sem eventos ainda</div>`;
+  const prov = s.provider ? `<span class="chip">${esc(s.provider)}${s.model ? " · " + esc(s.model) : ""}</span>` : "";
+  const task = s.task_key
+    ? `<span class="chip live">◪ ${esc(s.task_key)}</span> <button class="btn" onclick="unlinkSession('${esc(s.id)}')">desvincular</button>`
+    : `<button class="btn" onclick="linkSession('${esc(s.id)}')">+ vincular task</button> <button class="btn" onclick="promoteSession('${esc(s.id)}')">criar task</button>`;
+  return `<div class="sc ${s.state === "active" ? "act" : ""}">
+    <div class="sc-h"><b>${esc(s.tool || "session")}</b> ${prov}
+      <span class="st" style="margin-left:auto"><span class="dot ${dot}"></span> ${s.state} · ${AGO(s.last_activity_at)}</span></div>
+    <div class="sc-b">
+      <div class="proj mono">${esc(s.project_id || "—")}${s.intent ? ` · <span class="chip">${esc(s.intent)}</span>` : ""}</div>
+      <div class="evs">${evs}</div>
+    </div>
+    <div class="sc-f">${task}</div>
+  </div>`;
+}
+async function cockpitWrite(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) {
+    let msg = r.status + " " + r.statusText;
+    try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+async function linkSession(id) {
+  const key = prompt("Vincular à task (chave, ex. API-812):");
+  if (!key) return;
+  try {
+    await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task_key: key }) });
+    loadCockpit();
+  } catch (e) { alert("erro: " + e.message); }
+}
+async function promoteSession(id) {
+  const key = prompt("Criar task a partir da sessão. Chave (vazio = gerar):") ?? "";
+  try {
+    await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/promote-task",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    loadCockpit();
+  } catch (e) { alert("erro: " + e.message); }
+}
+async function unlinkSession(id) {
+  try {
+    await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link", { method: "DELETE" });
+    loadCockpit();
+  } catch (e) { alert("erro: " + e.message); }
+}
+document.addEventListener("click", (e) => { if (e.target && e.target.id === "cockpit-refresh") loadCockpit(); });
 
 // ---------------- connections ----------------
 async function loadConnections() {

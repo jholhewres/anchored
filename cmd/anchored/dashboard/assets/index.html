@@ -13,6 +13,7 @@
       <div class="brand"><span class="glyph">⟁</span> <span class="brand-name">anchored</span></div>
       <nav class="tabs">
         <button data-tab="overview" class="active"><span class="ico">◧</span> Overview</button>
+        <button data-tab="cockpit"><span class="ico">◉</span> Cockpit</button>
         <button data-tab="memories"><span class="ico">❒</span> Memórias</button>
         <button data-tab="tasks"><span class="ico">◪</span> Tasks</button>
         <button data-tab="kg"><span class="ico">⬡</span> Knowledge Graph</button>
@@ -201,6 +202,14 @@
         <h2 style="padding:16px 16px 0">Histórico de imports</h2>
         <table><thead><tr><th>Origem</th><th>Path</th><th>Status</th><th>Memórias</th><th>Entidades</th><th>Início</th><th>Fim</th></tr></thead>
           <tbody id="act-imports"></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-cockpit" class="tab">
+      <div class="panel" style="padding:0">
+        <h2 style="padding:16px 16px 0">Sessões vivas <button class="btn" id="cockpit-refresh" style="float:right">atualizar</button></h2>
+        <p class="muted" style="padding:0 16px">Sessões abertas em todas as ferramentas. Vincule uma a uma task do board.</p>
+        <div id="cockpit-list" class="sessions" style="padding:16px"></div>
       </div>
     </section>
 
