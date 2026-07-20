@@ -190,8 +190,8 @@ function cockpitCard(s) {
   ).join("") || `<div class="ev muted">sem eventos ainda</div>`;
   const prov = s.provider ? `<span class="chip">${esc(s.provider)}${s.model ? " · " + esc(s.model) : ""}</span>` : "";
   const task = s.task_key
-    ? `<span class="chip live">◪ ${esc(s.task_key)}</span> <button class="btn" onclick="unlinkSession('${esc(s.id)}')">desvincular</button>`
-    : `<button class="btn" onclick="linkSession('${esc(s.id)}')">+ vincular task</button> <button class="btn" onclick="promoteSession('${esc(s.id)}')">criar task</button>`;
+    ? `<span class="chip live">◪ ${esc(s.task_key)}</span> <button class="btn" data-cockpit="unlink" data-id="${esc(s.id)}">desvincular</button>`
+    : `<button class="btn" data-cockpit="link" data-id="${esc(s.id)}">+ vincular task</button> <button class="btn" data-cockpit="promote" data-id="${esc(s.id)}">criar task</button>`;
   return `<div class="sc ${s.state === "active" ? "act" : ""}">
     <div class="sc-h"><b>${esc(s.tool || "session")}</b> ${prov}
       <span class="st" style="margin-left:auto"><span class="dot ${dot}"></span> ${s.state} · ${AGO(s.last_activity_at)}</span></div>
@@ -234,7 +234,18 @@ async function unlinkSession(id) {
     loadCockpit();
   } catch (e) { alert("erro: " + e.message); }
 }
-document.addEventListener("click", (e) => { if (e.target && e.target.id === "cockpit-refresh") loadCockpit(); });
+document.addEventListener("click", (e) => {
+  if (e.target && e.target.id === "cockpit-refresh") { loadCockpit(); return; }
+  // Event delegation for cockpit card actions — the id travels in a data-*
+  // attribute, never inlined into an onclick string, so it can't cross into a
+  // JS context regardless of its value.
+  const btn = e.target && e.target.closest ? e.target.closest("[data-cockpit]") : null;
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (btn.dataset.cockpit === "link") linkSession(id);
+  else if (btn.dataset.cockpit === "promote") promoteSession(id);
+  else if (btn.dataset.cockpit === "unlink") unlinkSession(id);
+});
 
 // ---------------- connections ----------------
 async function loadConnections() {
