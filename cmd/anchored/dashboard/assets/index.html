@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>anchored · dashboard</title>
+  <title>anchored · cockpit</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -14,14 +14,16 @@
       <nav class="tabs">
         <button data-tab="overview" class="active"><span class="ico">◧</span> Overview</button>
         <button data-tab="cockpit"><span class="ico">◉</span> Cockpit</button>
-        <button data-tab="memories"><span class="ico">❒</span> Memórias</button>
-        <button data-tab="tasks"><span class="ico">◪</span> Tasks</button>
+        <button data-tab="tasks" class="primary-tab"><span class="ico">◪</span> Tasks</button>
+        <div class="nav-group">Knowledge</div>
+        <button data-tab="memories"><span class="ico">❒</span> Memories</button>
         <button data-tab="kg"><span class="ico">⬡</span> Knowledge Graph</button>
-        <button data-tab="system"><span class="ico">⚙</span> Sistema</button>
-        <button data-tab="dream"><span class="ico">✷</span> Consolidação</button>
         <button data-tab="artifacts"><span class="ico">▤</span> Artifacts</button>
-        <button data-tab="activity"><span class="ico">⎇</span> Atividade</button>
-        <button data-tab="connections"><span class="ico">⇄</span> Conexões</button>
+        <div class="nav-group">Operations</div>
+        <button data-tab="activity"><span class="ico">⎇</span> Activity</button>
+        <button data-tab="dream"><span class="ico">✷</span> Curation</button>
+        <button data-tab="connections"><span class="ico">⇄</span> Connectors</button>
+        <button data-tab="system"><span class="ico">⚙</span> System</button>
       </nav>
       <div class="sidebar-foot">
         <span class="meta" id="db-meta"></span>
@@ -40,57 +42,68 @@
     <section id="tab-overview" class="tab active">
       <div class="card-grid" id="overview-cards"></div>
       <div class="panel">
-        <h2>Memórias por categoria</h2>
+        <h2>Memories by category</h2>
         <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
       </div>
       <div class="panel">
-        <h2>Top projetos</h2>
+        <h2>Top projects</h2>
         <div class="chart-wrap"><canvas id="chart-projects"></canvas></div>
       </div>
       <div class="panel">
-        <h2>Timeline de criação <select id="timeline-bucket" class="muted" style="margin-left:8px">
-          <option value="day">por dia (90)</option>
-          <option value="month">por mês (24)</option>
+        <h2>Creation timeline <select id="timeline-bucket" class="muted" style="margin-left:8px">
+          <option value="day">by day (90)</option>
+          <option value="month">by month (24)</option>
         </select>
-          <label class="muted" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="timeline-stacked"> por categoria</label></h2>
+          <label class="muted" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="timeline-stacked"> by category</label></h2>
         <div class="chart-wrap"><canvas id="chart-timeline"></canvas></div>
       </div>
       <div class="panel">
         <h2>Top keywords</h2>
-        <div id="overview-keywords" class="tag-cloud"><span class="muted">carregando…</span></div>
+        <div id="overview-keywords" class="tag-cloud"><span class="muted">loading…</span></div>
       </div>
       <div class="panel">
-        <h2>Top entidades (knowledge graph)</h2>
-        <div id="overview-entities" class="tag-cloud"><span class="muted">carregando…</span></div>
+        <h2>Top entities (knowledge graph)</h2>
+        <div id="overview-entities" class="tag-cloud"><span class="muted">loading…</span></div>
       </div>
+    </section>
+
+    <!-- COCKPIT -->
+    <section id="tab-cockpit" class="tab">
+      <div class="sechead">
+        <h2>Live sessions</h2>
+        <span class="sechead-sub" id="cockpit-sub">open sessions across every tool — link one to a board task</span>
+        <span class="spacer"></span>
+        <button class="btn" id="cockpit-refresh">Refresh</button>
+      </div>
+      <div id="cockpit-list" class="sessions"></div>
     </section>
 
     <!-- MEMORIES -->
     <section id="tab-memories" class="tab">
       <div class="toolbar">
-        <input type="search" id="mem-search" placeholder="buscar (híbrida: FTS5 + vetor)…" style="flex:1;min-width:240px">
-        <select id="mem-category"><option value="">todas categorias</option></select>
-        <select id="mem-project"><option value="">todos projetos</option></select>
-        <input type="date" id="mem-since" title="criada desde">
-        <input type="date" id="mem-until" title="criada até">
-        <button class="btn primary" id="mem-go">Buscar</button>
-        <button class="btn" id="mem-clear">Limpar</button>
-        <span class="muted" style="margin-left:auto">exportar visíveis:</span>
+        <input type="search" id="mem-search" placeholder="search (hybrid: FTS5 + vector)…" style="flex:1;min-width:240px">
+        <select id="mem-category"><option value="">all categories</option></select>
+        <select id="mem-project"><option value="">all projects</option></select>
+        <input type="date" id="mem-since" title="created since">
+        <input type="date" id="mem-until" title="created until">
+        <button class="btn primary" id="mem-go">Search</button>
+        <button class="btn" id="mem-clear">Clear</button>
+        <span class="muted" style="margin-left:auto">export visible:</span>
         <button class="btn" data-export="json">JSON</button>
         <button class="btn" data-export="md">Markdown</button>
         <button class="btn" data-export="csv">CSV</button>
       </div>
       <div class="panel" style="padding:0">
         <table>
-          <thead><tr><th class="sortable" data-order="category">Categoria ⇅</th><th>Conteúdo</th><th>Projeto</th><th class="sortable" data-order="source">Origem ⇅</th><th class="sortable" data-order="created_at">Criado ⇅</th></tr></thead>
+          <thead><tr><th class="sortable" data-order="category">Category ⇅</th><th>Content</th><th>Project</th><th class="sortable" data-order="source">Source ⇅</th><th class="sortable" data-order="created_at">Created ⇅</th></tr></thead>
           <tbody id="mem-tbody"></tbody>
         </table>
       </div>
       <div class="pager">
         <span id="mem-count" class="muted"></span>
         <div class="row">
-          <button class="btn" id="mem-prev">← anterior</button>
-          <button class="btn" id="mem-next">próximo →</button>
+          <button class="btn" id="mem-prev">← previous</button>
+          <button class="btn" id="mem-next">next →</button>
         </div>
       </div>
     </section>
@@ -98,26 +111,31 @@
     <!-- TASKS (kanban) -->
     <section id="tab-tasks" class="tab">
       <div class="toolbar">
-        <button class="btn primary" id="task-new">+ Nova task</button>
-        <input type="search" id="task-find" placeholder="filtrar por key / ref / projeto…" style="min-width:220px">
-        <button class="btn" id="task-refresh">Atualizar</button>
+        <button class="btn primary" id="task-new">+ New task</button>
+        <input type="search" id="task-find" placeholder="filter by key / ref / project…" style="min-width:220px">
+        <button class="btn" id="task-refresh">Refresh</button>
+        <label class="muted" style="display:inline-flex;align-items:center;gap:5px;margin-left:8px"><input type="checkbox" id="task-show-closed"> show closed</label>
         <span class="muted" id="task-stats" style="margin-left:auto"></span>
       </div>
       <div class="kanban" id="kanban">
+        <div class="kcol" data-status="backlog">
+          <div class="kcol-head"><span class="dot backlog"></span> Backlog <span class="kcount" data-count="backlog">0</span></div>
+          <div class="kcards" data-drop="backlog"></div>
+        </div>
         <div class="kcol" data-status="active">
-          <div class="kcol-head"><span class="dot active"></span> Ativas <span class="kcount" data-count="active">0</span></div>
+          <div class="kcol-head"><span class="dot active"></span> Active <span class="kcount" data-count="active">0</span></div>
           <div class="kcards" data-drop="active"></div>
         </div>
         <div class="kcol" data-status="paused">
-          <div class="kcol-head"><span class="dot paused"></span> Pausadas <span class="kcount" data-count="paused">0</span></div>
+          <div class="kcol-head"><span class="dot paused"></span> Paused <span class="kcount" data-count="paused">0</span></div>
           <div class="kcards" data-drop="paused"></div>
         </div>
-        <div class="kcol" data-status="done">
-          <div class="kcol-head"><span class="dot done"></span> Concluídas <span class="kcount" data-count="done">0</span></div>
+        <div class="kcol closable" data-status="done">
+          <div class="kcol-head"><span class="dot done"></span> Done <span class="kcount" data-count="done">0</span></div>
           <div class="kcards" data-drop="done"></div>
         </div>
-        <div class="kcol" data-status="cancelled">
-          <div class="kcol-head"><span class="dot cancelled"></span> Canceladas <span class="kcount" data-count="cancelled">0</span></div>
+        <div class="kcol closable" data-status="cancelled">
+          <div class="kcol-head"><span class="dot cancelled"></span> Cancelled <span class="kcount" data-count="cancelled">0</span></div>
           <div class="kcards" data-drop="cancelled"></div>
         </div>
       </div>
@@ -126,12 +144,12 @@
     <!-- KNOWLEDGE GRAPH -->
     <section id="tab-kg" class="tab">
       <div class="toolbar">
-        <select id="kg-project"><option value="">todos projetos</option></select>
-        <label class="muted">limite <input type="text" id="kg-limit" value="300" style="width:70px"></label>
-        <button class="btn primary" id="kg-go">Carregar grafo</button>
-        <input type="search" id="kg-find" placeholder="encontrar nó…" style="width:170px">
-        <button class="btn" id="kg-find-go">focar</button>
-        <button class="btn" id="kg-export">exportar JSON</button>
+        <select id="kg-project"><option value="">all projects</option></select>
+        <label class="muted">limit <input type="text" id="kg-limit" value="300" style="width:70px"></label>
+        <button class="btn primary" id="kg-go">Load graph</button>
+        <input type="search" id="kg-find" placeholder="find node…" style="width:170px">
+        <button class="btn" id="kg-find-go">focus</button>
+        <button class="btn" id="kg-export">export JSON</button>
         <span class="muted" id="kg-stats"></span>
       </div>
       <div id="kg-network"></div>
@@ -141,30 +159,30 @@
     <section id="tab-system" class="tab">
       <div class="card-grid" id="system-health"></div>
       <div class="panel">
-        <h2>Projetos detectados</h2>
-        <table><thead><tr><th>Nome</th><th>Path</th><th>Remote key</th><th>Memórias</th><th>Última atividade</th></tr></thead>
+        <h2>Detected projects</h2>
+        <table><thead><tr><th>Name</th><th>Path</th><th>Remote key</th><th>Memories</th><th>Last activity</th></tr></thead>
           <tbody id="sys-projects"></tbody></table>
       </div>
       <div class="panel">
-        <h2>Sessões recentes</h2>
-        <table><thead><tr><th>Título</th><th>Diretório</th><th>Origem</th><th>Msgs</th><th>Última atividade</th></tr></thead>
+        <h2>Recent sessions</h2>
+        <table><thead><tr><th>Title</th><th>Directory</th><th>Source</th><th>Msgs</th><th>Last activity</th></tr></thead>
           <tbody id="sys-sessions"></tbody></table>
       </div>
       <div class="panel">
-        <h2>Lixeira (soft-delete) <button class="btn" id="trash-refresh" style="float:right">atualizar</button></h2>
-        <table><thead><tr><th>Categoria</th><th>Conteúdo</th><th>Projeto</th><th>Deletada em</th><th></th></tr></thead>
+        <h2>Trash (soft-delete) <button class="btn" id="trash-refresh" style="float:right">refresh</button></h2>
+        <table><thead><tr><th>Category</th><th>Content</th><th>Project</th><th>Deleted at</th><th></th></tr></thead>
           <tbody id="sys-trash"></tbody></table>
       </div>
     </section>
 
-    <!-- CONSOLIDAÇÃO (dream) -->
+    <!-- CURATION (dream) -->
     <section id="tab-dream" class="tab">
       <div class="card-grid" id="dream-cards"></div>
       <div class="row" style="margin-bottom:12px">
-        <div class="muted">por tipo:</div><div id="dream-bytype" class="tag-cloud"></div>
+        <div class="muted">by type:</div><div id="dream-bytype" class="tag-cloud"></div>
       </div>
       <div class="panel" style="padding:0">
-        <table><thead><tr><th>Ação</th><th>Status</th><th>Confiança</th><th>Motivo</th><th>Proposta</th></tr></thead>
+        <table><thead><tr><th>Action</th><th>Status</th><th>Confidence</th><th>Reason</th><th>Proposed</th></tr></thead>
           <tbody id="dream-actions"></tbody></table>
       </div>
     </section>
@@ -173,20 +191,20 @@
     <section id="tab-artifacts" class="tab">
       <div class="card-grid" id="art-cards"></div>
       <div class="toolbar">
-        <select id="art-type"><option value="">todos os tipos</option></select>
-        <button class="btn primary" id="art-go">Atualizar</button>
+        <select id="art-type"><option value="">all types</option></select>
+        <button class="btn primary" id="art-go">Refresh</button>
       </div>
       <div class="panel" style="padding:0">
-        <table><thead><tr><th>Tipo</th><th>Label</th><th>Tool</th><th>Tamanho</th><th>Criado</th><th>Expira</th></tr></thead>
+        <table><thead><tr><th>Type</th><th>Label</th><th>Tool</th><th>Size</th><th>Created</th><th>Expires</th></tr></thead>
           <tbody id="art-tbody"></tbody></table>
       </div>
       <div class="panel">
         <h2>Content index (chunks)</h2>
-        <div id="chunks-stats" class="muted">carregando…</div>
+        <div id="chunks-stats" class="muted">loading…</div>
       </div>
     </section>
 
-    <!-- ATIVIDADE -->
+    <!-- ACTIVITY -->
     <section id="tab-activity" class="tab">
       <div class="card-grid" id="act-cards"></div>
       <div class="panel">
@@ -194,29 +212,22 @@
         <div id="act-toptools" class="tag-cloud"></div>
       </div>
       <div class="panel" style="padding:0">
-        <h2 style="padding:16px 16px 0">Eventos recentes</h2>
-        <table><thead><tr><th>Tipo</th><th>Tool</th><th>Resumo</th><th>Quando</th></tr></thead>
+        <h2 style="padding:16px 16px 0">Recent events</h2>
+        <table><thead><tr><th>Type</th><th>Tool</th><th>Summary</th><th>When</th></tr></thead>
           <tbody id="act-events"></tbody></table>
       </div>
       <div class="panel" style="padding:0">
-        <h2 style="padding:16px 16px 0">Histórico de imports</h2>
-        <table><thead><tr><th>Origem</th><th>Path</th><th>Status</th><th>Memórias</th><th>Entidades</th><th>Início</th><th>Fim</th></tr></thead>
+        <h2 style="padding:16px 16px 0">Import history</h2>
+        <table><thead><tr><th>Source</th><th>Path</th><th>Status</th><th>Memories</th><th>Entities</th><th>Start</th><th>End</th></tr></thead>
           <tbody id="act-imports"></tbody></table>
       </div>
     </section>
 
-    <section id="tab-cockpit" class="tab">
-      <div class="panel" style="padding:0">
-        <h2 style="padding:16px 16px 0">Sessões vivas <button class="btn" id="cockpit-refresh" style="float:right">atualizar</button></h2>
-        <p class="muted" style="padding:0 16px">Sessões abertas em todas as ferramentas. Vincule uma a uma task do board.</p>
-        <div id="cockpit-list" class="sessions" style="padding:16px"></div>
-      </div>
-    </section>
-
+    <!-- CONNECTORS -->
     <section id="tab-connections" class="tab">
       <div class="panel">
-        <h2>Hosts &amp; ferramentas</h2>
-        <p class="muted" style="margin:0 0 12px">Onde o anchored está registrado como servidor MCP. Registre um host com <code>anchored init --tool &lt;nome&gt;</code>.</p>
+        <h2>Hosts &amp; tools</h2>
+        <p class="muted" style="margin:0 0 12px">Where anchored is registered as an MCP server. Register a host with <code>anchored init --tool &lt;name&gt;</code>.</p>
         <div id="connections-list" class="conn-list"></div>
       </div>
     </section>
@@ -232,41 +243,58 @@
       <div class="body" id="m-body"></div>
       <div class="actions">
         <label class="muted" style="margin-right:auto;display:flex;align-items:center;gap:6px"><input type="checkbox" id="m-md" checked> Markdown</label>
-        <button class="btn danger" id="m-delete">Deletar (soft)</button>
-        <button class="btn" id="m-close">Fechar</button>
+        <button class="btn danger" id="m-delete">Delete (soft)</button>
+        <button class="btn" id="m-close">Close</button>
       </div>
     </div>
   </div>
 
   <!-- task create/detail modal -->
   <div class="modal-overlay" id="task-modal">
-    <div class="modal">
-      <h3 id="tm-title">Task</h3>
-      <div class="tm-form">
-        <label class="field"><span>Task key</span>
-          <input type="text" id="tm-key" placeholder="PROJ-123" autocomplete="off"></label>
-        <label class="field"><span>Referência externa</span>
-          <input type="text" id="tm-ref" placeholder="link / ticket / branch" autocomplete="off"></label>
-        <label class="field"><span>Projeto</span>
-          <select id="tm-project"><option value="">— nenhum —</option></select></label>
-        <label class="field"><span>Nota de journal</span>
-          <textarea id="tm-note" rows="2" placeholder="anota o que aconteceu…"></textarea></label>
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3 id="tm-title">Task</h3>
+        <span class="tm-statuschip" id="tm-statuschip" hidden></span>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="tm-close" title="Close">✕</button>
       </div>
-      <div class="tm-status" id="tm-status-row" hidden>
-        <span class="muted">status:</span>
-        <button class="btn kstatus" data-set="active">ativar</button>
-        <button class="btn kstatus" data-set="paused">pausar</button>
-        <button class="btn kstatus" data-set="done">concluir</button>
-        <button class="btn kstatus" data-set="cancelled">cancelar</button>
+      <div class="tm-grid">
+        <div class="tm-main">
+          <div class="tm-form">
+            <label class="field"><span>Task key</span>
+              <input type="text" id="tm-key" placeholder="PROJ-123" autocomplete="off"></label>
+            <label class="field"><span>External reference</span>
+              <input type="text" id="tm-ref" placeholder="link / ticket / branch" autocomplete="off"></label>
+            <label class="field"><span>Project</span>
+              <select id="tm-project"><option value="">— none —</option></select></label>
+            <label class="field"><span>Journal note</span>
+              <textarea id="tm-note" rows="2" placeholder="note what happened…"></textarea></label>
+          </div>
+          <div class="tm-journal-wrap" id="tm-journal-wrap" hidden>
+            <div class="tm-journal-title">Journal</div>
+            <div class="tm-journal" id="tm-journal"></div>
+          </div>
+        </div>
+        <aside class="tm-side" id="tm-side" hidden>
+          <div class="tm-side-title">Status</div>
+          <div class="tm-status" id="tm-status-row">
+            <button class="btn kstatus" data-set="backlog">Backlog</button>
+            <button class="btn kstatus" data-set="active">Active</button>
+            <button class="btn kstatus" data-set="paused">Paused</button>
+            <button class="btn kstatus" data-set="done">Done</button>
+            <button class="btn kstatus" data-set="cancelled">Cancelled</button>
+          </div>
+          <div class="tm-side-meta" id="tm-meta"></div>
+        </aside>
       </div>
-      <div class="tm-journal" id="tm-journal" hidden></div>
       <div class="actions">
-        <span class="muted" id="tm-meta" style="margin-right:auto"></span>
-        <button class="btn primary" id="tm-save">Salvar</button>
-        <button class="btn" id="tm-close">Fechar</button>
+        <button class="btn primary" id="tm-save">Save</button>
       </div>
     </div>
   </div>
+
+  <!-- card context menu -->
+  <div id="ctxmenu" class="ctxmenu" hidden></div>
 
   <div id="toast"></div>
   <div id="loading" class="loading-overlay"><div class="spinner"></div></div>

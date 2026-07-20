@@ -46,7 +46,7 @@ const fmtDate = (s) => {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d)) return s;
-  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  return d.toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
 };
 const fmtBytes = (b) => {
   if (!b) return "—";
@@ -59,9 +59,9 @@ const preview = (s, n = 160) => (s && s.length > n ? s.slice(0, n) + "…" : s |
 
 // ---------------- tabs ----------------
 const TAB_TITLES = {
-  overview: "Overview", cockpit: "Cockpit", memories: "Memórias", tasks: "Tasks", kg: "Knowledge Graph",
-  system: "Sistema", dream: "Consolidação", artifacts: "Artifacts", activity: "Atividade",
-  connections: "Conexões",
+  overview: "Overview", cockpit: "Cockpit", memories: "Memories", tasks: "Tasks", kg: "Knowledge Graph",
+  system: "System", dream: "Curation", artifacts: "Artifacts", activity: "Activity",
+  connections: "Connectors",
 };
 const tabs = document.querySelectorAll("nav.tabs button");
 tabs.forEach((b) => b.addEventListener("click", () => {
@@ -89,17 +89,18 @@ const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#39c5cf
 async function loadOverview() {
   loadOverview.loaded = true;
   try {
-    const [stats, health, tokens] = await Promise.all([
+    const [stats, health, tokens, live] = await Promise.all([
       fetchJSON("/api/stats"),
       fetchJSON("/api/health"),
       fetchJSON("/api/tokens").catch(() => null),
+      fetchJSON("/api/sessions/live").catch(() => null),
     ]);
-    setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)}`);
-    renderOverviewCards(stats, health, tokens);
+    setDbMeta(`${stats.total_memories} memories · ${fmtBytes(health.db_bytes)}`);
+    renderOverviewCards(stats, health, tokens, live);
     renderCategoryChart(stats.by_category || {});
     renderProjectChart(stats.by_project || {});
-    setDbMeta(`${stats.total_memories} memórias · ${fmtBytes(health.db_bytes)} · ${health.embedding_coverage?.toFixed(0)}% embed`);
-  } catch (e) { el("overview-cards").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
+    setDbMeta(`${stats.total_memories} memories · ${fmtBytes(health.db_bytes)} · ${health.embedding_coverage?.toFixed(0)}% embed`);
+  } catch (e) { el("overview-cards").innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`; }
   loadTimeline();
   loadKeywords();
   loadEntities();
@@ -111,8 +112,8 @@ async function loadKeywords() {
     const items = d.items || [];
     el("overview-keywords").innerHTML = items.length
       ? items.map((k) => `<span class="kw ${k.count >= 50 ? "big" : ""}">${esc(k.word)} <span class="muted">${k.count}</span></span>`).join("")
-      : `<span class="muted">sem keywords</span>`;
-  } catch (_) { el("overview-keywords").innerHTML = `<span class="muted">indisponível</span>`; }
+      : `<span class="muted">no keywords</span>`;
+  } catch (_) { el("overview-keywords").innerHTML = `<span class="muted">unavailable</span>`; }
 }
 
 async function loadEntities() {
@@ -121,29 +122,35 @@ async function loadEntities() {
     const items = d.items || [];
     el("overview-entities").innerHTML = items.length
       ? items.map((e) => `<span class="kw ${e.degree >= 10 ? "big" : ""}">${esc(e.name)} <span class="muted">${e.degree}</span></span>`).join("")
-      : `<span class="muted">sem entidades</span>`;
-  } catch (_) { el("overview-entities").innerHTML = `<span class="muted">indisponível</span>`; }
+      : `<span class="muted">no entities</span>`;
+  } catch (_) { el("overview-entities").innerHTML = `<span class="muted">unavailable</span>`; }
 }
 
-function renderOverviewCards(stats, health, tokens) {
+function renderOverviewCards(stats, health, tokens, live) {
   const cats = Object.keys(stats.by_category || {}).length;
   const projs = Object.keys(stats.by_project || {}).length;
   const pct = health.embedding_coverage ?? 0;
   const cards = [
-    card("Total de memórias", stats.total_memories ?? 0, `${cats} categorias · ${projs} projetos`),
-    card("Projetos", projs, "detectados"),
-    card("Cobertura embedding", pct.toFixed(0) + "%", `${health.memories?.with_embedding}/${health.memories?.total} com vetor`),
-    card("Sync dirty", health.memories?.sync_dirty ?? 0, `último sync: ${fmtDate(health.sync?.last_sync_at)}`),
+    card("Total memories", stats.total_memories ?? 0, `${cats} categories · ${projs} projects`),
+    card("Projects", projs, "detected"),
+    card("Embedding coverage", pct.toFixed(0) + "%", `${health.memories?.with_embedding}/${health.memories?.total} with vector`),
+    card("Sync dirty", health.memories?.sync_dirty ?? 0, `last sync: ${fmtDate(health.sync?.last_sync_at)}`),
   ];
+  // Live sessions card — fills the grid row and links straight to the cockpit.
+  if (live) {
+    const n = live.count || 0;
+    const active = (live.sessions || []).filter((s) => s.state === "active").length;
+    cards.push(card("Live sessions", n, n ? `${active} active · ${n - active} idle` : "none open", n ? "accent" : ""));
+  }
   // Token savings (v0.13 recall telemetry). Requires both injections and a
   // non-zero baseline (a project with no CLAUDE.md/AGENTS.md/skills has no
   // baseline to compare against), so a fresh install never shows a hollow 0%.
   if (tokens && tokens.injections > 0 && tokens.baseline_tokens > 0) {
     const saved = Math.max(0, (tokens.baseline_tokens || 0) - (tokens.injected_tokens || 0));
     cards.push(card(
-      "Tokens economizados (7d)",
+      "Tokens saved (7d)",
       fmtCount(saved),
-      `${(tokens.savings_pct || 0).toFixed(0)}% · ${fmtCount(tokens.injected_tokens)} injetados vs ${fmtCount(tokens.baseline_tokens)} baseline`,
+      `${(tokens.savings_pct || 0).toFixed(0)}% · ${fmtCount(tokens.injected_tokens)} injected vs ${fmtCount(tokens.baseline_tokens)} baseline`,
       "accent",
     ));
   }
@@ -170,33 +177,43 @@ const AGO = (s) => {
 async function loadCockpit() {
   loadCockpit.loaded = true;
   const host = el("cockpit-list");
-  host.innerHTML = `<p class="muted">carregando…</p>`;
+  host.innerHTML = `<p class="muted">loading…</p>`;
   try {
     const d = await fetchJSON("/api/sessions/live");
     const sessions = d.sessions || [];
     if (!sessions.length) {
-      host.innerHTML = `<p class="empty">Nenhuma sessão viva. Abra o Claude Code, Cursor, Codex… e ela aparece aqui.</p>`;
+      host.innerHTML = `<p class="empty">No live sessions. Open Claude Code, Cursor, Codex… and it shows up here.</p>`;
       return;
     }
     host.innerHTML = sessions.map(cockpitCard).join("");
   } catch (e) {
-    host.innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`;
+    host.innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`;
   }
 }
+// Tool avatar: two initials + a stable-ish color per tool family.
+const TOOL_AVATAR = {
+  "claude-code": { i: "CC", c: "#d97757" }, codex: { i: "CX", c: "#10a37f" },
+  cursor: { i: "CU", c: "#3aa0ff" }, gemini: { i: "GM", c: "#8b6ef2" },
+  opencode: { i: "OC", c: "#39c5cf" }, windsurf: { i: "WS", c: "#3fb950" },
+};
 function cockpitCard(s) {
-  const dot = s.state === "active" ? "live" : "idle";
+  const live = s.state === "active";
+  const av = TOOL_AVATAR[s.tool] || { i: (s.tool || "S").slice(0, 2).toUpperCase(), c: "#6b7684" };
   const evs = (s.recent_events || []).slice(0, 3).map((e) =>
-    `<div class="ev"><span class="mono">${esc(e.event_type)}${e.tool_name ? " · " + esc(e.tool_name) : ""}</span>${e.summary ? " — " + esc(preview(e.summary, 80)) : ""} <span class="tm">${AGO(e.created_at)}</span></div>`
-  ).join("") || `<div class="ev muted">sem eventos ainda</div>`;
-  const prov = s.provider ? `<span class="chip">${esc(s.provider)}${s.model ? " · " + esc(s.model) : ""}</span>` : "";
+    `<div class="ev"><span class="mono">${esc(e.event_type)}${e.tool_name ? " · " + esc(e.tool_name) : ""}</span>${e.summary ? " — " + esc(preview(e.summary, 72)) : ""}<span class="tm">${AGO(e.created_at)}</span></div>`
+  ).join("") || `<div class="ev">no events yet</div>`;
+  const prov = s.provider ? `<span class="prov">${esc(s.provider)}${s.model ? " · " + esc(s.model) : ""}</span>` : "";
   const task = s.task_key
-    ? `<span class="chip live">◪ ${esc(s.task_key)}</span> <button class="btn" data-cockpit="unlink" data-id="${esc(s.id)}">desvincular</button>`
-    : `<button class="btn" data-cockpit="link" data-id="${esc(s.id)}">+ vincular task</button> <button class="btn" data-cockpit="promote" data-id="${esc(s.id)}">criar task</button>`;
-  return `<div class="sc ${s.state === "active" ? "act" : ""}">
-    <div class="sc-h"><b>${esc(s.tool || "session")}</b> ${prov}
-      <span class="st" style="margin-left:auto"><span class="dot ${dot}"></span> ${s.state} · ${AGO(s.last_activity_at)}</span></div>
+    ? `<span class="chip live">◪ ${esc(s.task_key)}</span><span class="spacer"></span><button class="btn" data-cockpit="unlink" data-id="${esc(s.id)}">Unlink</button>`
+    : `<button class="btn" data-cockpit="link" data-id="${esc(s.id)}">+ Link task</button><button class="btn" data-cockpit="promote" data-id="${esc(s.id)}">New task</button>`;
+  return `<div class="sc ${live ? "act" : ""}" data-id="${esc(s.id)}" data-cockpit-card>
+    <div class="sc-h">
+      <span class="avatar" style="background:${av.c}">${esc(av.i)}</span>
+      <span class="tool">${esc(s.tool || "session")}</span>${prov}
+      <span class="st"><span class="dot ${live ? "live pulse" : "idle"}"></span> ${live ? "active" : "idle"} · ${AGO(s.last_activity_at)}</span>
+    </div>
     <div class="sc-b">
-      <div class="proj mono">${esc(s.project_id || "—")}${s.intent ? ` · <span class="chip">${esc(s.intent)}</span>` : ""}</div>
+      <div class="proj">${esc(s.project_id || "—")}${s.intent ? `<span class="intent">${esc(s.intent)}</span>` : ""}</div>
       <div class="evs">${evs}</div>
     </div>
     <div class="sc-f">${task}</div>
@@ -212,27 +229,27 @@ async function cockpitWrite(url, opts) {
   return r.json();
 }
 async function linkSession(id) {
-  const key = prompt("Vincular à task (chave, ex. API-812):");
+  const key = prompt("Link to task (key, e.g. API-812):");
   if (!key) return;
   try {
     await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task_key: key }) });
     loadCockpit();
-  } catch (e) { alert("erro: " + e.message); }
+  } catch (e) { alert("error: " + e.message); }
 }
 async function promoteSession(id) {
-  const key = prompt("Criar task a partir da sessão. Chave (vazio = gerar):") ?? "";
+  const key = prompt("Create task from session. Key (empty = generate):") ?? "";
   try {
     await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/promote-task",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
     loadCockpit();
-  } catch (e) { alert("erro: " + e.message); }
+  } catch (e) { alert("error: " + e.message); }
 }
 async function unlinkSession(id) {
   try {
     await cockpitWrite("/api/sessions/" + encodeURIComponent(id) + "/link", { method: "DELETE" });
     loadCockpit();
-  } catch (e) { alert("erro: " + e.message); }
+  } catch (e) { alert("error: " + e.message); }
 }
 document.addEventListener("click", (e) => {
   if (e.target && e.target.id === "cockpit-refresh") { loadCockpit(); return; }
@@ -252,7 +269,7 @@ async function loadConnections() {
   loadConnections.loaded = true;
   const host = el("connections-list");
   if (!host) return;
-  host.innerHTML = `<p class="muted">carregando…</p>`;
+  host.innerHTML = `<p class="muted">loading…</p>`;
   try {
     const d = await fetchJSON("/api/connections");
     const hosts = d.hosts || [];
@@ -271,9 +288,9 @@ async function loadConnections() {
         <span class="chip ${s.chip}">${esc(s.label)}</span>
         <span class="conn-hint">${hint}</span>
       </div>`;
-    }).join("") || `<p class="empty">nenhum host conhecido</p>`;
+    }).join("") || `<p class="empty">no known hosts</p>`;
   } catch (e) {
-    host.innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`;
+    host.innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`;
   }
 }
 
@@ -406,7 +423,7 @@ async function fetchMemPage() {
     mem.rows = data.items || [];
     renderMemTable();
   } catch (e) {
-    el("mem-tbody").innerHTML = `<tr><td colspan="5" class="empty">erro: ${esc(e.message)}</td></tr>`;
+    el("mem-tbody").innerHTML = `<tr><td colspan="5" class="empty">error: ${esc(e.message)}</td></tr>`;
     el("mem-count").textContent = "";
   }
 }
@@ -414,7 +431,7 @@ async function fetchMemPage() {
 function renderMemTable() {
   const tb = el("mem-tbody");
   if (!mem.rows.length) {
-    tb.innerHTML = `<tr><td colspan="5" class="empty">nenhuma memória</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="5" class="empty">no memories</td></tr>`;
     el("mem-count").textContent = "";
     return;
   }
@@ -482,7 +499,7 @@ async function openMemory(id) {
     renderModalBody();
     el("modal").classList.add("open");
     el("m-delete").onclick = () => deleteMemory(id);
-  } catch (e) { showToast("erro: " + e.message, "err"); }
+  } catch (e) { showToast("error: " + e.message, "err"); }
 }
 
 // renderModalBody draws the memory content either as rendered Markdown (when
@@ -500,15 +517,15 @@ function renderModalBody() {
 el("m-md").addEventListener("change", renderModalBody);
 
 async function deleteMemory(id) {
-  if (!confirm("Deletar esta memória? (soft-delete — some das buscas, mas permanece no banco)")) return;
+  if (!confirm("Delete this memory? (soft-delete — hidden from search, kept in the DB)")) return;
   if (!confirm("Confirma definitivamente?")) return;
   try {
     const r = await fetch("/api/memories/" + encodeURIComponent(id), { method: "DELETE" });
     if (r.status !== 204) throw new Error(await r.text());
     el("modal").classList.remove("open");
-    showToast("memória deletada (restaurável na aba Sistema → Lixeira)", "ok");
+    showToast("memory deleted (restore under System → Trash)", "ok");
     await fetchMemPage();
-  } catch (e) { showToast("falha ao deletar: " + e.message, "err"); }
+  } catch (e) { showToast("delete failed: " + e.message, "err"); }
 }
 el("m-close").addEventListener("click", () => el("modal").classList.remove("open"));
 el("modal").addEventListener("click", (e) => { if (e.target.id === "modal") el("modal").classList.remove("open"); });
@@ -519,7 +536,7 @@ document.querySelectorAll("button[data-export]").forEach((b) =>
 
 function exportResults(fmt) {
   const rows = mem.rows;
-  if (!rows.length) { showToast("nada para exportar — busque/liste primeiro", "err"); return; }
+  if (!rows.length) { showToast("nothing to export — search/list first", "err"); return; }
   let content, mime, ext;
   if (fmt === "json") {
     content = JSON.stringify(rows, null, 2); mime = "application/json"; ext = "json";
@@ -536,7 +553,7 @@ function exportResults(fmt) {
     mime = "text/markdown"; ext = "md";
   }
   download(content, `anchored-${mem.mode}.${ext}`, mime);
-  showToast(`exportado ${rows.length} memórias (${ext})`, "ok");
+  showToast(`exported ${rows.length} memories (${ext})`, "ok");
 }
 function download(text, name, mime) {
   const blob = new Blob([text], { type: mime });
@@ -560,23 +577,23 @@ async function loadTrash() {
           <td class="muted">${esc(fmtDate(m.deleted_at))}</td>
           <td><button class="btn restore" data-restore="${esc(m.id)}">restaurar</button></td>
         </tr>`).join("")
-      : `<tr><td colspan="5" class="empty">nenhuma memória deletada</td></tr>`;
+      : `<tr><td colspan="5" class="empty">no deleted memories</td></tr>`;
     el("sys-trash").querySelectorAll("button[data-restore]").forEach((b) =>
       b.addEventListener("click", () => restoreMemory(b.dataset.restore)));
-  } catch (_) { el("sys-trash").innerHTML = `<tr><td colspan="5" class="empty">indisponível</td></tr>`; }
+  } catch (_) { el("sys-trash").innerHTML = `<tr><td colspan="5" class="empty">unavailable</td></tr>`; }
 }
 async function restoreMemory(id) {
-  if (!confirm("Restaurar esta memória? (remove o soft-delete e ela volta às buscas)")) return;
+  if (!confirm("Restaurar esta memory? (remove o soft-delete e ela volta às buscas)")) return;
   try {
     const r = await fetch("/api/memories/" + encodeURIComponent(id) + "/restore", { method: "POST" });
     if (r.status !== 204) throw new Error(await r.text());
-    showToast("memória restaurada", "ok");
+    showToast("memory restored", "ok");
     loadTrash();
-  } catch (e) { showToast("falha ao restaurar: " + e.message, "err"); }
+  } catch (e) { showToast("restore failed: " + e.message, "err"); }
 }
 
 // ---------------- tasks (kanban) ----------------
-const TASK_STATUSES = ["active", "paused", "done", "cancelled"];
+const TASK_STATUSES = ["backlog", "active", "paused", "done", "cancelled"];
 let tasks = [];
 let tmMode = "create";   // "create" | "edit"
 let tmKey = null;
@@ -589,6 +606,7 @@ async function loadTasks() {
     el("task-new").addEventListener("click", () => openTaskModal(null));
     el("task-refresh").addEventListener("click", () => renderTasksBoard(true));
     el("task-find").addEventListener("input", () => paintBoard());
+    el("task-show-closed").addEventListener("change", () => paintBoard());
     el("tm-close").addEventListener("click", closeTaskModal);
     el("task-modal").addEventListener("click", (e) => { if (e.target.id === "task-modal") closeTaskModal(); });
     el("tm-save").addEventListener("click", saveTask);
@@ -617,31 +635,42 @@ async function renderTasksBoard(loud) {
     paintBoard();
     if (loud) showToast(`${tasks.length} tasks`, "ok");
   } catch (e) {
-    showToast("erro ao carregar tasks: " + e.message, "err");
+    showToast("failed to load tasks: " + e.message, "err");
   }
 }
 
 // paintBoard (re)renders every column from the in-memory `tasks`, applying the
 // current text filter. Kept separate from the fetch so filtering is instant.
+const KANBAN_COL_CAP = 12; // cap cards per column; the rest collapse behind "+N more"
 function paintBoard() {
   const q = el("task-find").value.trim().toLowerCase();
+  const showClosed = el("task-show-closed") && el("task-show-closed").checked;
   const match = (t) => !q ||
     (t.task_key || "").toLowerCase().includes(q) ||
     (t.external_ref || "").toLowerCase().includes(q) ||
     (t.project_names || []).some((n) => n.toLowerCase().includes(q));
   const shown = tasks.filter(match);
   TASK_STATUSES.forEach((st) => {
+    const col = document.querySelector(`#kanban .kcol[data-status="${st}"]`);
     const zone = document.querySelector(`#kanban .kcards[data-drop="${st}"]`);
     const rows = shown.filter((t) => t.status === st);
     document.querySelector(`.kcount[data-count="${st}"]`).textContent = rows.length;
+    // Done/Cancelled are "closable": when empty (and not explicitly shown) they
+    // collapse to a slim rail so the board stays focused on live work.
+    if (col.classList.contains("closable")) {
+      col.classList.toggle("collapsed", rows.length === 0 && !showClosed);
+    }
+    const capped = rows.slice(0, KANBAN_COL_CAP);
+    const more = rows.length - capped.length;
     zone.innerHTML = rows.length
-      ? rows.map(taskCardHTML).join("")
+      ? capped.map(taskCardHTML).join("") + (more > 0 ? `<div class="kmore">+${more} more</div>` : "")
       : `<div class="muted" style="padding:10px;font-size:12px;text-align:center">—</div>`;
   });
   el("task-stats").textContent = `${shown.length}/${tasks.length} tasks`;
   // wire card interactions
   document.querySelectorAll("#kanban .tcard").forEach((c) => {
     c.addEventListener("click", () => openTaskModal(tasks.find((t) => t.task_key === c.dataset.key)));
+    c.addEventListener("contextmenu", (e) => { e.preventDefault(); openTaskContextMenu(e, c.dataset.key); });
     c.addEventListener("dragstart", (e) => {
       e.dataTransfer.setData("text/task-key", c.dataset.key);
       e.dataTransfer.effectAllowed = "move";
@@ -649,6 +678,34 @@ function paintBoard() {
     });
     c.addEventListener("dragend", () => c.classList.remove("dragging"));
   });
+}
+
+// ---- right-click context menu for task cards ----
+function closeCtxMenu() { const m = el("ctxmenu"); if (m) { m.hidden = true; m.innerHTML = ""; } }
+document.addEventListener("click", closeCtxMenu);
+document.addEventListener("scroll", closeCtxMenu, true);
+function openTaskContextMenu(e, key) {
+  const m = el("ctxmenu");
+  const items = [
+    { label: "Open details", act: () => openTaskModal(tasks.find((t) => t.task_key === key)) },
+    { sep: true },
+    { label: "→ Backlog", act: () => changeTaskStatus(key, "backlog") },
+    { label: "→ Active", act: () => changeTaskStatus(key, "active") },
+    { label: "→ Paused", act: () => changeTaskStatus(key, "paused") },
+    { label: "→ Done", act: () => changeTaskStatus(key, "done") },
+    { sep: true },
+    { label: "Cancel task", danger: true, act: () => changeTaskStatus(key, "cancelled") },
+  ];
+  m.innerHTML = items.map((it, i) => it.sep
+    ? `<div class="sep"></div>`
+    : `<button data-i="${i}" class="${it.danger ? "danger" : ""}">${esc(it.label)}</button>`).join("");
+  m.querySelectorAll("button[data-i]").forEach((b) => {
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); closeCtxMenu(); items[+b.dataset.i].act(); });
+  });
+  m.hidden = false;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  m.style.left = Math.min(e.clientX, vw - 200) + "px";
+  m.style.top = Math.min(e.clientY, vh - m.offsetHeight - 10) + "px";
 }
 
 function taskCardHTML(t) {
@@ -668,28 +725,34 @@ function taskCardHTML(t) {
   </div>`;
 }
 
+const STATUS_TINT = { backlog: "var(--purple)", active: "var(--accent)", paused: "var(--warn)", done: "var(--accent2)", cancelled: "var(--danger)" };
 function openTaskModal(task) {
   tmMode = task ? "edit" : "create";
   tmKey = task ? task.task_key : null;
-  el("tm-title").textContent = task ? task.task_key : "Nova task";
+  el("tm-title").textContent = task ? task.task_key : "New task";
   el("tm-key").value = task ? task.task_key : "";
   el("tm-key").readOnly = !!task;
   el("tm-ref").value = task ? (task.external_ref || "") : "";
   el("tm-project").value = "";
   el("tm-note").value = "";
-  // status controls + journal only in edit mode
-  el("tm-status-row").hidden = !task;
-  const jr = el("tm-journal");
-  jr.hidden = !task;
+  // status side panel + journal only in edit mode
+  el("tm-side").hidden = !task;
+  el("tm-journal-wrap").hidden = !task;
+  const chip = el("tm-statuschip");
   if (task) {
+    chip.hidden = false;
+    chip.textContent = task.status;
+    chip.style.color = STATUS_TINT[task.status] || "var(--text-dim)";
+    chip.style.background = "color-mix(in srgb, " + (STATUS_TINT[task.status] || "var(--text-dim)") + " 16%, transparent)";
     el("tm-status-row").querySelectorAll("button[data-set]").forEach((b) =>
       b.classList.toggle("primary", b.dataset.set === task.status));
     const j = task.journal || [];
-    jr.innerHTML = j.length
+    el("tm-journal").innerHTML = j.length
       ? j.map((n) => `<div class="jentry">${esc(n)}</div>`).join("")
-      : `<div class="muted" style="font-size:12px">sem notas de journal</div>`;
-    el("tm-meta").textContent = `criada ${fmtDate(task.created_at)} · atualizada ${fmtDate(task.updated_at)}`;
+      : `<div class="muted" style="font-size:12px">no journal notes yet</div>`;
+    el("tm-meta").innerHTML = `created ${fmtDate(task.created_at)}<br>updated ${fmtDate(task.updated_at)}`;
   } else {
+    chip.hidden = true;
     el("tm-meta").textContent = "";
   }
   el("task-modal").classList.add("open");
@@ -702,7 +765,7 @@ async function saveTask() {
   const ref = el("tm-ref").value.trim();
   const note = el("tm-note").value.trim();
   const proj = el("tm-project").value;
-  if (!key) { showToast("informe a task key", "err"); return; }
+  if (!key) { showToast("enter a task key", "err"); return; }
   try {
     if (tmMode === "create") {
       const body = { task_key: key, external_ref: ref };
@@ -710,18 +773,18 @@ async function saveTask() {
       if (proj) body.project_ids = [proj];
       const r = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
-      showToast("task criada", "ok");
+      showToast("task created", "ok");
     } else {
       const body = {};
       if (ref !== "") body.external_ref = ref;
       if (note) body.journal_note = note;
       if (proj) body.project_id = proj;
       await patchTask(tmKey, body);
-      showToast("task atualizada", "ok");
+      showToast("task updated", "ok");
     }
     closeTaskModal();
     await renderTasksBoard();
-  } catch (e) { showToast("falha ao salvar: " + e.message, "err"); }
+  } catch (e) { showToast("save failed: " + e.message, "err"); }
 }
 
 async function changeTaskStatus(key, status) {
@@ -794,7 +857,7 @@ async function renderKG() {
       el("kg-stats").innerHTML = `<strong>${esc(id)}</strong> — ${rels.length} relação(ões) <span class="muted">(clique no vazio p/ limpar)</span>`;
     });
     kgNetwork.on("deselectNode", () => { el("kg-stats").textContent = `${triples.length} relações`; });
-  } catch (e) { el("kg-network").innerHTML = `<div class="empty">erro: ${esc(e.message)}</div>`; }
+  } catch (e) { el("kg-network").innerHTML = `<div class="empty">error: ${esc(e.message)}</div>`; }
 }
 el("kg-go").addEventListener("click", renderKG);
 el("kg-find-go").addEventListener("click", () => {
@@ -844,8 +907,8 @@ async function renderDream() {
           <td class="content"><div class="preview">${esc(preview(a.reason, 200))}</div></td>
           <td class="muted">${esc(fmtDate(a.proposed_at))}</td>
         </tr>`).join("")
-      : `<tr><td colspan="5" class="empty">nenhuma ação</td></tr>`;
-  } catch (e) { el("dream-cards").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
+      : `<tr><td colspan="5" class="empty">no actions</td></tr>`;
+  } catch (e) { el("dream-cards").innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`; }
 }
 
 // ---------------- artifacts + chunks ----------------
@@ -879,8 +942,8 @@ async function renderArtifacts() {
           <td class="muted">${esc(fmtDate(x.created_at))}</td>
           <td class="muted">${esc(fmtDate(x.expires_at))}</td>
         </tr>`).join("")
-      : `<tr><td colspan="6" class="empty">nenhum artifact</td></tr>`;
-  } catch (e) { el("art-cards").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
+      : `<tr><td colspan="6" class="empty">no artifact</td></tr>`;
+  } catch (e) { el("art-cards").innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`; }
   try {
     const c = await fetchJSON("/api/chunks");
     const t = Object.entries(c.by_type || {}).map(([k, v]) => `${esc(k)}:${v}`).join(" · ") || "—";
@@ -901,7 +964,7 @@ async function renderActivity() {
       fetchJSON("/api/imports"),
     ]);
     el("act-cards").innerHTML = [
-      card("Eventos de sessão", d.total ?? 0, "tool calls / erros / etc", "good"),
+      card("Session events", d.total ?? 0, "tool calls / errors / etc", "good"),
       card("Top tool", (d.top_tools || [])[0]?.tool || "—", `${(d.top_tools || [])[0]?.count || 0} eventos`),
     ].join("");
     el("act-toptools").innerHTML = (d.top_tools || []).length
@@ -927,8 +990,8 @@ async function renderActivity() {
           <td class="muted">${esc(fmtDate(i.started_at))}</td>
           <td class="muted">${esc(fmtDate(i.finished_at))}</td>
         </tr>`).join("")
-      : `<tr><td colspan="7" class="empty">nenhum import</td></tr>`;
-  } catch (e) { el("act-cards").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
+      : `<tr><td colspan="7" class="empty">no import</td></tr>`;
+  } catch (e) { el("act-cards").innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`; }
 }
 async function renderSystem() {
   try {
@@ -940,7 +1003,7 @@ async function renderSystem() {
     const dirty = health.memories?.sync_dirty ?? 0;
     const dirtyKind = dirty === 0 ? "good" : dirty > 500 ? "warn" : "";
     el("system-health").innerHTML = [
-      card("Total memórias", health.memories?.total ?? 0, "ativas (não deletadas)", "good"),
+      card("Total memorys", health.memories?.total ?? 0, "ativas (não deletadas)", "good"),
       card("Com embedding", health.memories?.with_embedding ?? 0, `${pct.toFixed(0)}% do total`, covKind),
       card("DB (alocado)", fmtBytes(health.db_bytes), "páginas × page_size"),
       card("Sync dirty", dirty, `projetos sync: ${health.sync?.projects ?? 0}`, dirtyKind),
@@ -949,11 +1012,11 @@ async function renderSystem() {
     ].join("");
     el("sys-projects").innerHTML = (projects.items || []).map((p) =>
       `<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.path)}</td><td class="muted">${esc(p.remote_key || "—")}</td><td>${p.memories}</td><td class="muted">${esc(fmtDate(p.last_activity))}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="empty">nenhum projeto</td></tr>`;
+      || `<tr><td colspan="5" class="empty">no projeto</td></tr>`;
     el("sys-sessions").innerHTML = (sessions.recent || []).map((s) =>
       `<tr><td>${esc(preview(s.title, 50) || "(sem título)")}</td><td class="muted">${esc(s.directory || "—")}</td><td class="muted">${esc(s.source)}</td><td>${s.message_count}</td><td class="muted">${esc(fmtDate(s.last_activity_at))}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="empty">nenhuma sessão</td></tr>`;
-  } catch (e) { el("system-health").innerHTML = `<p class="empty">erro: ${esc(e.message)}</p>`; }
+      || `<tr><td colspan="5" class="empty">no sessions</td></tr>`;
+  } catch (e) { el("system-health").innerHTML = `<p class="empty">error: ${esc(e.message)}</p>`; }
 }
 
 // boot — populate the project id→name map first so every view shows readable

@@ -207,7 +207,7 @@ func (a *dashboardAPI) handleTaskUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Status != nil {
 		switch *req.Status {
-		case session.TaskStatusActive, session.TaskStatusPaused, session.TaskStatusDone, session.TaskStatusCancelled:
+		case session.TaskStatusBacklog, session.TaskStatusActive, session.TaskStatusPaused, session.TaskStatusDone, session.TaskStatusCancelled:
 		default:
 			writeErr(w, http.StatusBadRequest, "invalid status %q", *req.Status)
 			return

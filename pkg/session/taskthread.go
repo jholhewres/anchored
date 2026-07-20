@@ -13,6 +13,7 @@ import (
 // automation (branch inference, done-on-merge later) — never by interactive
 // prompts.
 const (
+	TaskStatusBacklog   = "backlog"
 	TaskStatusActive    = "active"
 	TaskStatusPaused    = "paused"
 	TaskStatusDone      = "done"
