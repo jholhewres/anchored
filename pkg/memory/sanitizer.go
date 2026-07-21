@@ -10,7 +10,7 @@ import (
 
 // redactionRule holds a regex and its replacement template. Use $1, $2 etc. to preserve captured groups.
 type redactionRule struct {
-	pattern    *regexp.Regexp
+	pattern     *regexp.Regexp
 	replacement string
 	// custom marks user-configured patterns. Built-in rules skip ENV_VAR-style
 	// placeholder names (false positives); custom patterns are explicit user
@@ -78,7 +78,7 @@ func buildRules(cfg config.SanitizerConfig) []redactionRule {
 	}
 
 	type ruleDef struct {
-		pattern    string
+		pattern     string
 		replacement string
 	}
 	defs := []ruleDef{

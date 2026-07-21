@@ -306,9 +306,9 @@ func TestV2_IsExpired(t *testing.T) {
 
 func TestV2_IsRemoteSyncCandidate(t *testing.T) {
 	tests := []struct {
-		name  string
-		meta  MemoryMetadata
-		want  bool
+		name string
+		meta MemoryMetadata
+		want bool
 	}{
 		{
 			name: "semantic_project",

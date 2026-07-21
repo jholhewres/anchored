@@ -2,8 +2,8 @@ package memory
 
 import (
 	"context"
-	"log/slog"
 	"io"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"testing"

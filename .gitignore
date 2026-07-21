@@ -2,6 +2,7 @@ bin/
 /anchored
 
 .sisyphus/
-.omc
+.omc/
+.omx/
 node-compile-cache/
 .claude/settings.local.json

@@ -256,5 +256,3 @@ func addEntityTokens(snap map[string]struct{}, text string) {
 		snap[norm] = struct{}{}
 	}
 }
-
-
