@@ -8,7 +8,7 @@ import (
 
 func TestSetDebugLogger(t *testing.T) {
 	s := NewServer(nil, nil, nil, nil, nil, "", nil)
-	
+
 	// Test with nil logger (should not panic)
 	s.SetDebugLogger(nil)
 	if s.dlog != nil {
@@ -46,7 +46,7 @@ func TestHeadTail(t *testing.T) {
 			expected: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := headTail(tt.s, tt.head, tt.tail)

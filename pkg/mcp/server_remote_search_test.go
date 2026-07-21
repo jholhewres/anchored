@@ -67,7 +67,17 @@ func TestToolSearch_MergesRemoteHits(t *testing.T) {
 		if got := r.URL.Query().Get("project_id"); got != "rp-1" {
 			t.Errorf("remote search project_id = %q, want rp-1 (the REMOTE id, never the local one)", got)
 		}
-		fmt.Fprint(w, `[{"id":"remote-1","category":"decision","content":"remote-only team memory","project_id":"rp-1"}]`)
+		if r.URL.Query().Get("q") == "anything" {
+			fmt.Fprint(w, `[{"id":"remote-1","category":"decision","content":"remote-only team memory","project_id":"rp-1"}]`)
+			return
+		}
+		if got := r.URL.Query().Get("limit"); got != "30" {
+			t.Errorf("remote search limit = %q, want 30 (max(3K, 20) candidates)", got)
+		}
+		fmt.Fprint(w, `[
+			{"id":"remote-copy","category":"decision","content":"local decision: keep the merge fixture deterministic","project_id":"rp-1"},
+			{"id":"remote-1","category":"decision","content":"remote-only team memory","project_id":"rp-1"}
+		]`)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -80,7 +90,7 @@ func TestToolSearch_MergesRemoteHits(t *testing.T) {
 
 	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
 
-	args, _ := json.Marshal(map[string]any{"query": "merge fixture", "cwd": repo})
+	args, _ := json.Marshal(map[string]any{"query": "merge fixture", "cwd": repo, "debug": true})
 	out, err := srv.toolSearch(ctx, args)
 	if err != nil {
 		t.Fatalf("toolSearch: %v", err)
@@ -91,6 +101,10 @@ func TestToolSearch_MergesRemoteHits(t *testing.T) {
 	}
 	for _, want := range []string{
 		"local decision: keep the merge fixture deterministic", // local hit kept
+		`origin="local,remote"`,                                // synced duplicate provenance merged
+		`score="0.032787"`,                                     // exact 2/(60+rank 1) fused score
+		`origins="local,remote"`,                               // debug provenance
+		`rrf_ranks="local:1,remote:1"`,                         // debug source ranks
 		`origin="remote"`,                                      // remote hit tagged
 		"remote-only team memory",                              // remote content present
 		`id="remote-1"`,
@@ -98,6 +112,12 @@ func TestToolSearch_MergesRemoteHits(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+	if got := strings.Count(out, "local decision: keep the merge fixture deterministic"); got != 1 {
+		t.Errorf("synced duplicate rendered %d times, want once\n--- output ---\n%s", got, out)
+	}
+	if !strings.Contains(out, `count="2"`) {
+		t.Errorf("fused result count should be 2\n--- output ---\n%s", out)
 	}
 
 	// Explicit remote param ("" = default) must search the remote EXCLUSIVELY.
@@ -169,6 +189,92 @@ func TestToolSearch_RemoteFailureIsVisible(t *testing.T) {
 	for _, want := range []string{"remote_error=", `fallback="local"`, "local decision: fallback fixture memory"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+}
+
+func TestToolSearch_SemanticCapabilityFallbackStillFederates(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+
+	var modes []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w,
+			`[{"id":"remote-project","name":"fallback-fixture","slug":"fallback-fixture","remote_key":%q}]`,
+			proj.RemoteKey,
+		)
+	})
+	mux.HandleFunc("/v1/memories/search", func(w http.ResponseWriter, r *http.Request) {
+		mode := r.URL.Query().Get("mode")
+		modes = append(modes, mode)
+		if mode == "semantic" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprint(w, `{"error":{"code":"semantic_unavailable"}}`)
+			return
+		}
+		w.Header().Set("X-Anchored-Effective-Mode", "text")
+		fmt.Fprint(w,
+			`[{"id":"remote-fallback","category":"decision","content":"remote lexical fallback memory","project_id":"remote-project","rank":1}]`,
+		)
+	})
+	remote := httptest.NewServer(mux)
+	defer remote.Close()
+
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"default": {Name: "default", ServerURL: remote.URL, APIKey: "k", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	args, _ := json.Marshal(map[string]any{
+		"query": "fallback fixture",
+		"cwd":   repo,
+		"debug": true,
+	})
+	out, err := srv.toolSearch(context.Background(), args)
+	if err != nil {
+		t.Fatalf("toolSearch: %v", err)
+	}
+	if fmt.Sprint(modes) != "[semantic text]" {
+		t.Fatalf("search modes=%v, want exactly semantic then text", modes)
+	}
+	for _, want := range []string{
+		"local decision: fallback fixture memory",
+		"remote lexical fallback memory",
+		`origin="remote"`,
+		`requested_mode="semantic"`,
+		`effective_mode="text"`,
+		`fallback="text"`,
+		`fallback_reason="semantic_unavailable"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+
+	modes = nil
+	explicitArgs, _ := json.Marshal(map[string]any{
+		"query": "fallback fixture", "cwd": repo, "remote": "default",
+	})
+	explicit, err := srv.toolSearch(context.Background(), explicitArgs)
+	if err != nil {
+		t.Fatalf("explicit toolSearch: %v", err)
+	}
+	if fmt.Sprint(modes) != "[semantic text]" {
+		t.Fatalf("explicit search modes=%v, want exactly semantic then text", modes)
+	}
+	for _, want := range []string{
+		"remote lexical fallback memory",
+		`requested_mode="semantic"`,
+		`effective_mode="text"`,
+		`fallback="text"`,
+		`fallback_reason="semantic_unavailable"`,
+	} {
+		if !strings.Contains(explicit, want) {
+			t.Fatalf("explicit output missing %q\n--- output ---\n%s", want, explicit)
 		}
 	}
 }

@@ -18,9 +18,9 @@ func TestIdentityHasContent(t *testing.T) {
 		want    bool
 	}{
 		{
-			name: "factory template",
+			name:    "factory template",
 			content: "# Identity\n\n## About Me\n- Name: \n- Role: \n- Preferences: \n\n## Projects\n-",
-			want: false,
+			want:    false,
 		},
 		{name: "headers only", content: "# Identity\n## About Me\n## Projects", want: false},
 		{name: "empty", content: "", want: false},

@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	ctxpkg "github.com/jholhewres/anchored/pkg/context"
 	"github.com/jholhewres/anchored/pkg/config"
+	ctxpkg "github.com/jholhewres/anchored/pkg/context"
 )
 
 type ctxOptimizer struct {

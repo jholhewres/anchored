@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,7 +121,11 @@ func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimi
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{mem: mem, kg: kg, sessions: sessions, optimizer: optimizer, cfg: cfg, logger: logger, version: version}
+	server := &Server{mem: mem, kg: kg, sessions: sessions, optimizer: optimizer, cfg: cfg, logger: logger, version: version}
+	if mem != nil {
+		mem.SetRemoteOutboxDeliverer(server.saveRemoteIdempotent)
+	}
+	return server
 }
 
 // SetDebugLogger attaches an optional NDJSON debug logger. When set, every
@@ -847,6 +853,10 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 	if limit <= 0 {
 		limit = 10
 	}
+	searchCandidateLimit := limit
+	if p.Remote == nil && s.cfg != nil {
+		searchCandidateLimit = federationCandidateLimit(limit)
+	}
 
 	// Remote routing needs a real directory. An omitted cwd means "global
 	// LOCAL search", but it must not also silently mean "no team memory" —
@@ -896,7 +906,7 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 				remoteFallbackErr = "project not resolved on this remote (not linked or never synced)"
 				break
 			}
-			results, err := client.SearchRemote(ctx, projectID, p.Query, limit)
+			response, err := client.SearchRemoteDetailed(ctx, projectID, p.Query, limit)
 			if err != nil {
 				remoteFallbackName = entry.Name
 				switch {
@@ -911,12 +921,16 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 					"remote", entry.Name, "error", err)
 				break
 			}
+			results := response.Results
+			modeAttrs := remoteSearchMetadataAttrs(response)
 			if len(results) == 0 {
-				return "<anchored_search count=\"0\" remote=\"" + escapeAttr(entry.Name) + "\"/>", nil
+				return "<anchored_search count=\"0\" remote=\"" +
+					escapeAttr(entry.Name) + "\"" + modeAttrs + "/>", nil
 			}
 			w := newSearchHitWriter(p.Full)
-			w.open("<anchored_search query=%q count=%q remote=%q>\n",
-				truncateRunes(p.Query, 200), fmt.Sprintf("%d", len(results)), escapeAttr(entry.Name))
+			w.open("<anchored_search query=%q count=%q remote=%q%s>\n",
+				truncateRunes(p.Query, 200), fmt.Sprintf("%d", len(results)),
+				escapeAttr(entry.Name), modeAttrs)
 			for _, r := range results {
 				w.hit([]string{
 					fmt.Sprintf("id=%q", escapeAttr(r.ID)),
@@ -936,7 +950,10 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 	}
 
 	searchOpts := memory.SearchOptions{
-		MaxResults:     p.MaxResults,
+		// This is the requested federation depth. The configured local hybrid
+		// engine may enforce a smaller internal top-k; federation never assumes
+		// that more local candidates were returned and bounds its inputs again.
+		MaxResults:     searchCandidateLimit,
 		Category:       p.Category,
 		ProjectID:      projectID,
 		BoostProjectID: boostProjectID,
@@ -959,10 +976,11 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 
 	// Day-to-day flow: when the cwd's remote is configured, the team memory
 	// is part of every search — merge remote hits in automatically (deduped
-	// by id, local first). Best-effort with a short timeout so an
+	// and fused by source rank). Best-effort with a short timeout so an
 	// unreachable remote never stalls the tool.
-	var remoteHits []remotesync.RemoteSearchResult
-	remoteName := ""
+	var remoteHits []remotesync.RemoteSearchHit
+	var remoteName, remoteProjectID string
+	var remoteSearchMeta *remotesync.RemoteSearchResponse
 	if p.Remote == nil && s.cfg != nil {
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if target, rpid := s.resolveAutoRemoteTarget(rctx, remoteCWD); target == nil || rpid == "" {
@@ -973,14 +991,14 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 			}
 		} else {
 			client := remotesync.NewClientFromEntry(*target, "mcp")
-			if rs, rErr := client.SearchRemote(rctx, rpid, p.Query, limit); rErr == nil {
-				seen := make(map[string]bool, len(results))
-				for _, lr := range results {
-					seen[lr.Memory.ID] = true
-				}
-				for _, r := range rs {
-					if seen[r.ID] {
-						continue
+			if response, rErr := client.SearchRemoteDetailed(rctx, rpid, p.Query, searchCandidateLimit); rErr == nil {
+				for i, r := range response.Results {
+					// Preserve the server's declared rank. Legacy servers omit
+					// it, so capture the original list position before local
+					// category filtering; filtered-out hits must not promote
+					// the remaining remote candidates.
+					if r.Rank <= 0 {
+						r.Rank = i + 1
 					}
 					if p.Category != "" && r.Category != p.Category {
 						continue
@@ -988,6 +1006,8 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 					remoteHits = append(remoteHits, r)
 				}
 				remoteName = target.Name
+				remoteProjectID = rpid
+				remoteSearchMeta = response
 			} else {
 				s.logger.Warn("remote merge skipped", "remote", target.Name, "error", rErr)
 			}
@@ -1003,6 +1023,9 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 	if remoteFallbackErr != "" {
 		fallbackAttrs = fmt.Sprintf(" remote=%q remote_error=%q fallback=\"local\"",
 			escapeAttr(remoteFallbackName), escapeAttr(remoteFallbackErr))
+	} else if remoteName != "" {
+		fallbackAttrs = fmt.Sprintf(" remote=%q%s",
+			escapeAttr(remoteName), remoteSearchMetadataAttrs(remoteSearchMeta))
 	}
 
 	if len(results) == 0 && len(remoteHits) == 0 {
@@ -1010,6 +1033,9 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 	}
 
 	if len(remoteHits) == 0 {
+		if len(results) > limit {
+			results = results[:limit]
+		}
 		out := renderSearchResults(p.Query, p.CWD == "", results, p.Debug, p.Full)
 		if fallbackAttrs != "" {
 			out = strings.Replace(out, "<anchored_search ", "<anchored_search"+fallbackAttrs+" ", 1)
@@ -1017,35 +1043,107 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 		return out, nil
 	}
 
-	// Merged rendering: one envelope, local hits first, then remote hits
-	// tagged origin="remote" so the agent can attribute them to the team
-	// memory server.
+	localFederationProjectID := projectID
+	if localFederationProjectID == "" {
+		// An omitted cwd keeps local retrieval global, but the automatic remote
+		// still belongs to the MCP server's repository. Map only that local
+		// project to the remote project for conservative fingerprint dedup.
+		localFederationProjectID = s.mem.ResolveProject(remoteCWD)
+	}
+	fused := federateSearchResults(results, remoteHits, limit, federationScope{
+		LocalProjectID:  localFederationProjectID,
+		RemoteProjectID: remoteProjectID,
+	})
+
+	// Merged rendering preserves the existing hit shape. Remote-only hits keep
+	// origin="remote"; a deduplicated cross-origin hit declares both sources.
 	globalMode := p.CWD == ""
 	w := newSearchHitWriter(p.Full)
-	w.open("<anchored_search query=%q count=%q remote=%q>\n",
-		truncateRunes(p.Query, 200), fmt.Sprintf("%d", len(results)+len(remoteHits)), escapeAttr(remoteName))
-	for _, r := range results {
+	w.open("<anchored_search query=%q count=%q remote=%q%s>\n",
+		truncateRunes(p.Query, 200), fmt.Sprintf("%d", len(fused)),
+		escapeAttr(remoteName), remoteSearchMetadataAttrs(remoteSearchMeta))
+	for _, hit := range fused {
+		if hit.Local != nil {
+			r := hit.Local
+			attrs := []string{
+				fmt.Sprintf("id=%q", escapeAttr(r.Memory.ID)),
+				fmt.Sprintf("category=%q", escapeAttr(r.Memory.Category)),
+				fmt.Sprintf("score=%q", fmt.Sprintf("%.6f", hit.Score)),
+			}
+			if hit.Remote != nil {
+				attrs = append(attrs, fmt.Sprintf("origin=%q", strings.Join(hit.origins(), ",")))
+			}
+			if globalMode && r.Memory.ProjectID != nil && *r.Memory.ProjectID != "" {
+				attrs = append(attrs, fmt.Sprintf("project=%q", escapeAttr(*r.Memory.ProjectID)))
+			}
+			if p.Debug && len(r.Signals) > 0 {
+				attrs = append(attrs, fmt.Sprintf("signals=%q", escapeAttr(strings.Join(r.Signals, ","))))
+			}
+			if p.Debug {
+				attrs = append(attrs,
+					fmt.Sprintf("origins=%q", strings.Join(hit.origins(), ",")),
+					fmt.Sprintf("rrf_ranks=%q", federatedRankSummary(hit)),
+				)
+			}
+			w.hit(attrs, r.Memory.Content)
+			continue
+		}
+		r := hit.Remote
 		attrs := []string{
-			fmt.Sprintf("id=%q", escapeAttr(r.Memory.ID)),
-			fmt.Sprintf("category=%q", escapeAttr(r.Memory.Category)),
-			fmt.Sprintf("score=%q", fmt.Sprintf("%.3f", r.Score)),
-		}
-		if globalMode && r.Memory.ProjectID != nil && *r.Memory.ProjectID != "" {
-			attrs = append(attrs, fmt.Sprintf("project=%q", escapeAttr(*r.Memory.ProjectID)))
-		}
-		if p.Debug && len(r.Signals) > 0 {
-			attrs = append(attrs, fmt.Sprintf("signals=%q", escapeAttr(strings.Join(r.Signals, ","))))
-		}
-		w.hit(attrs, r.Memory.Content)
-	}
-	for _, r := range remoteHits {
-		w.hit([]string{
 			fmt.Sprintf("id=%q", escapeAttr(r.ID)),
 			fmt.Sprintf("category=%q", escapeAttr(r.Category)),
+			fmt.Sprintf("score=%q", fmt.Sprintf("%.6f", hit.Score)),
 			`origin="remote"`,
-		}, r.Content)
+		}
+		if p.Debug {
+			attrs = append(attrs,
+				`origins="remote"`,
+				fmt.Sprintf("rrf_ranks=%q", federatedRankSummary(hit)),
+			)
+		}
+		w.hit(attrs, r.Content)
 	}
 	return w.close(), nil
+}
+
+func remoteSearchMetadataAttrs(response *remotesync.RemoteSearchResponse) string {
+	if response == nil {
+		return ""
+	}
+	var attrs []string
+	if response.RequestedMode != "" {
+		attrs = append(attrs, fmt.Sprintf(
+			"requested_mode=%q", escapeAttr(response.RequestedMode),
+		))
+	}
+	if response.EffectiveMode != "" {
+		attrs = append(attrs, fmt.Sprintf(
+			"effective_mode=%q", escapeAttr(response.EffectiveMode),
+		))
+	}
+	if response.Fallback {
+		attrs = append(attrs, `fallback="text"`)
+	}
+	if response.FallbackReason != "" {
+		attrs = append(attrs, fmt.Sprintf(
+			"fallback_reason=%q", escapeAttr(response.FallbackReason),
+		))
+	}
+	if len(attrs) == 0 {
+		return ""
+	}
+	return " " + strings.Join(attrs, " ")
+}
+
+func federatedRankSummary(hit federatedSearchHit) string {
+	ranks := make([]string, 0, 2)
+	if hit.LocalRank > 0 {
+		ranks = append(ranks, fmt.Sprintf("local:%d", hit.LocalRank))
+	}
+	if hit.RemoteRank > 0 {
+		ranks = append(ranks, fmt.Sprintf("remote:%d", hit.RemoteRank))
+	}
+	return strings.Join(ranks, ",")
 }
 
 // resolveRemoteEntry maps an explicit remote selector to a config entry:
@@ -1108,102 +1206,149 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 
 	p.CWD = defaultCWD(p.CWD)
 
-	m, err := s.mem.SaveWithOptions(ctx, memory.SaveOptions{
+	var (
+		target    *config.RemoteEntry
+		projectID string
+	)
+	if s.cfg != nil && p.Remote != nil {
+		target = s.resolveRemoteEntry(*p.Remote, p.CWD)
+	}
+
+	saveOpts := memory.SaveOptions{
 		Content:         p.Content,
 		Category:        p.Category,
 		Source:          "mcp",
 		CWD:             p.CWD,
 		PreferenceScope: p.Scope,
-	})
+	}
+	outboxEligible := false
+	autoSyncSafetyBlocked := false
+	var m *memory.Memory
+	var err error
+	if p.Remote == nil {
+		m, err = s.mem.SaveDurable(ctx, memory.DurableSaveOptions{
+			SaveOptions: saveOpts,
+			DeriveRemoteOutbox: func(m memory.Memory) ([]memory.RemoteOutboxSpec, error) {
+				if !s.hasAutoSyncRemote() {
+					return nil, nil
+				}
+				content, ok := remoteSaveContent(m, p.CWD, true)
+				if !ok {
+					autoSyncSafetyBlocked = true
+					return nil, nil
+				}
+				payload, err := json.Marshal(remoteOutboxEnvelope{
+					Kind: autoRouteOutboxKind,
+					CWD:  p.CWD,
+					Memory: remotesync.RemoteMemory{
+						ID: m.ID, Category: m.Category, Content: content,
+						Source: "mcp",
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				outboxEligible = true
+				return []memory.RemoteOutboxSpec{{
+					Remote:  autoRouteOutboxKind,
+					Payload: payload,
+				}}, nil
+			},
+		})
+	} else {
+		// Explicit remote saves retain the legacy synchronous contract. The
+		// durable outbox is reserved for implicit auto-sync.
+		m, err = s.mem.SaveWithOptions(ctx, saveOpts)
+	}
 	if err != nil {
 		return "", err
 	}
 
 	result := fmt.Sprintf("Saved [%s] memory %s", m.Category, m.ID)
 
-	// Remote save
 	if p.Remote != nil && s.cfg != nil {
-		entry := s.resolveRemoteEntry(*p.Remote, p.CWD)
-		if entry == nil {
+		// Preserve the local-first contract for explicit remote saves: the
+		// SQLite commit above must complete before any network lookup can
+		// block, fail, or observe cancellation.
+		if target != nil {
+			client := remotesync.NewClientFromEntry(*target, "mcp")
+			projectID, _ = s.resolveRemoteProjectID(ctx, client, *target, p.CWD)
+		}
+		switch {
+		case target == nil:
 			result += " (remote: no remote configured, skipped)"
-		} else {
-			client := remotesync.NewClientFromEntry(*entry, "mcp")
-			// Routing precedence mirrors `remote sync`: the repo's git-origin
-			// remote_key first, then a linked project (non-repo contexts
-			// only). The local project id is meaningless to the server.
-			projectID, _ := s.resolveRemoteProjectID(ctx, client, *entry, p.CWD)
-			if projectID == "" {
-				result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
-			} else {
-				remoteMem := remotesync.RemoteMemory{
-					ID:        m.ID,
-					Category:  m.Category,
-					Content:   m.Content,
-					Source:    "mcp",
-					ProjectID: projectID,
-				}
-				resp, err := client.SaveRemote(ctx, remoteMem)
-				if err != nil {
-					if remotesync.IsRemoteForbidden(err) || remotesync.IsRemoteUnavailable(err) {
-						result += fmt.Sprintf(" (remote: unavailable, local save preserved)")
-					} else {
-						result += fmt.Sprintf(" (remote: %v)", err)
-					}
+		case projectID == "":
+			result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
+		default:
+			content, ok := remoteSaveContent(*m, p.CWD, false)
+			if !ok {
+				result += " (remote: blocked by safety policy, local save preserved)"
+				break
+			}
+			remoteMemory := remotesync.RemoteMemory{
+				ID: m.ID, Category: m.Category, Content: content,
+				Source: "mcp", ProjectID: projectID,
+			}
+			payload, marshalErr := json.Marshal(remoteMemory)
+			if marshalErr != nil {
+				return "", marshalErr
+			}
+			sum := sha256.Sum256([]byte(
+				remoteOutboxName(*target) + "\x00" + projectID + "\x00" +
+					m.ID + "\x00" + string(payload),
+			))
+			client := remotesync.NewClientFromEntry(*target, "mcp")
+			response, remoteErr := client.SaveRemoteIdempotent(
+				ctx, remoteMemory, hex.EncodeToString(sum[:]),
+			)
+			if remoteErr != nil {
+				if remotesync.IsRemoteForbidden(remoteErr) || remotesync.IsRemoteUnavailable(remoteErr) {
+					result += " (remote: unavailable, local save preserved)"
 				} else {
-					result += fmt.Sprintf(" (remote: saved to %s)", entry.Name)
-					if !resp.Created {
-						result += " [updated existing]"
-					}
+					result += fmt.Sprintf(" (remote: %v)", remoteErr)
 				}
+				break
+			}
+			result += fmt.Sprintf(" (remote: saved to %s)", target.Name)
+			if !response.Created {
+				result += " [updated existing]"
 			}
 		}
 	} else if p.Remote == nil && s.cfg != nil {
-		// Auto write-through: when a remote is configured, push this memory
-		// best-effort and async. Local-first — the local save above already
-		// succeeded, so a remote failure never affects the result. The
-		// safety filter gates eligibility and redacts content, so user-scoped /
-		// personal / secret memories never leave the machine. The actual
-		// target remote (and its auto_sync gate) is resolved inside the
-		// goroutine via the cross-remote origin probe.
-		if s.hasAnyRemote() {
-			if redacted, ok := remotesync.ClassifyForAutoSync(*m, p.CWD); ok {
-				// Resolve the destination BEFORE answering so the response can
-				// name the exact server and project the memory goes to — a bare
-				// "(auto-sync)" left users guessing whether the right remote
-				// got it. The push itself stays async and best-effort.
-				rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-				target, pid := s.resolveAutoRemoteTarget(rctx, p.CWD)
-				targetLabel := ""
-				if target != nil && pid != "" && target.AutoSyncEnabled() {
-					targetLabel = target.Name
-					if rp := remotesync.NewClientFromEntry(*target, "mcp").GetProjectByID(rctx, pid); rp != nil && rp.Slug != "" {
-						targetLabel += " · " + rp.Slug
-					}
-				}
-				rcancel()
-				switch {
-				case targetLabel != "":
-					e := *target
-					go func(id, category, content, projectID string) {
-						gctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-						defer cancel()
-						client := remotesync.NewClientFromEntry(e, "mcp")
-						rm := remotesync.RemoteMemory{ID: id, Category: category, Content: content, Source: "mcp", ProjectID: projectID}
-						if _, err := client.SaveRemote(gctx, rm); err != nil {
-							s.logger.Warn("auto-sync push failed", "memory_id", id, "remote", e.Name, "error", err)
-						}
-					}(m.ID, m.Category, redacted, pid)
-					result += fmt.Sprintf(" (auto-sync → %s)", targetLabel)
-				case target != nil && !target.AutoSyncEnabled():
-					result += fmt.Sprintf(" (local only — auto_sync off for remote %q)", target.Name)
-				default:
-					result += " (local only — no remote project matched this repo)"
-				}
-			}
+		switch {
+		case outboxEligible:
+			result += " (auto-sync queued)"
+		case autoSyncSafetyBlocked:
+			result += " (local only — blocked by safety policy)"
+		case s.hasAnyRemote() && !s.hasAutoSyncRemote():
+			result += " (local only — auto_sync disabled)"
 		}
 	}
 
 	return result, nil
+}
+
+func remoteOutboxName(entry config.RemoteEntry) string {
+	// The config map key/name is user-editable. Persist the endpoint identity
+	// so queued envelopes still resolve after a harmless remote rename.
+	if entry.ServerURL != "" {
+		return entry.ServerURL
+	}
+	return entry.Name
+}
+
+func remoteSaveContent(m memory.Memory, cwd string, automatic bool) (string, bool) {
+	if automatic {
+		return remotesync.ClassifyForAutoSync(m, cwd)
+	}
+	if m.Category == "event" || m.Category == "preference" {
+		return "", false
+	}
+	result := remotesync.RemoteSafetyFilter(m.Content, nil, cwd)
+	if result.Blocked {
+		return "", false
+	}
+	return result.Content, true
 }
 
 func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, error) {
@@ -1492,6 +1637,18 @@ func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*conf
 // inside resolveAutoRemoteTarget still searches every configured remote.
 func (s *Server) hasAnyRemote() bool {
 	return s.cfg != nil && len(s.cfg.Remotes) > 0
+}
+
+func (s *Server) hasAutoSyncRemote() bool {
+	if s.cfg == nil {
+		return false
+	}
+	for _, entry := range s.cfg.Remotes {
+		if entry.AutoSyncEnabled() {
+			return true
+		}
+	}
+	return false
 }
 
 // pushTripleTo pushes a single triple to an already-resolved remote project.

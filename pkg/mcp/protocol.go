@@ -30,17 +30,17 @@ type JSONRPCError struct {
 type InitializeParams struct {
 	ProtocolVersion string         `json:"protocolVersion"`
 	Capabilities    map[string]any `json:"capabilities"`
-	ClientInfo     struct {
+	ClientInfo      struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"clientInfo"`
 }
 
 type InitializeResult struct {
-	ProtocolVersion string         `json:"protocolVersion"`
-	Capabilities    ServerCaps     `json:"capabilities"`
-	ServerInfo      ServerInfo     `json:"serverInfo"`
-	Instructions   string         `json:"instructions"`
+	ProtocolVersion string     `json:"protocolVersion"`
+	Capabilities    ServerCaps `json:"capabilities"`
+	ServerInfo      ServerInfo `json:"serverInfo"`
+	Instructions    string     `json:"instructions"`
 }
 
 type ServerCaps struct {

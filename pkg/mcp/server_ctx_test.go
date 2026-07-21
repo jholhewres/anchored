@@ -68,8 +68,8 @@ func callToolJSON(t *testing.T, s *Server, toolName string, args any) string {
 func TestCtxTools_OptimizerNil(t *testing.T) {
 	s := &Server{optimizer: nil}
 	for _, name := range []string{
-"anchored_execute", "anchored_execute_file", "anchored_batch_execute",
-	"anchored_index", "anchored_ctx_search", "anchored_fetch_and_index",
+		"anchored_execute", "anchored_execute_file", "anchored_batch_execute",
+		"anchored_index", "anchored_ctx_search", "anchored_fetch_and_index",
 	} {
 		result, err := s.callTool(context.Background(), name, json.RawMessage(`{}`))
 		if err != nil {
