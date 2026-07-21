@@ -126,13 +126,31 @@ func NewONNXEmbedder(modelDir string, logger *slog.Logger) (*ONNXEmbedder, error
 		return nil, fmt.Errorf("onnx: create output tensor: %w", err)
 	}
 
+	// Cap ONNX intra/inter-op parallelism. Embeds are short, single-sequence
+	// inferences run by a background worker that may live in several processes at
+	// once (the hub daemon plus each per-session MCP). With the default (nil)
+	// options the runtime spread every inference across ALL cores, so a
+	// corpus-wide re-embed saturated the machine (load ~15 on 12 cores). One
+	// thread per op keeps each embed to ~1 core; the throttle paces the rest.
+	sessOpts, err := ort.NewSessionOptions()
+	if err != nil {
+		return nil, fmt.Errorf("onnx: create session options: %w", err)
+	}
+	defer sessOpts.Destroy()
+	if err := sessOpts.SetIntraOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("onnx: set intra-op threads: %w", err)
+	}
+	if err := sessOpts.SetInterOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("onnx: set inter-op threads: %w", err)
+	}
+
 	session, err := ort.NewAdvancedSession(
 		paths.ModelFile,
 		[]string{"input_ids", "attention_mask", "token_type_ids"},
 		[]string{"last_hidden_state"},
 		[]ort.Value{inputIDs, attentionMask, tokenTypeIDs},
 		[]ort.Value{output},
-		nil,
+		sessOpts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("onnx: create session: %w", err)
