@@ -8,8 +8,55 @@ import (
 	"testing"
 
 	"github.com/jholhewres/anchored/pkg/config"
+	projectpkg "github.com/jholhewres/anchored/pkg/project"
 	"github.com/jholhewres/anchored/pkg/sync"
 )
+
+// TestResolveLinkedTarget locks the linked-project routing guard:
+//   - inside a known local project, the push is bounded, so it forces the
+//     linked project id without requiring --full-store.
+//   - outside any repo, the whole store would be pushed, so it refuses unless
+//     --full-store is given, and the error guides toward the common fixes.
+func TestResolveLinkedTarget(t *testing.T) {
+	const linked = "c035006e-1f49-4e56-8b0c-3eb8056308b0"
+
+	// In a known local project: always allowed, --full-store irrelevant.
+	proj := &projectpkg.Project{ID: "local1", Name: "repo"}
+	for _, full := range []bool{false, true} {
+		got, err := resolveLinkedTarget(proj, linked, full)
+		if err != nil {
+			t.Fatalf("proj set, fullStore=%v: unexpected error: %v", full, err)
+		}
+		if got != linked {
+			t.Fatalf("proj set: want %q, got %q", linked, got)
+		}
+	}
+
+	// No local project, no --full-store: refuse with guidance.
+	_, err := resolveLinkedTarget(nil, linked, false)
+	if err == nil {
+		t.Fatal("expected refusal when cwd is not a known project and --full-store is absent")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, linked) {
+		t.Errorf("error should name the linked project, got %q", msg)
+	}
+	if !strings.Contains(msg, "--full-store") {
+		t.Errorf("error should point to --full-store, got %q", msg)
+	}
+	if !strings.Contains(msg, "git rev-parse") {
+		t.Errorf("error should flag the git-not-detected case, got %q", msg)
+	}
+
+	// No local project, but --full-store given: allowed (push entire store).
+	got, err := resolveLinkedTarget(nil, linked, true)
+	if err != nil {
+		t.Fatalf("fullStore should allow the push: %v", err)
+	}
+	if got != linked {
+		t.Fatalf("want %q, got %q", linked, got)
+	}
+}
 
 func slugProjectsServer(t *testing.T) *httptest.Server {
 	t.Helper()

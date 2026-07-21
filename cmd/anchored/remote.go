@@ -487,6 +487,34 @@ func maskKey(key string) string {
 }
 
 // runRemoteSync syncs the CURRENT repository's memories to the remote server,
+// resolveLinkedTarget decides the remote project to push to when git-origin
+// routing didn't win and a project is linked to the remote (`anchored remote
+// link <id>`). proj is the cwd's local project, or nil when the cwd is not a
+// git repository.
+//
+//   - proj != nil → scope the push to that local project and funnel it into the
+//     linked remote project; the downstream listing bounds it to proj.ID.
+//   - proj == nil → there is nothing to bound the push, so the ENTIRE local
+//     store would land in the linked project. Require an explicit --full-store
+//     as confirmation; otherwise refuse with guidance. (Real incident: a dev
+//     ran sync from a non-repo directory and pushed thousands of unrelated
+//     memories into the team project.)
+func resolveLinkedTarget(proj *projectpkg.Project, linkedID string, fullStore bool) (string, error) {
+	if proj != nil {
+		return linkedID, nil
+	}
+	if !fullStore {
+		return "", fmt.Errorf(
+			"Not inside a known project — refusing to push the entire local store to linked project %s.\n"+
+				"Run `anchored remote sync` from inside the repository you want to sync (the common case),\n"+
+				"or pass --full-store to push the ENTIRE local store to the linked project on purpose.\n"+
+				"(If you ARE inside a repo, check that git is installed and `git rev-parse --show-toplevel` works here.)",
+			linkedID,
+		)
+	}
+	return linkedID, nil
+}
+
 // identifying the remote project by the repo's git-origin remote_key (not its
 // local directory name). Two clones of the same repo — in different folders, on
 // different machines — therefore land in the same remote project.
@@ -571,19 +599,20 @@ func runRemoteSync(args []string) {
 				fmt.Printf("Repo has a git origin — routing by origin (ignoring linked project %s; use --project-id to force one)\n", entryProjects[0])
 			}
 		} else if len(entryProjects) > 0 {
-			// A linked project is only a safe fallback when the cwd resolves to
-			// a known local project, which bounds the push to that project's
-			// memories. Without one the fallback below would dump the ENTIRE
-			// local store into the linked project (real incident: a dev ran
-			// sync from a non-repo directory and pushed thousands of unrelated
-			// memories into the team project).
-			if proj == nil {
-				fmt.Fprintf(os.Stderr, "Not inside a known project — refusing to push the entire local store to linked project %s.\n", entryProjects[0])
-				fmt.Fprintln(os.Stderr, "Run `anchored remote sync` inside the repository you want to sync, or pass --project-id <id> --full-store to do this on purpose.")
+			// A linked project is the routing fallback when git-origin routing
+			// didn't win. resolveLinkedTarget enforces the safety rules (see
+			// its doc); here we only translate its decision into output.
+			pid, lerr := resolveLinkedTarget(proj, entryProjects[0], *fullStore)
+			if lerr != nil {
+				fmt.Fprintln(os.Stderr, lerr.Error())
 				os.Exit(1)
 			}
-			*projectID = entryProjects[0]
-			fmt.Printf("Using linked project %s (use --project-id to override)\n", *projectID)
+			*projectID = pid
+			if proj == nil {
+				fmt.Printf("Pushing entire local store to linked project %s (--full-store)\n", pid)
+			} else {
+				fmt.Printf("Using linked project %s (use --project-id to override)\n", pid)
+			}
 		} else {
 			if proj == nil {
 				fmt.Fprintln(os.Stderr, "Not inside a git repository — `remote sync` is repo-scoped.")
