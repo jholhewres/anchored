@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
@@ -54,6 +55,29 @@ type RemoteError struct {
 
 func (e *RemoteError) Error() string {
 	return fmt.Sprintf("remote server returned %d: %s", e.StatusCode, e.Body)
+}
+
+// remoteErrorDetails carries additive response metadata without changing the
+// exported RemoteError struct shape. Downstream callers may still use legacy
+// positional literals such as RemoteError{status, body}.
+type remoteErrorDetails struct {
+	remote     *RemoteError
+	code       string
+	retryAfter string
+}
+
+func (e *remoteErrorDetails) Error() string { return e.remote.Error() }
+func (e *remoteErrorDetails) Unwrap() error { return e.remote }
+
+// RemoteErrorMetadata returns sanitized protocol metadata when the error came
+// from an idempotent save or detailed search. Legacy errors return empty
+// strings.
+func RemoteErrorMetadata(err error) (code, retryAfter string) {
+	var details *remoteErrorDetails
+	if errors.As(err, &details) {
+		return details.code, details.retryAfter
+	}
+	return "", ""
 }
 
 func IsRemoteForbidden(err error) bool {
@@ -220,6 +244,17 @@ func (c *Client) Pull(ctx context.Context, req SyncPullRequest) (*SyncPullRespon
 }
 
 func (c *Client) SaveRemote(ctx context.Context, mem RemoteMemory) (*SaveRemoteResponse, error) {
+	return c.saveRemote(ctx, mem, "", false)
+}
+
+// SaveRemoteIdempotent saves a remote memory with an optional operation ID.
+// A non-empty operation ID is sent as Idempotency-Key so callers can safely
+// replay an outbox delivery after an ambiguous transport failure.
+func (c *Client) SaveRemoteIdempotent(ctx context.Context, mem RemoteMemory, operationID string) (*SaveRemoteResponse, error) {
+	return c.saveRemote(ctx, mem, operationID, true)
+}
+
+func (c *Client) saveRemote(ctx context.Context, mem RemoteMemory, operationID string, includeErrorMetadata bool) (*SaveRemoteResponse, error) {
 	filtered := []string{"event", "preference"}
 	for _, blocked := range filtered {
 		if mem.Category == blocked {
@@ -238,7 +273,11 @@ func (c *Client) SaveRemote(ctx context.Context, mem RemoteMemory) (*SaveRemoteR
 		return nil, fmt.Errorf("marshal save request: %w", err)
 	}
 
-	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/memories", bytes.NewReader(body))
+	headers := make(http.Header)
+	if operationID != "" {
+		headers.Set("Idempotency-Key", operationID)
+	}
+	resp, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/memories", bytes.NewReader(body), headers)
 	if err != nil {
 		return nil, fmt.Errorf("save request: %w", err)
 	}
@@ -247,48 +286,197 @@ func (c *Client) SaveRemote(ctx context.Context, mem RemoteMemory) (*SaveRemoteR
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return nil, remoteErrorFromResponse(resp, respBody, includeErrorMetadata)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return nil, remoteErrorFromResponse(resp, respBody, includeErrorMetadata)
 	}
 
 	var saveResp SaveRemoteResponse
 	if err := json.Unmarshal(respBody, &saveResp); err != nil {
 		return nil, fmt.Errorf("decode save response: %w", err)
 	}
-
 	return &saveResp, nil
 }
 
+func remoteErrorFromResponse(resp *http.Response, body []byte, includeMetadata bool) error {
+	remoteErr := &RemoteError{
+		StatusCode: resp.StatusCode,
+		Body:       string(body),
+	}
+	if !includeMetadata {
+		return remoteErr
+	}
+	return &remoteErrorDetails{
+		remote:     remoteErr,
+		code:       structuredRemoteErrorCode(body),
+		retryAfter: safeRetryAfter(resp.Header.Get("Retry-After")),
+	}
+}
+
+func structuredRemoteErrorCode(body []byte) string {
+	var payload struct {
+		Code  string          `json:"code"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	var nested struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(payload.Error, &nested) == nil && nested.Code != "" {
+		return safeRemoteErrorCode(nested.Code)
+	}
+	return safeRemoteErrorCode(payload.Code)
+}
+
+func safeRemoteErrorCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || len(code) > 128 {
+		return ""
+	}
+	for i := range len(code) {
+		c := code[i]
+		if (c < 'a' || c > 'z') &&
+			(c < 'A' || c > 'Z') &&
+			(c < '0' || c > '9') &&
+			c != '_' && c != '-' && c != '.' {
+			return ""
+		}
+	}
+	return code
+}
+
+func safeRetryAfter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	deltaSeconds := true
+	for i := range len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			deltaSeconds = false
+			break
+		}
+	}
+	if deltaSeconds {
+		return value
+	}
+	if _, err := http.ParseTime(value); err == nil {
+		return value
+	}
+	return ""
+}
+
 func (c *Client) SearchRemote(ctx context.Context, projectID string, query string, limit int) ([]RemoteSearchResult, error) {
-	url := fmt.Sprintf("/v1/memories/search?project_id=%s&q=%s&limit=%d",
+	response, err := c.SearchRemoteDetailed(ctx, projectID, query, limit)
+	if err != nil {
+		var details *remoteErrorDetails
+		if errors.As(err, &details) {
+			// Preserve the legacy concrete error contract for callers that use
+			// a direct type assertion instead of errors.As.
+			return nil, details.remote
+		}
+		return nil, err
+	}
+	if response.Results == nil {
+		return nil, nil
+	}
+	results := make([]RemoteSearchResult, len(response.Results))
+	for i := range response.Results {
+		hit := response.Results[i]
+		results[i] = RemoteSearchResult{
+			ID: hit.ID, Category: hit.Category, Content: hit.Content,
+			ProjectID: hit.ProjectID, Source: hit.Source,
+			AuthorName: hit.AuthorName, UpdatedAt: hit.UpdatedAt,
+		}
+	}
+	return results, nil
+}
+
+// SearchRemoteDetailed preserves effective-mode telemetry even when the
+// server returns no hits. Only the declared semantic_unavailable capability
+// response permits the single lexical fallback.
+func (c *Client) SearchRemoteDetailed(ctx context.Context, projectID string, query string, limit int) (*RemoteSearchResponse, error) {
+	response, err := c.searchRemoteMode(ctx, projectID, query, limit, "semantic")
+	if isSemanticUnavailable(err) {
+		response, err = c.searchRemoteMode(ctx, projectID, query, limit, "text")
+		response.RequestedMode = "semantic"
+		response.Fallback = true
+		response.FallbackReason = "semantic_unavailable"
+	}
+	return response, err
+}
+
+// searchRemoteMode performs exactly one remote search attempt. Keeping the
+// retry policy in SearchRemote makes it explicit that only a declared semantic
+// capability failure may change retrieval modes.
+func (c *Client) searchRemoteMode(ctx context.Context, projectID string, query string, limit int, mode string) (*RemoteSearchResponse, error) {
+	metadata := &RemoteSearchResponse{
+		RequestedMode: mode,
+		EffectiveMode: mode,
+	}
+	url := fmt.Sprintf("/v1/memories/search?project_id=%s&q=%s&limit=%d&mode=%s",
 		urlQueryEscape(projectID),
 		urlQueryEscape(query),
 		limit,
+		urlQueryEscape(mode),
 	)
 
 	resp, err := c.doRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("search request: %w", err)
+		return metadata, fmt.Errorf("search request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if effectiveMode := strings.TrimSpace(resp.Header.Get("X-Anchored-Effective-Mode")); effectiveMode != "" {
+		metadata.EffectiveMode = effectiveMode
+	}
 
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return metadata, remoteErrorFromResponse(resp, respBody, true)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return metadata, remoteErrorFromResponse(resp, respBody, true)
 	}
 
-	var results []RemoteSearchResult
+	var results []RemoteSearchHit
 	if err := json.Unmarshal(respBody, &results); err != nil {
-		return nil, fmt.Errorf("decode search response: %w", err)
+		return metadata, fmt.Errorf("decode search response: %w", err)
+	}
+	effectiveMode := strings.TrimSpace(resp.Header.Get("X-Anchored-Effective-Mode"))
+	if effectiveMode == "" && len(results) > 0 {
+		effectiveMode = results[0].EffectiveMode
+	}
+	if effectiveMode == "" {
+		// Older servers do not emit mode metadata. The requested wire mode is
+		// the safest compatibility inference; it does not imply a fallback.
+		effectiveMode = mode
+	}
+	metadata.Results = results
+	metadata.EffectiveMode = effectiveMode
+	return metadata, nil
+}
+
+// isSemanticUnavailable recognizes the protocol's single safe lexical
+// fallback signal. Status alone is deliberately insufficient: validation,
+// authorization, rate-limit, transport, and server failures must retain their
+// original semantics rather than silently changing the search mode.
+func isSemanticUnavailable(err error) bool {
+	var remoteErr *RemoteError
+	if !errors.As(err, &remoteErr) || remoteErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
 	}
 
-	return results, nil
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	return json.Unmarshal([]byte(remoteErr.Body), &payload) == nil &&
+		payload.Error.Code == "semantic_unavailable"
 }
 
 // PushTriples sends a batch of knowledge-graph triples to the remote server
@@ -444,6 +632,10 @@ func isURLSafe(c byte) bool {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	return c.doRequestWithHeaders(ctx, method, path, body, nil)
+}
+
+func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
 	url := c.serverURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -453,5 +645,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	return c.httpClient.Do(req)
 }

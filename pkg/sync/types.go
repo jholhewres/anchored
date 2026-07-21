@@ -25,8 +25,8 @@ type SyncPushRequest struct {
 // the (empty) presence matters — it opts into policy hints; the feature flags
 // stay false until later waves implement them.
 type ClientCapabilities struct {
-	PromotionQueue    bool `json:"promotion_queue,omitempty"`
-	TeamCache         bool `json:"team_cache,omitempty"`
+	PromotionQueue bool `json:"promotion_queue,omitempty"`
+	TeamCache      bool `json:"team_cache,omitempty"`
 	// ArtifactSummaries is reserved for a later wave (artifact-summary sync);
 	// it stays false here so the server never emits the response plumbing,
 	// while the field reserves the wire name for forward compatibility.
@@ -130,4 +130,32 @@ type RemoteSearchResult struct {
 	Source     string `json:"source,omitempty"`
 	AuthorName string `json:"author_name,omitempty"`
 	UpdatedAt  string `json:"updated_at"`
+}
+
+// RemoteSearchHit adds optional ranking metadata without changing the legacy
+// RemoteSearchResult returned by SearchRemote. Older servers may omit all
+// metadata fields.
+type RemoteSearchHit struct {
+	ID            string  `json:"id"`
+	Category      string  `json:"category"`
+	Content       string  `json:"content"`
+	ProjectID     string  `json:"project_id"`
+	Source        string  `json:"source,omitempty"`
+	AuthorName    string  `json:"author_name,omitempty"`
+	UpdatedAt     string  `json:"updated_at"`
+	Rank          int     `json:"rank,omitempty"`
+	Score         float64 `json:"score,omitempty"`
+	EffectiveMode string  `json:"effective_mode,omitempty"`
+	Origin        string  `json:"origin,omitempty"`
+}
+
+// RemoteSearchResponse exposes protocol metadata that cannot be represented
+// on an empty top-level result array. SearchRemote remains the compatibility
+// API for callers that only need hits.
+type RemoteSearchResponse struct {
+	Results        []RemoteSearchHit `json:"results"`
+	RequestedMode  string            `json:"requested_mode"`
+	EffectiveMode  string            `json:"effective_mode"`
+	Fallback       bool              `json:"fallback"`
+	FallbackReason string            `json:"fallback_reason,omitempty"`
 }

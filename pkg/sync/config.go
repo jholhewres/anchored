@@ -28,9 +28,9 @@ type PreviewItem struct {
 }
 
 type PreviewResult struct {
-	Total       int            `json:"total"`
-	Syncable    int            `json:"syncable"`
-	Blocked     int            `json:"blocked"`
-	NeedsReview int            `json:"needs_review"`
-	Items       []PreviewItem  `json:"items,omitempty"`
+	Total       int           `json:"total"`
+	Syncable    int           `json:"syncable"`
+	Blocked     int           `json:"blocked"`
+	NeedsReview int           `json:"needs_review"`
+	Items       []PreviewItem `json:"items,omitempty"`
 }
