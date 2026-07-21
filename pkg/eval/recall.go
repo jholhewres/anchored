@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/jholhewres/anchored/pkg/memory"
 )
@@ -68,19 +69,20 @@ func RunRecall(ctx context.Context, store RecallStore, fixture []byte) (Report, 
 			}
 			res = r
 		}
-		hit := 0
+		rankedIDs := make([]string, 0, k)
 		for i, r := range res {
 			if i >= k {
 				break
 			}
-			if want[r.Memory.ID] {
-				hit++
-			}
+			rankedIDs = append(rankedIDs, r.Memory.ID)
 		}
-		recall := 1.0
-		if len(want) > 0 {
-			recall = float64(hit) / float64(len(want))
+		expectedIDs := make([]string, 0, len(want))
+		for id := range want {
+			expectedIDs = append(expectedIDs, id)
 		}
+		ranking := ScoreRanking(expectedIDs, rankedIDs, k)
+		recall := ranking.Recall
+		hit := int(recall*float64(len(want)) + 0.5)
 		min := q.MinRecall
 		if min <= 0 {
 			min = floor
@@ -91,7 +93,7 @@ func RunRecall(ctx context.Context, store RecallStore, fixture []byte) (Report, 
 			Name:   q.Query,
 			Passed: passed,
 			Score:  recall,
-			Detail: fmt.Sprintf("recall@%d=%.2f (min %.2f), %d/%d expected", k, recall, min, hit, len(want)),
+			Detail: fmt.Sprintf("recall@%d=%.2f (min %.2f), mrr=%.2f, ndcg@%d=%.2f, %d/%d expected", k, recall, min, ranking.MRR, k, ranking.NDCG, hit, len(want)),
 		})
 	}
 
@@ -106,4 +108,43 @@ func RunRecall(ctx context.Context, store RecallStore, fixture []byte) (Report, 
 	}
 	rep.Summary = fmt.Sprintf("%d queries, mean recall@%d=%.2f", len(rep.Cases), k, rep.Score)
 	return rep, nil
+}
+
+func reciprocalRank(rankedRelevant []bool) float64 {
+	for i, relevant := range rankedRelevant {
+		if relevant {
+			return 1 / float64(i+1)
+		}
+	}
+	return 0
+}
+
+func normalizedDiscountedCumulativeGain(rankedRelevant []bool, relevantTotal, k int) float64 {
+	if relevantTotal <= 0 {
+		return 1
+	}
+	if k <= 0 {
+		return 0
+	}
+	var dcg float64
+	for i, relevant := range rankedRelevant {
+		if i >= k {
+			break
+		}
+		if relevant {
+			dcg += 1 / math.Log2(float64(i+2))
+		}
+	}
+	idealCount := relevantTotal
+	if idealCount > k {
+		idealCount = k
+	}
+	var ideal float64
+	for i := 0; i < idealCount; i++ {
+		ideal += 1 / math.Log2(float64(i+2))
+	}
+	if ideal == 0 {
+		return 0
+	}
+	return dcg / ideal
 }
