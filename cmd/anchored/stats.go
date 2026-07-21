@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"time"
+
+	"github.com/jholhewres/anchored/pkg/memory"
 )
 
 func runStats(args []string) {
@@ -49,6 +53,32 @@ func runStats(args []string) {
 			fmt.Printf("  %s: %d\n", proj, count)
 		}
 	}
+
+	derivedWork, err := svc.DerivedWorkHealth(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "derived work stats unavailable: %v\n", err)
+	} else {
+		fmt.Println("\nDerived work:")
+		printQueueHealth(os.Stdout, "processing", derivedWork.Processing,
+			[]string{"pending", "processing", "done", "failed"})
+		printQueueHealth(os.Stdout, "outbox", derivedWork.Outbox,
+			[]string{"pending", "processing", "delivered", "dead_letter"})
+	}
+}
+
+func printQueueHealth(w io.Writer, name string, health memory.QueueStateHealth, states []string) {
+	fmt.Fprintf(w, "  %s:", name)
+	for _, state := range states {
+		fmt.Fprintf(w, " %s=%d", state, health.Counts[state])
+	}
+	if health.OldestPending != nil {
+		age := time.Since(*health.OldestPending)
+		if age < 0 {
+			age = 0
+		}
+		fmt.Fprintf(w, " oldest_pending_age=%s", age.Round(time.Second))
+	}
+	fmt.Fprintln(w)
 }
 
 // printTokenStats renders the 7-day context-token telemetry: how many tokens
