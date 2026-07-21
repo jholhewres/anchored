@@ -2,10 +2,12 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,6 +49,9 @@ type HybridSearcher struct {
 	entityDetector      *EntityDetector
 	topicChangeDetector *TopicChangeDetector
 	logger              *slog.Logger
+	generationMu        sync.RWMutex
+	generationAware     bool
+	activeIdentity      *EmbeddingIdentity
 }
 
 func NewHybridSearcher(store Store, embedder EmbeddingProvider, cache *EmbeddingCache, vectorCache *VectorCache, cfg HybridSearchConfig, entityDetector *EntityDetector, topicChangeDetector *TopicChangeDetector, logger *slog.Logger) *HybridSearcher {
@@ -54,6 +59,38 @@ func NewHybridSearcher(store Store, embedder EmbeddingProvider, cache *Embedding
 		logger = slog.Default()
 	}
 	return &HybridSearcher{store: store, embedder: embedder, cache: cache, vectorCache: vectorCache, config: cfg, entityDetector: entityDetector, topicChangeDetector: topicChangeDetector, logger: logger}
+}
+
+// UseEmbeddingGeneration switches semantic search to the generation-aware
+// contract. A nil identity intentionally disables vectors (BM25-only) while a
+// compatible generation is being built.
+func (h *HybridSearcher) UseEmbeddingGeneration(identity *EmbeddingIdentity) {
+	h.generationMu.Lock()
+	h.generationAware = true
+	h.activeIdentity = nil
+	if identity != nil {
+		copy := *identity
+		h.activeIdentity = &copy
+	}
+	h.generationMu.Unlock()
+}
+
+func (h *HybridSearcher) publishEmbeddingGeneration(
+	identity EmbeddingIdentity,
+	publish func(func(map[string][]float32) error) error,
+) error {
+	h.generationMu.Lock()
+	defer h.generationMu.Unlock()
+	err := publish(func(vectors map[string][]float32) error {
+		if h.vectorCache != nil {
+			h.vectorCache.Replace(vectors)
+		}
+		copy := identity
+		h.generationAware = true
+		h.activeIdentity = &copy
+		return nil
+	})
+	return err
 }
 
 func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...SearchOptions) ([]SearchResult, error) {
@@ -135,6 +172,16 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 	return fused, nil
 }
 
+func (h *HybridSearcher) semanticSearchEnabled() bool {
+	if h.embedder == nil {
+		return false
+	}
+	h.generationMu.RLock()
+	enabled := !h.generationAware || h.activeIdentity != nil
+	h.generationMu.RUnlock()
+	return enabled
+}
+
 // resultOrigin identifies which session (or, lacking one, which day) produced a
 // memory, so diversification can cap how many come from the same source.
 func resultOrigin(m Memory) string {
@@ -165,19 +212,51 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 	if h.embedder == nil {
 		return nil, nil
 	}
+	h.generationMu.RLock()
+	generationAware := h.generationAware
+	var identity *EmbeddingIdentity
+	if h.activeIdentity != nil {
+		copy := *h.activeIdentity
+		identity = &copy
+	}
+	if generationAware {
+		// Hold the semantic-space read lock through query embedding and cache
+		// scoring. Activation publishes cache + identity under the write lock,
+		// so a query observes either the complete old space or the complete new
+		// space, never an identity/cache mixture.
+		defer h.generationMu.RUnlock()
+	} else {
+		h.generationMu.RUnlock()
+	}
+	if generationAware && identity == nil {
+		return nil, nil
+	}
 	if h.vectorCache == nil && h.cache == nil {
 		return nil, nil
 	}
 
-	queryVecs, err := h.embedder.Embed(ctx, []string{query})
+	var queryVecs [][]float32
+	var err error
+	if generationAware {
+		queryVecs, err = EmbedForPurpose(ctx, h.embedder, EmbeddingPurposeQuery, []string{query})
+	} else {
+		queryVecs, err = h.embedder.Embed(ctx, []string{query})
+	}
 	if err != nil {
 		return nil, err
+	}
+	if generationAware && len(queryVecs) != 1 {
+		return nil, fmt.Errorf("embedding provider returned %d query vectors, want 1", len(queryVecs))
 	}
 	if len(queryVecs) == 0 || len(queryVecs[0]) == 0 {
 		return nil, nil
 	}
 
 	queryVec := queryVecs[0]
+	if generationAware && len(queryVec) != identity.Dimensions {
+		return nil, fmt.Errorf("%w: query has %d, want %d",
+			ErrEmbeddingDimensionMismatch, len(queryVec), identity.Dimensions)
+	}
 	queryNorm := VectorNorm(queryVec)
 
 	var results []SearchResult
@@ -201,7 +280,7 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 			}
 			results = append(results, SearchResult{Memory: *m, Score: score})
 		}
-	} else if h.cache != nil {
+	} else if !generationAware && h.cache != nil {
 		memories, err := h.store.List(ctx, ListOptions{Limit: 10000, Category: opts.Category, ProjectID: opts.ProjectID})
 		if err != nil {
 			return nil, err

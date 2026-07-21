@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"math"
@@ -20,23 +22,29 @@ import (
 )
 
 const (
-	onnxModelName      = "paraphrase-multilingual-MiniLM-L12-v2"
-	legacyModelName    = "all-MiniLM-L6-v2"
-	onnxModelDims      = 384
-	onnxMaxSeqLen      = 128
-	onnxRuntimeVersion = "1.25.1"
+	onnxModelName       = "paraphrase-multilingual-MiniLM-L12-v2"
+	legacyModelName     = "all-MiniLM-L6-v2"
+	onnxModelDims       = 384
+	onnxMaxSeqLen       = 128
+	onnxRuntimeVersion  = "1.25.1"
+	onnxModelRevision   = "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+	legacyModelRevision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+	// Bump whenever tokenization, truncation, pooling, or normalization changes
+	// without changing the downloaded model artifacts.
+	onnxPipelineRevision = "wordpiece-v1:maxseq128:mean-pool:l2-v1"
 
 	onnxRuntimeURLTemplate = "https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-%s-%s-%s.tgz"
-	onnxModelBaseURL       = "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main"
-	onnxLegacyModelBaseURL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
+	onnxModelBaseURL       = "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/" + onnxModelRevision
+	onnxLegacyModelBaseURL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/" + legacyModelRevision
 )
 
 type ONNXEmbedder struct {
-	session      *ort.AdvancedSession
-	tokenizer    Tokenizer
-	dims         int
-	logger       *slog.Logger
-	modelName    string
+	session       *ort.AdvancedSession
+	tokenizer     Tokenizer
+	dims          int
+	logger        *slog.Logger
+	modelName     string
+	modelRevision string
 
 	inputIDs      *ort.Tensor[int64]
 	attentionMask *ort.Tensor[int64]
@@ -66,6 +74,10 @@ func NewONNXEmbedder(modelDir string, logger *slog.Logger) (*ONNXEmbedder, error
 	}
 	if err := ensureONNXModel(paths, logger); err != nil {
 		return nil, fmt.Errorf("onnx: model setup: %w", err)
+	}
+	modelRevision, err := onnxArtifactRevision(paths)
+	if err != nil {
+		return nil, fmt.Errorf("onnx: identify model artifacts: %w", err)
 	}
 
 	ort.SetSharedLibraryPath(paths.RuntimeLib)
@@ -141,6 +153,7 @@ func NewONNXEmbedder(modelDir string, logger *slog.Logger) (*ONNXEmbedder, error
 		dims:          onnxModelDims,
 		logger:        logger,
 		modelName:     activeModel,
+		modelRevision: modelRevision,
 		inputIDs:      inputIDs,
 		attentionMask: attentionMask,
 		tokenTypeIDs:  tokenTypeIDs,
@@ -183,9 +196,47 @@ func (e *ONNXEmbedder) embedSingle(text string) ([]float32, error) {
 	return result, nil
 }
 
-func (e *ONNXEmbedder) Dimensions() int { return e.dims }
-func (e *ONNXEmbedder) Name() string   { return "onnx" }
-func (e *ONNXEmbedder) Model() string  { return e.modelName }
+func (e *ONNXEmbedder) Dimensions() int       { return e.dims }
+func (e *ONNXEmbedder) Name() string          { return "onnx" }
+func (e *ONNXEmbedder) Model() string         { return e.modelName }
+func (e *ONNXEmbedder) ModelRevision() string { return e.modelRevision }
+func (e *ONNXEmbedder) Normalization() string { return "l2" }
+
+func onnxArtifactRevision(paths *ONNXPaths) (string, error) {
+	return onnxArtifactRevisionForPipeline(paths, onnxPipelineRevision)
+}
+
+func onnxArtifactRevisionForPipeline(paths *ONNXPaths, pipelineRevision string) (string, error) {
+	digest := sha256.New()
+	if _, err := io.WriteString(digest, "pipeline\x00"+pipelineRevision+"\x00"); err != nil {
+		return "", err
+	}
+	for _, artifact := range []string{paths.ModelFile, paths.TokenizerFile, paths.VocabFile} {
+		if !fileExists(artifact) {
+			continue
+		}
+		if err := hashArtifact(digest, artifact); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+}
+
+func hashArtifact(digest hash.Hash, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := io.WriteString(digest, filepath.Base(path)+"\x00"); err != nil {
+		return err
+	}
+	if _, err := io.Copy(digest, file); err != nil {
+		return err
+	}
+	_, err = io.WriteString(digest, "\x00")
+	return err
+}
 
 func (e *ONNXEmbedder) Close() error {
 	if e.session != nil {
@@ -304,32 +355,30 @@ func ensureONNXModel(paths *ONNXPaths, logger *slog.Logger) error {
 		}
 	}
 
-	logger.Info("downloading ONNX model (first run)...", "model", onnxModelName)
+	activeModel := onnxModelName
+	if isLegacy {
+		activeModel = legacyModelName
+	}
+	logger.Info("downloading ONNX model (first run)...", "model", activeModel)
 	if err := os.MkdirAll(filepath.Dir(paths.ModelFile), 0o755); err != nil {
 		return err
 	}
 
-	baseURL := onnxModelBaseURL + "/onnx"
-	if isLegacy {
-		baseURL = onnxLegacyModelBaseURL + "/onnx"
-	}
+	modelURL, tokenizerURL, vocabURL := onnxAssetURLs(isLegacy)
 
 	if !fileExists(paths.ModelFile) {
-		modelURL := baseURL + "/model.onnx"
 		if err := downloadFileWithProgress(modelURL, paths.ModelFile, logger); err != nil {
 			return fmt.Errorf("download model: %w", err)
 		}
 	}
 
 	if !fileExists(paths.TokenizerFile) {
-		tokenizerURL := onnxModelBaseURL + "/tokenizer.json"
 		if err := downloadFileWithProgress(tokenizerURL, paths.TokenizerFile, logger); err != nil {
 			logger.Warn("tokenizer.json download failed, will use vocab.txt fallback", "error", err)
 		}
 	}
 
 	if !fileExists(paths.VocabFile) {
-		vocabURL := baseURL + "/vocab.txt"
 		if err := downloadFileWithProgress(vocabURL, paths.VocabFile, logger); err != nil {
 			if !fileExists(paths.TokenizerFile) {
 				return fmt.Errorf("download vocab: %w", err)
@@ -339,6 +388,15 @@ func ensureONNXModel(paths *ONNXPaths, logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+func onnxAssetURLs(legacy bool) (model, tokenizer, vocab string) {
+	base := onnxModelBaseURL
+	if legacy {
+		base = onnxLegacyModelBaseURL
+		return base + "/onnx/model.onnx", base + "/tokenizer.json", base + "/vocab.txt"
+	}
+	return base + "/onnx/model.onnx", base + "/tokenizer.json", base + "/onnx/vocab.txt"
 }
 
 func downloadFile(url, destPath string, logger *slog.Logger) error {

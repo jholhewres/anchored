@@ -123,6 +123,22 @@ func (c *VectorCache) Remove(id string) {
 	c.mu.Unlock()
 }
 
+// Replace atomically swaps the cache contents. Generation activation uses it
+// so queries never observe a mixture of vectors from two semantic spaces.
+func (c *VectorCache) Replace(vectors map[string][]float32) {
+	byID := make(map[string][]float32, len(vectors))
+	quant := make(map[string]quantEntry, len(vectors))
+	for id, vector := range vectors {
+		cp := append([]float32(nil), vector...)
+		byID[id] = cp
+		quant[id] = makeQuantEntry(cp)
+	}
+	c.mu.Lock()
+	c.byID = byID
+	c.quant = quant
+	c.mu.Unlock()
+}
+
 func (c *VectorCache) Get(id string) ([]float32, bool) {
 	c.mu.RLock()
 	vec, ok := c.byID[id]
