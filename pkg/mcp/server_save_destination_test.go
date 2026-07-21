@@ -11,16 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/memory"
+	remotesync "github.com/jholhewres/anchored/pkg/sync"
 )
 
-// TestToolSave_NamesAutoSyncDestination locks invariant (3) of the sync
-// identity contract: a save that auto-syncs must name the exact server and
-// project it goes to — "(auto-sync → <remote> · <slug>)" — never a bare
-// "(auto-sync)" that leaves the user guessing where the memory landed.
-func TestToolSave_NamesAutoSyncDestination(t *testing.T) {
+// TestToolSave_QueuesAutoSyncForResolvedDestination locks both sides of the
+// local-first contract: the tool returns after durably queueing the write, and
+// the background delivery still resolves the exact server-side project.
+func TestToolSave_QueuesAutoSyncForResolvedDestination(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -51,11 +52,18 @@ func TestToolSave_NamesAutoSyncDestination(t *testing.T) {
 		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
 	}
 
+	delivered := make(chan remotesync.RemoteMemory, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `[{"id":"rp-7","name":"dest-fixture","slug":"dest-fixture","remote_key":%q}]`, proj.RemoteKey)
 	})
 	mux.HandleFunc("/v1/memories", func(w http.ResponseWriter, r *http.Request) {
+		var payload remotesync.RemoteMemory
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		delivered <- payload
 		w.Write([]byte(`{"id":"m-1","category":"decision","project_id":"rp-7","created":true}`))
 	})
 	ts := httptest.NewServer(mux)
@@ -77,11 +85,15 @@ func TestToolSave_NamesAutoSyncDestination(t *testing.T) {
 		t.Fatalf("toolSave: %v", err)
 	}
 
-	want := "(auto-sync → teamsrv · dest-fixture)"
-	if !strings.Contains(out, want) {
-		t.Fatalf("save result must name its destination %q\n--- output ---\n%s", want, out)
+	if !strings.Contains(out, "(auto-sync queued)") {
+		t.Fatalf("save result must report durable queueing\n--- output ---\n%s", out)
 	}
-	if strings.Contains(out, "(auto-sync)") && !strings.Contains(out, want) {
-		t.Fatalf("bare (auto-sync) without destination: %s", out)
+	select {
+	case payload := <-delivered:
+		if payload.ProjectID != "rp-7" {
+			t.Fatalf("delivered project = %q, want rp-7", payload.ProjectID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued auto-sync was not delivered to the resolved destination")
 	}
 }
