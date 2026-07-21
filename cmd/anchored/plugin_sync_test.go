@@ -91,13 +91,27 @@ func TestDetectPluginDrift(t *testing.T) {
 	cfg.Plugin.CacheDir = cacheDir
 	cfg.Plugin.MarketplaceDir = mirrorDir
 
-	// Mirror AND cache behind binary 0.4.6: both flags set.
+	// Mirror trails binary 0.4.6 (pull trigger) but the cache matches the mirror,
+	// so there is nothing to install: MirrorBehind set, CacheBehind not. The
+	// plugin is versioned independently, so a mirror behind the binary is not
+	// user-facing drift on its own.
 	d := detectPluginDrift(cfg, "0.4.6")
-	if !d.HasDrift || !d.MirrorBehind || !d.CacheBehind {
-		t.Fatalf("expected both behind, got %+v", d)
+	if !d.HasDrift || !d.MirrorBehind || d.CacheBehind {
+		t.Fatalf("expected mirror-behind only (cache matches mirror), got %+v", d)
 	}
 	if d.CacheVersion != "0.4.0" || d.MirrorVersion != "0.4.0" || d.BinaryVersion != "0.4.6" {
 		t.Errorf("version fields wrong: %+v", d)
+	}
+
+	// Cache older than the mirror: real, user-facing drift.
+	seedPluginCache(t, cacheDir, "0.4.0")
+	freshMirrorDir := t.TempDir()
+	seedMirrorManifest(t, freshMirrorDir, "0.5.0")
+	cfgStale := &config.Config{}
+	cfgStale.Plugin.CacheDir = cacheDir
+	cfgStale.Plugin.MarketplaceDir = freshMirrorDir
+	if ds := detectPluginDrift(cfgStale, "0.5.0"); !ds.CacheBehind {
+		t.Fatalf("cache 0.4.0 < mirror 0.5.0 must be CacheBehind, got %+v", ds)
 	}
 
 	// All matching versions: no drift.
@@ -291,6 +305,17 @@ func TestRenderPluginUpdateNotice(t *testing.T) {
 	// No drift = empty string.
 	if got := renderPluginUpdateNotice(PluginDrift{HasDrift: false}); got != "" {
 		t.Errorf("no-drift notice should be empty, got %q", got)
+	}
+
+	// Steady state: mirror trails the binary but the cache matches the mirror,
+	// so nothing was installed and nothing failed. The notice must stay silent
+	// instead of nagging "auto-updated ..." on every session.
+	steady := renderPluginUpdateNotice(PluginDrift{
+		HasDrift: true, MirrorBehind: true, CacheBehind: false, SyncPerformed: true,
+		BinaryVersion: "0.15.0-beta.1", MirrorVersion: "0.12.0", CacheVersion: "0.12.0",
+	})
+	if steady != "" {
+		t.Errorf("steady-state (cache==mirror, mirror<binary) must be silent, got %q", steady)
 	}
 }
 

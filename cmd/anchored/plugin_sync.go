@@ -87,13 +87,20 @@ func detectPluginDrift(cfg *config.Config, binaryVersion string) PluginDrift {
 	d.MirrorVersion = readMirrorPluginVersion(cfg.Plugin.MarketplaceDir)
 	d.CacheVersion = newestInstalledVersion(cfg.Plugin.CacheDir)
 
+	// MirrorBehind is the pull trigger: a binary newer than the mirror's plugin
+	// version is a natural cue to fast-forward the marketplace mirror and pick
+	// up any newer plugin upstream. It does NOT by itself mean the user must act
+	// — the plugin is versioned on its own track, so the mirror routinely trails
+	// the binary version even when fully up to date.
 	if d.MirrorVersion != "" && compareSemver(d.MirrorVersion, binaryVersion) < 0 {
 		d.MirrorBehind = true
 	}
-	// Cache behind = cache absent OR cache older than binary. We compare to
-	// the binary (not the mirror) because the mirror may itself be stale and
-	// about to be fast-forwarded; the binary is the authoritative target.
-	if d.CacheVersion == "" || compareSemver(d.CacheVersion, binaryVersion) < 0 {
+	// CacheBehind is the real, user-facing signal: the installed cache is older
+	// than the marketplace mirror (the freshest plugin available locally), so
+	// there are new hooks/skills to install. It is compared to the MIRROR, never
+	// the binary — comparing to the binary reported a permanent false "plugin
+	// lags the binary" on every release once the binary out-versioned the plugin.
+	if d.MirrorVersion != "" && (d.CacheVersion == "" || compareSemver(d.CacheVersion, d.MirrorVersion) < 0) {
 		d.CacheBehind = true
 	}
 	d.HasDrift = d.MirrorBehind || d.CacheBehind
@@ -261,6 +268,13 @@ func applyPluginAutoUpdate(d PluginDrift) PluginDrift {
 		}
 	}
 
+	// Re-evaluate against the (possibly freshened) mirror: a pull may have
+	// advanced MirrorVersion past the installed cache, which is exactly when a
+	// reinstall is warranted. Comparing to the mirror — not the binary — avoids
+	// reinstalling an already-current cache on every session.
+	d.CacheBehind = d.MirrorVersion != "" &&
+		(d.CacheVersion == "" || compareSemver(d.CacheVersion, d.MirrorVersion) < 0)
+
 	if d.CacheBehind {
 		registry := d.RegistryPath
 		if registry == "" {
@@ -378,7 +392,11 @@ func runGitCmd(ctx context.Context, dir string, args ...string) ([]byte, error) 
 // pull, when MirrorBehind+AutoUpdate) and what the user still needs to do
 // (/plugin install + restart).
 func renderPluginUpdateNotice(d PluginDrift) string {
-	if !d.HasDrift {
+	// Speak up only when the user must act: the installed cache trails the
+	// mirror (new hooks to install/load) or a sync/install genuinely failed. A
+	// mirror that merely trails the binary version — the steady state, since the
+	// plugin is versioned on its own track — needs no action and stays silent.
+	if !d.CacheBehind && !d.CacheInstalled && d.SyncError == "" && d.CacheInstallError == "" {
 		return ""
 	}
 

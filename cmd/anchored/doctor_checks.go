@@ -352,15 +352,23 @@ func checkPluginDrift(cfg *config.Config) {
 		recordCheck("skipped", "Claude Code plugin", "plugin not installed (mirror/cache absent)", "", false)
 		return
 	}
-	if !drift.HasDrift {
+	// The plugin is versioned independently from the binary; a healthy install
+	// has the cache matching the marketplace mirror. Report drift only when the
+	// cache actually trails the mirror — not when the binary merely out-versions
+	// the plugin, which is the steady state and was a permanent false positive.
+	cacheVer := drift.CacheVersion
+	if cacheVer == "" {
+		cacheVer = "absent"
+	}
+	if !drift.CacheBehind {
 		recordCheck("ok", fmt.Sprintf("Claude Code plugin up to date (mirror %s, cache %s)",
-			drift.MirrorVersion, drift.CacheVersion), "", "", false)
+			drift.MirrorVersion, cacheVer), "", "", false)
 		return
 	}
 	recordCheck("failed", "Claude Code plugin",
-		fmt.Sprintf("plugin lags the binary (binary %s, mirror %s, cache %s) — hooks may be stale",
-			drift.BinaryVersion, drift.MirrorVersion, drift.CacheVersion),
-		"restart your IDE (the session-start hook auto-updates the plugin), or reinstall it", false)
+		fmt.Sprintf("plugin cache lags the marketplace mirror (mirror %s, cache %s) — hooks may be stale",
+			drift.MirrorVersion, cacheVer),
+		"run `/plugin install anchored@anchored` then restart Claude Code", false)
 }
 
 // --- Cursor activation (S1.6) ---
