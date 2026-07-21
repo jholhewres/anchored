@@ -12,6 +12,17 @@ const (
 	processingPollEvery = 250 * time.Millisecond
 	workerFinalizeLimit = 5 * time.Second
 	embeddingJobKind    = "embedding"
+
+	// processingMaxBatchPerWake bounds how many jobs one drain pass handles
+	// before yielding, and processingBusyThrottle is the rest between
+	// consecutive full batches. Together they duty-cycle the background worker so
+	// a large backlog (e.g. a corpus-wide re-embed after an embedding-generation
+	// change) drains steadily WITHOUT pegging the CPU. Previously each pass
+	// drained flat-out for up to processingLease, which — multiplied across the
+	// hub daemon plus every per-session process, and ONNX's own thread pool —
+	// saturated the machine (observed load ~15 on 12 cores).
+	processingMaxBatchPerWake = 8
+	processingBusyThrottle    = 400 * time.Millisecond
 )
 
 func (s *Service) durableProcessingSpecs(skipEmbed bool) []ProcessingJobSpec {
@@ -117,7 +128,17 @@ func (s *Service) runDurableWorkers() {
 	ticker := time.NewTicker(processingPollEvery)
 	defer ticker.Stop()
 	for {
-		s.drainDurableWork()
+		busy := s.drainDurableWork()
+		if busy {
+			// Backlog remains: rest briefly so background processing never
+			// saturates the CPU, then keep draining.
+			select {
+			case <-s.shutdown:
+				return
+			case <-time.After(processingBusyThrottle):
+			}
+			continue
+		}
 		select {
 		case <-s.shutdown:
 			return
@@ -127,11 +148,13 @@ func (s *Service) runDurableWorkers() {
 	}
 }
 
-func (s *Service) drainDurableWork() {
+func (s *Service) drainDurableWork() (busy bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), processingLease)
 	defer cancel()
 	if s.embedder != nil {
-		s.drainProcessingKind(ctx, embeddingJobKind)
+		if s.drainProcessingKind(ctx, embeddingJobKind) {
+			busy = true
+		}
 	}
 	s.deliveryMu.RLock()
 	hasDeliverer := s.remoteDeliverer != nil
@@ -139,26 +162,27 @@ func (s *Service) drainDurableWork() {
 	if hasDeliverer {
 		s.drainRemoteOutbox(ctx)
 	}
+	return busy
 }
 
-func (s *Service) drainProcessingKind(ctx context.Context, kind string) {
+func (s *Service) drainProcessingKind(ctx context.Context, kind string) (hitBatchCap bool) {
 	queue, ok := s.store.(ProcessingQueueStore)
 	if !ok {
-		return
+		return false
 	}
 	inputs, ok := s.store.(ProcessingRevisionStore)
 	if !ok {
-		return
+		return false
 	}
-	for ctx.Err() == nil {
+	for processed := 0; processed < processingMaxBatchPerWake && ctx.Err() == nil; processed++ {
 		now := time.Now().UTC()
 		job, err := queue.ClaimProcessingJob(ctx, kind, s.workerOwner, now, processingLease)
 		if err != nil {
 			s.logger.Warn("claim durable processing job failed", "kind", kind, "error", err)
-			return
+			return false
 		}
 		if job == nil {
-			return
+			return false
 		}
 		if err := s.processClaimedJob(ctx, inputs, job); err != nil {
 			retryAt := processingRetryAt(now, job.Attempts)
@@ -188,6 +212,9 @@ func (s *Service) drainProcessingKind(ctx context.Context, kind string) {
 		}
 		finalizeCancel()
 	}
+	// Hit the per-wake batch cap with the context still live — more jobs are
+	// probably queued; signal the caller to throttle instead of spinning.
+	return ctx.Err() == nil
 }
 
 func (s *Service) processClaimedJob(
