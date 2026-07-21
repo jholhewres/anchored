@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -29,13 +30,15 @@ type ImportRecord struct {
 }
 
 type SQLiteStore struct {
-	db     *sql.DB
-	cache  *VectorCache
-	logger *slog.Logger
+	db                    *sql.DB
+	cache                 *VectorCache
+	logger                *slog.Logger
+	now                   func() time.Time
+	embeddingGenerationMu sync.Mutex
 }
 
 func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate", dbPath)
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate&_foreign_keys=on", dbPath)
 
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
@@ -55,11 +58,19 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 	}
 
 	cache := NewVectorCache(logger)
-	if err := cache.Load(db); err != nil {
-		logger.Warn("vector cache load failed, search may be slower", "error", err)
+	store := &SQLiteStore{db: db, cache: cache, logger: logger, now: time.Now}
+	if active, activeErr := store.ActiveEmbeddingGeneration(context.Background()); activeErr != nil {
+		logger.Warn("active embedding generation lookup failed", "error", activeErr)
+	} else if active != nil {
+		if vectors, loadErr := store.LoadEmbeddingGeneration(context.Background(), active.ID); loadErr != nil {
+			logger.Warn("active embedding generation load failed", "generation", active.ID, "error", loadErr)
+		} else {
+			cache.Replace(vectors)
+			logger.Info("active embedding generation loaded", "generation", active.ID, "count", len(vectors))
+		}
 	}
 
-	return &SQLiteStore{db: db, cache: cache, logger: logger}, nil
+	return store, nil
 }
 
 func (s *SQLiteStore) DB() *sql.DB               { return s.db }
@@ -88,77 +99,15 @@ func contentHash(content string) string {
 }
 
 func (s *SQLiteStore) Save(ctx context.Context, m Memory) error {
-	now := time.Now().UTC()
+	_, err := s.SaveTemporal(ctx, m, TemporalWriteOptions{})
+	return err
+}
 
-	if m.ID == "" {
-		m.ID = newUUID()
+func (s *SQLiteStore) nowUTC() time.Time {
+	if s.now == nil {
+		return time.Now().UTC()
 	}
-	if m.CreatedAt.IsZero() {
-		m.CreatedAt = now
-	}
-	m.UpdatedAt = now
-
-	if m.ContentHash == "" && m.Content != "" {
-		m.ContentHash = contentHash(m.Content)
-	}
-
-	var keywordsJSON any
-	if m.Keywords != nil {
-		b, err := json.Marshal(m.Keywords)
-		if err != nil {
-			return fmt.Errorf("marshal keywords: %w", err)
-		}
-		keywordsJSON = string(b)
-	}
-
-	var metadataJSON any
-	if m.Metadata != nil {
-		b, err := json.Marshal(m.Metadata)
-		if err != nil {
-			return fmt.Errorf("marshal metadata: %w", err)
-		}
-		metadataJSON = string(b)
-	}
-
-	var embeddingBlob any
-	if m.Embedding != nil {
-		embeddingBlob = float32sToBlob(m.Embedding)
-	}
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (id, project_id, category, content, content_hash, keywords, embedding, source, source_id, created_at, updated_at, access_count, last_accessed_at, metadata, sync_dirty, sync_origin, author, remote_project_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-			project_id = excluded.project_id,
-			category = excluded.category,
-			content = excluded.content,
-			content_hash = excluded.content_hash,
-			keywords = excluded.keywords,
-			embedding = excluded.embedding,
-			source = excluded.source,
-			source_id = excluded.source_id,
-			updated_at = excluded.updated_at,
-			metadata = excluded.metadata,
-			sync_dirty = excluded.sync_dirty,
-			sync_origin = excluded.sync_origin,
-			author = excluded.author,
-			remote_project_key = excluded.remote_project_key,
-			deleted_at = NULL`,
-		m.ID, m.ProjectID, m.Category, m.Content, m.ContentHash, keywordsJSON, embeddingBlob, m.Source, m.SourceID,
-		m.CreatedAt, m.UpdatedAt, m.AccessCount, m.LastAccessed, metadataJSON,
-		m.SyncDirty, m.SyncOrigin, m.Author, m.RemoteProjectKey,
-	)
-	if err != nil {
-		return fmt.Errorf("save memory: %w", err)
-	}
-
-	if m.Embedding != nil {
-		s.cache.Put(m.ID, m.Embedding)
-	} else {
-		s.cache.Remove(m.ID)
-	}
-
-	return nil
+	return s.now().UTC()
 }
 
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Memory, error) {
@@ -308,7 +257,24 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, opts SearchOptio
 }
 
 func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM memories WHERE id = ?", id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete memory %s: %w", id, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_processing_jobs WHERE memory_id = ?", id); err != nil {
+		return fmt.Errorf("delete memory processing jobs %s: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM remote_outbox WHERE memory_id = ?", id); err != nil {
+		return fmt.Errorf("delete memory remote outbox %s: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_revisions WHERE memory_id = ?", id); err != nil {
+		return fmt.Errorf("delete memory revisions %s: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM memories WHERE id = ?", id); err != nil {
+		return fmt.Errorf("delete memory %s: %w", id, err)
+	}
+	err = tx.Commit()
 	if err != nil {
 		return fmt.Errorf("delete memory %s: %w", id, err)
 	}
@@ -407,6 +373,9 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 		}
 		stats.ByCategory[cat] = count
 	}
+	if err := catRows.Err(); err != nil {
+		return nil, fmt.Errorf("stats by category: %w", err)
+	}
 
 	projRows, err := s.db.QueryContext(ctx, "SELECT project_id, COUNT(*) FROM memories WHERE project_id IS NOT NULL AND deleted_at IS NULL GROUP BY project_id")
 	if err != nil {
@@ -420,6 +389,9 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 			return nil, err
 		}
 		stats.ByProject[proj] = count
+	}
+	if err := projRows.Err(); err != nil {
+		return nil, fmt.Errorf("stats by project: %w", err)
 	}
 
 	return stats, nil
@@ -482,8 +454,53 @@ func (s *SQLiteStore) UpdateEmbedding(ctx context.Context, id string, embedding 
 	if err != nil {
 		return fmt.Errorf("update embedding for %s: %w", id, err)
 	}
-	s.cache.Put(id, embedding)
+	s.refreshVectorCache(ctx, id)
 	return nil
+}
+
+// refreshVectorCache projects only the active, identified semantic generation
+// when one exists. Legacy embedding blobs remain readable through Store APIs,
+// but they cannot contaminate generation-aware search in-process.
+func (s *SQLiteStore) refreshVectorCache(ctx context.Context, id string) {
+	if s.cache == nil || id == "" {
+		return
+	}
+	active, err := s.ActiveEmbeddingGeneration(ctx)
+	if err != nil {
+		s.cache.Remove(id)
+		return
+	}
+
+	var blob []byte
+	if active != nil {
+		err = s.db.QueryRowContext(ctx, `
+			SELECT v.embedding
+			FROM memories m
+			JOIN memory_embedding_vectors v
+			  ON v.revision_id = m.current_revision_id
+			 AND v.generation_id = ?
+			 AND v.purpose = 'document'
+			WHERE m.id = ? AND m.deleted_at IS NULL`,
+			active.ID, id,
+		).Scan(&blob)
+	} else {
+		err = s.db.QueryRowContext(ctx, `
+			SELECT embedding
+			FROM memories
+			WHERE id = ? AND deleted_at IS NULL AND embedding IS NOT NULL`,
+			id,
+		).Scan(&blob)
+	}
+	if err != nil || len(blob) == 0 {
+		s.cache.Remove(id)
+		return
+	}
+	vector, err := blobToFloat32s(blob)
+	if err != nil || len(vector) == 0 {
+		s.cache.Remove(id)
+		return
+	}
+	s.cache.Put(id, vector)
 }
 
 func scanMemory(row *sql.Row) (*Memory, error) {
@@ -615,66 +632,34 @@ func (s *SQLiteStore) ListWithoutEmbedding(ctx context.Context, limit int) ([]Me
 }
 
 func (s *SQLiteStore) Update(ctx context.Context, id string, content string, category string) error {
-	hash := contentHash(content)
-	keywords := ExtractKeywords(content)
-	keywordsJSON, _ := json.Marshal(keywords)
-
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE memories SET content = ?, category = ?, content_hash = ?, keywords = ?, updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND deleted_at IS NULL`,
-		content, category, hash, string(keywordsJSON), id,
-	)
-	if err != nil {
-		return fmt.Errorf("update memory %s: %w", id, err)
-	}
-	s.cache.Remove(id)
-	return nil
+	_, err := s.UpdateTemporal(ctx, id, TemporalMutation{
+		Content:        &content,
+		Category:       &category,
+		ClearEmbedding: true,
+		ExpectedState:  TemporalStateActive,
+	}, TemporalWriteOptions{})
+	return err
 }
 
 func (s *SQLiteStore) UpdateMetadata(ctx context.Context, id string, metadata any) error {
-	var metadataJSON any
-	if metadata != nil {
-		b, err := json.Marshal(metadata)
-		if err != nil {
-			return fmt.Errorf("marshal metadata: %w", err)
-		}
-		metadataJSON = string(b)
-	}
-
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE memories SET metadata = ? WHERE id = ? AND deleted_at IS NULL`,
-		metadataJSON, id,
-	)
-	if err != nil {
-		return fmt.Errorf("update metadata %s: %w", id, err)
-	}
-	s.cache.Remove(id)
-	return nil
+	return s.updateMetadataTemporal(ctx, id, metadata)
 }
 
 func (s *SQLiteStore) SoftDelete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx,
-		"UPDATE memories SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", id,
-	)
-	if err != nil {
-		return fmt.Errorf("soft delete memory %s: %w", id, err)
-	}
-	s.cache.Remove(id)
-	return nil
+	_, err := s.UpdateTemporal(ctx, id, TemporalMutation{
+		ExpectedState: TemporalStateActive,
+	}, TemporalWriteOptions{Mode: TemporalTombstone})
+	return err
 }
 
 // Restore undoes a soft-delete (deleted_at -> NULL). It is the inverse of
 // SoftDelete: same cache invalidation and only touches rows that are currently
 // deleted, so re-restoring an active memory is a no-op.
 func (s *SQLiteStore) Restore(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx,
-		"UPDATE memories SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL", id,
-	)
-	if err != nil {
-		return fmt.Errorf("restore memory %s: %w", id, err)
-	}
-	s.cache.Remove(id)
-	return nil
+	_, err := s.UpdateTemporal(ctx, id, TemporalMutation{
+		ExpectedState: TemporalStateTombstone,
+	}, TemporalWriteOptions{Mode: TemporalSupersede})
+	return err
 }
 
 func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions) (int, error) {
@@ -699,22 +684,65 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 	}
 
 	if opts.Hard {
-		query := "DELETE FROM memories WHERE " + strings.Join(conditions, " AND ")
-		result, err := s.db.ExecContext(ctx, query, args...)
+		where := strings.Join(conditions, " AND ")
+		rows, err := s.db.QueryContext(ctx, "SELECT id FROM memories WHERE "+where, args...)
+		if err != nil {
+			return 0, fmt.Errorf("list hard-delete scope: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Close(); err != nil {
+			return 0, err
+		}
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, fmt.Errorf("begin hard delete by scope: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM memory_processing_jobs WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
+			args...,
+		); err != nil {
+			return 0, fmt.Errorf("hard delete processing jobs by scope: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM remote_outbox WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
+			args...,
+		); err != nil {
+			return 0, fmt.Errorf("hard delete remote outbox by scope: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM memory_revisions WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
+			args...,
+		); err != nil {
+			return 0, fmt.Errorf("hard delete revision history by scope: %w", err)
+		}
+		result, err := tx.ExecContext(ctx, "DELETE FROM memories WHERE "+where, args...)
 		if err != nil {
 			return 0, fmt.Errorf("hard delete by scope: %w", err)
 		}
 		n, _ := result.RowsAffected()
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit hard delete by scope: %w", err)
+		}
+		for _, id := range ids {
+			s.cache.Remove(id)
+		}
 		return int(n), nil
 	}
 
-	query := "UPDATE memories SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL AND " + strings.Join(conditions, " AND ")
-	result, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("soft delete by scope: %w", err)
-	}
-	n, _ := result.RowsAffected()
-	return int(n), nil
+	return s.softDeleteByScopeTemporal(ctx, strings.Join(conditions, " AND "), args)
 }
 
 func (s *SQLiteStore) FindByContentHash(ctx context.Context, hash string, projectID *string) (*Memory, error) {

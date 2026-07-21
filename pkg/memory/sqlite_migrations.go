@@ -137,6 +137,276 @@ func Migrate(db *sql.DB) error {
 			);
 			CREATE INDEX IF NOT EXISTS idx_session_task_link_task ON session_task_link(task_key);
 		`},
+		{Name: "018_memory_revision_ledger", Up: `
+			ALTER TABLE memories ADD COLUMN logical_id TEXT;
+			ALTER TABLE memories ADD COLUMN current_revision_id TEXT;
+
+			CREATE TABLE IF NOT EXISTS memory_revisions (
+				revision_id TEXT PRIMARY KEY,
+				memory_id TEXT NOT NULL,
+				logical_id TEXT NOT NULL,
+				project_id TEXT,
+				category TEXT NOT NULL,
+				content TEXT NOT NULL,
+				content_hash TEXT,
+				keywords TEXT,
+				source TEXT,
+				source_id TEXT,
+				metadata TEXT,
+				memory_created_at DATETIME NOT NULL,
+				memory_updated_at DATETIME NOT NULL,
+				author TEXT,
+				remote_project_key TEXT,
+				temporal_mode TEXT NOT NULL
+					CHECK (temporal_mode IN ('supersede', 'correct', 'tombstone')),
+				is_tombstone BOOLEAN NOT NULL DEFAULT FALSE,
+				valid_from INTEGER NOT NULL,
+				valid_to INTEGER,
+				system_from INTEGER NOT NULL,
+				system_to INTEGER,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				CHECK (valid_to IS NULL OR valid_from < valid_to),
+				CHECK (system_to IS NULL OR system_from < system_to)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_memory_revisions_logical_time
+				ON memory_revisions(logical_id, valid_from, valid_to, system_from, system_to);
+			CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory
+				ON memory_revisions(memory_id, system_from);
+			CREATE INDEX IF NOT EXISTS idx_memory_revisions_current
+				ON memory_revisions(logical_id, valid_from)
+				WHERE system_to IS NULL;
+
+			UPDATE memories
+			SET logical_id = id
+			WHERE logical_id IS NULL OR logical_id = '';
+
+			INSERT OR IGNORE INTO memory_revisions (
+				revision_id, memory_id, logical_id, project_id, category,
+				content, content_hash, keywords, source, source_id, metadata,
+				memory_created_at, memory_updated_at, author, remote_project_key,
+				temporal_mode, is_tombstone, valid_from, valid_to,
+				system_from, system_to, created_at
+			)
+			SELECT
+				'legacy:' || id || ':base',
+				id,
+				id,
+				project_id,
+				category,
+				content,
+				content_hash,
+				keywords,
+				source,
+				source_id,
+				metadata,
+				COALESCE(created_at, CURRENT_TIMESTAMP),
+				COALESCE(updated_at, created_at, CURRENT_TIMESTAMP),
+				author,
+				remote_project_key,
+				'supersede',
+				FALSE,
+				CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER) * 1000000000,
+				CASE WHEN deleted_at IS NULL THEN NULL
+					ELSE CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000 END,
+				CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER) * 1000000000,
+				CASE WHEN deleted_at IS NULL THEN NULL
+					ELSE CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000 END,
+				COALESCE(created_at, CURRENT_TIMESTAMP)
+			FROM memories
+			WHERE deleted_at IS NULL
+				OR CAST(strftime('%s', deleted_at) AS INTEGER) >
+					CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER);
+
+			-- A legacy soft delete tells us both that the fact stopped being
+			-- valid and that the deletion was learned at deleted_at. Carry the
+			-- closed valid interval into the new system-time view so
+			-- known_at-after-delete can still answer valid_at-before-delete.
+			INSERT OR IGNORE INTO memory_revisions (
+				revision_id, memory_id, logical_id, project_id, category,
+				content, content_hash, keywords, source, source_id, metadata,
+				memory_created_at, memory_updated_at, author, remote_project_key,
+				temporal_mode, is_tombstone, valid_from, valid_to,
+				system_from, system_to, created_at
+			)
+			SELECT
+				'legacy:' || id || ':carry',
+				id,
+				id,
+				project_id,
+				category,
+				content,
+				content_hash,
+				keywords,
+				source,
+				source_id,
+				metadata,
+				COALESCE(created_at, CURRENT_TIMESTAMP),
+				COALESCE(updated_at, deleted_at, created_at, CURRENT_TIMESTAMP),
+				author,
+				remote_project_key,
+				'supersede',
+				FALSE,
+				CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER) * 1000000000,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				NULL,
+				deleted_at
+			FROM memories
+			WHERE deleted_at IS NOT NULL
+				AND CAST(strftime('%s', deleted_at) AS INTEGER) >
+					CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER);
+
+			INSERT OR IGNORE INTO memory_revisions (
+				revision_id, memory_id, logical_id, project_id, category,
+				content, content_hash, keywords, source, source_id, metadata,
+				memory_created_at, memory_updated_at, author, remote_project_key,
+				temporal_mode, is_tombstone, valid_from, valid_to,
+				system_from, system_to, created_at
+			)
+			SELECT
+				'legacy:' || id || ':tombstone',
+				id,
+				id,
+				project_id,
+				category,
+				content,
+				content_hash,
+				keywords,
+				source,
+				source_id,
+				metadata,
+				COALESCE(created_at, CURRENT_TIMESTAMP),
+				COALESCE(updated_at, deleted_at, created_at, CURRENT_TIMESTAMP),
+				author,
+				remote_project_key,
+				'tombstone',
+				TRUE,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				NULL,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				NULL,
+				deleted_at
+			FROM memories
+			WHERE deleted_at IS NOT NULL;
+
+			UPDATE memories
+			SET current_revision_id = CASE
+				WHEN deleted_at IS NULL THEN 'legacy:' || id || ':base'
+				ELSE 'legacy:' || id || ':tombstone'
+			END
+			WHERE current_revision_id IS NULL OR current_revision_id = '';
+
+			CREATE INDEX IF NOT EXISTS idx_memories_logical_id ON memories(logical_id);
+			CREATE INDEX IF NOT EXISTS idx_memories_current_revision_id ON memories(current_revision_id);
+		`},
+		{Name: "019_processing_jobs_remote_outbox", Up: `
+			CREATE TABLE IF NOT EXISTS memory_processing_jobs (
+				id TEXT PRIMARY KEY,
+				revision_id TEXT NOT NULL,
+				memory_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				generation TEXT NOT NULL DEFAULT '',
+				state TEXT NOT NULL DEFAULT 'pending'
+					CHECK (state IN ('pending', 'processing', 'done', 'failed')),
+				attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+				max_attempts INTEGER NOT NULL DEFAULT 5 CHECK (max_attempts > 0),
+				owner TEXT,
+				lease_until INTEGER,
+				next_attempt_at INTEGER,
+				last_error TEXT,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				completed_at INTEGER,
+				UNIQUE (revision_id, kind, generation)
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_processing_jobs_claim
+				ON memory_processing_jobs(state, kind, next_attempt_at, lease_until, created_at);
+
+			CREATE TABLE IF NOT EXISTS remote_outbox (
+				operation_id TEXT PRIMARY KEY,
+				memory_id TEXT NOT NULL,
+				revision_id TEXT NOT NULL,
+				remote TEXT NOT NULL,
+				project TEXT NOT NULL,
+				payload_hash TEXT NOT NULL,
+				payload_snapshot BLOB NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending'
+					CHECK (state IN ('pending', 'processing', 'delivered', 'dead_letter')),
+				attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+				max_attempts INTEGER NOT NULL DEFAULT 8 CHECK (max_attempts > 0),
+				owner TEXT,
+				lease_until INTEGER,
+				next_attempt_at INTEGER,
+				error_class TEXT,
+				last_error TEXT,
+				ack BLOB,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				delivered_at INTEGER
+			);
+			CREATE INDEX IF NOT EXISTS idx_remote_outbox_claim
+				ON remote_outbox(state, next_attempt_at, lease_until, created_at);
+
+			CREATE TRIGGER IF NOT EXISTS remote_outbox_envelope_immutable
+			BEFORE UPDATE OF operation_id, memory_id, revision_id, remote, project,
+				payload_hash, payload_snapshot ON remote_outbox
+			BEGIN
+				SELECT RAISE(ABORT, 'remote outbox envelope is immutable');
+			END;
+		`},
+		{Name: "020_embedding_generations", Up: `
+			CREATE TABLE IF NOT EXISTS embedding_generations (
+				generation_id TEXT PRIMARY KEY,
+				semantic_space_id TEXT NOT NULL UNIQUE,
+				provider TEXT NOT NULL,
+				model TEXT NOT NULL,
+				model_revision TEXT NOT NULL DEFAULT '',
+				dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+				normalization TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'building'
+					CHECK (state IN ('building', 'active', 'retired')),
+				snapshot_at INTEGER NOT NULL,
+				created_at INTEGER NOT NULL,
+				activated_at INTEGER,
+				retired_at INTEGER
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_embedding_generations_one_active
+				ON embedding_generations(state) WHERE state = 'active';
+
+			CREATE TABLE IF NOT EXISTS memory_embedding_vectors (
+				revision_id TEXT NOT NULL
+					REFERENCES memory_revisions(revision_id) ON DELETE CASCADE,
+				memory_id TEXT NOT NULL,
+				generation_id TEXT NOT NULL
+					REFERENCES embedding_generations(generation_id) ON DELETE CASCADE,
+				semantic_space_id TEXT NOT NULL,
+				purpose TEXT NOT NULL CHECK (purpose IN ('document', 'query')),
+				provider TEXT NOT NULL,
+				model TEXT NOT NULL,
+				model_revision TEXT NOT NULL DEFAULT '',
+				dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+				normalization TEXT NOT NULL,
+				content_hash TEXT NOT NULL DEFAULT '',
+				embedding BLOB NOT NULL,
+				embedded_at INTEGER NOT NULL,
+				PRIMARY KEY (revision_id, generation_id, purpose)
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_embedding_vectors_generation
+				ON memory_embedding_vectors(generation_id, purpose, memory_id);
+
+			CREATE TRIGGER IF NOT EXISTS embedding_generation_transition_guard
+			BEFORE UPDATE OF state ON embedding_generations
+			WHEN NOT (
+				OLD.state = NEW.state OR
+				(OLD.state = 'building' AND NEW.state = 'active') OR
+				(OLD.state = 'active' AND NEW.state = 'retired') OR
+				(OLD.state = 'retired' AND NEW.state = 'building')
+			)
+			BEGIN
+				SELECT RAISE(ABORT, 'invalid embedding generation transition');
+			END;
+		`},
 	}
 
 	for _, m := range migrations {

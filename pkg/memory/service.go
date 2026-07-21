@@ -15,18 +15,28 @@ import (
 )
 
 type Service struct {
-	store       Store
-	searcher    *HybridSearcher
-	sanitizer   *Sanitizer
-	projDet     *project.Detector
-	embedder    EmbeddingProvider
-	cache       *EmbeddingCache
-	logger      *slog.Logger
-	embedSem    chan struct{}
-	kgExtractor *kg.PatternExtractor
-	shutdown    chan struct{}
-	wg          sync.WaitGroup
-	observers   []MemoryObserver
+	store           Store
+	searcher        *HybridSearcher
+	sanitizer       *Sanitizer
+	projDet         *project.Detector
+	embedder        EmbeddingProvider
+	cache           *EmbeddingCache
+	logger          *slog.Logger
+	embedSem        chan struct{}
+	kgExtractor     *kg.PatternExtractor
+	shutdown        chan struct{}
+	wg              sync.WaitGroup
+	observers       []MemoryObserver
+	workerOnce      sync.Once
+	workerWake      chan struct{}
+	workerOwner     string
+	closeOnce       sync.Once
+	kgMu            sync.RWMutex
+	deliveryMu      sync.RWMutex
+	remoteDeliverer RemoteOutboxDeliverer
+	embeddingMu     sync.RWMutex
+	embeddingID     EmbeddingIdentity
+	embeddingGenID  string
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -70,8 +80,6 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 		} else {
 			embedder = e
 			svc.embedder = e
-			svc.cache = NewEmbeddingCache(store.DB(), logger)
-			svc.cache.MigrateFromLegacy(e.Model())
 		}
 	}
 
@@ -89,6 +97,14 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	topicChangeDetector := NewTopicChangeDetector(embedder, entityDetector)
 
 	svc.searcher = NewHybridSearcher(store, embedder, svc.cache, store.VectorCache(), searchCfg, entityDetector, topicChangeDetector, logger)
+	if embedder != nil {
+		if err := svc.ensureCurrentEmbeddingGeneration(context.Background()); err != nil {
+			_ = embedder.Close()
+			_ = store.Close()
+			return nil, fmt.Errorf("initialize embedding generation: %w", err)
+		}
+	}
+	svc.ensureDurableWorkers()
 
 	return svc, nil
 }
@@ -103,6 +119,20 @@ func (s *Service) Save(ctx context.Context, content, category, source string, cw
 }
 
 func (s *Service) SaveWithOptions(ctx context.Context, opts SaveOptions) (*Memory, error) {
+	return s.saveWithOptions(ctx, opts, nil)
+}
+
+// SaveDurable atomically appends optional remote outbox envelopes while
+// preserving the legacy SaveOptions API.
+func (s *Service) SaveDurable(ctx context.Context, opts DurableSaveOptions) (*Memory, error) {
+	return s.saveWithOptions(ctx, opts.SaveOptions, &opts)
+}
+
+func (s *Service) saveWithOptions(
+	ctx context.Context,
+	opts SaveOptions,
+	durableOpts *DurableSaveOptions,
+) (*Memory, error) {
 	opts.Content = strings.TrimSpace(opts.Content)
 	if opts.Content == "" {
 		return nil, fmt.Errorf("content cannot be empty")
@@ -160,8 +190,12 @@ func (s *Service) SaveWithOptions(ctx context.Context, opts SaveOptions) (*Memor
 			CreatedAt:   existing.CreatedAt,
 			Metadata:    metadata,
 		}
-		if err := s.store.Save(ctx, upd); err != nil {
+		durable, err := s.persistSave(ctx, upd, opts, durableOpts)
+		if err != nil {
 			return nil, fmt.Errorf("save: %w", err)
+		}
+		if durable {
+			s.ensureDurableWorkers()
 		}
 		s.notifyObservers(func(obs MemoryObserver) {
 			obs.OnMemoryUpdated(ctx, upd)
@@ -186,21 +220,27 @@ func (s *Service) SaveWithOptions(ctx context.Context, opts SaveOptions) (*Memor
 		Metadata:    metadata,
 	}
 
-	if err := s.store.Save(ctx, m); err != nil {
+	durable, err := s.persistSave(ctx, m, opts, durableOpts)
+	if err != nil {
 		return nil, fmt.Errorf("save: %w", err)
 	}
 
-	if !opts.SkipEmbed {
+	if durable {
+		s.ensureDurableWorkers()
+	} else if !opts.SkipEmbed {
 		s.embedAsync(m.ID, m.Content)
 	}
 
-	if s.kgExtractor != nil {
+	s.kgMu.RLock()
+	legacyKG := s.kgExtractor
+	s.kgMu.RUnlock()
+	if legacyKG != nil {
 		s.wg.Add(1)
 		go func(content string, projectID *string) {
 			defer s.wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := s.kgExtractor.ExtractAndStore(ctx, content, projectID); err != nil {
+			if err := legacyKG.ExtractAndStore(ctx, content, projectID); err != nil {
 				s.logger.Debug("kg extractor: error", "error", err)
 			}
 		}(m.Content, m.ProjectID)
@@ -211,6 +251,43 @@ func (s *Service) SaveWithOptions(ctx context.Context, opts SaveOptions) (*Memor
 	})
 
 	return &m, nil
+}
+
+func (s *Service) persistSave(
+	ctx context.Context,
+	m Memory,
+	opts SaveOptions,
+	durableOpts *DurableSaveOptions,
+) (bool, error) {
+	var outbox []RemoteOutboxSpec
+	if durableOpts != nil {
+		outbox = append(outbox, durableOpts.RemoteOutbox...)
+	}
+	if durableOpts != nil && durableOpts.DeriveRemoteOutbox != nil {
+		derived, err := durableOpts.DeriveRemoteOutbox(m)
+		if err != nil {
+			return false, fmt.Errorf("derive remote outbox: %w", err)
+		}
+		outbox = append(outbox, derived...)
+	}
+
+	temporal, temporalOK := s.store.(TemporalStore)
+	_, queueOK := s.store.(ProcessingQueueStore)
+	_, outboxOK := s.store.(RemoteOutboxStore)
+	if temporalOK && (queueOK || len(outbox) > 0) {
+		if len(outbox) > 0 && !outboxOK {
+			return false, fmt.Errorf("store does not support durable remote outbox")
+		}
+		_, err := temporal.SaveTemporal(ctx, m, TemporalWriteOptions{
+			ProcessingJobs: s.durableProcessingSpecs(opts.SkipEmbed),
+			RemoteOutbox:   outbox,
+		})
+		return true, err
+	}
+	if len(outbox) > 0 {
+		return false, fmt.Errorf("store does not support atomic remote outbox")
+	}
+	return false, s.store.Save(ctx, m)
 }
 
 func (s *Service) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
@@ -289,15 +366,54 @@ func (s *Service) Update(ctx context.Context, id, content, category string) (*Me
 		updateCategory = m.Category
 	}
 	updatedMetadata := ApplyQualityMetadata(m.Metadata, updateContent, updateCategory, m.ProjectID != nil)
-
-	if err := s.store.Update(ctx, id, updateContent, updateCategory); err != nil {
-		return nil, fmt.Errorf("update: %w", err)
+	_, durableQueue := s.store.(ProcessingQueueStore)
+	writeOpts := TemporalWriteOptions{}
+	if durableQueue {
+		// Every temporal revision needs its own generation record even when
+		// content is unchanged; otherwise an in-process legacy blob masks a
+		// missing revision vector until restart.
+		writeOpts.ProcessingJobs = s.durableProcessingSpecs(false)
 	}
-	if err := s.store.UpdateMetadata(ctx, id, updatedMetadata); err != nil {
-		return nil, fmt.Errorf("update metadata: %w", err)
+
+	if mutationStore, ok := s.store.(TemporalMutationStore); ok {
+		mutation := TemporalMutation{
+			Content:        &updateContent,
+			Category:       &updateCategory,
+			Metadata:       updatedMetadata,
+			SetMetadata:    true,
+			ClearEmbedding: content != "",
+			ExpectedState:  TemporalStateActive,
+		}
+		if _, err := mutationStore.UpdateTemporal(ctx, id, mutation, writeOpts); err != nil {
+			return nil, fmt.Errorf("update: %w", err)
+		}
+	} else if temporalStore, ok := s.store.(TemporalStore); ok {
+		updated := *m
+		updated.Content = updateContent
+		updated.Category = updateCategory
+		updated.ContentHash = contentHash(updateContent)
+		updated.Keywords = ExtractKeywords(updateContent)
+		updated.Metadata = updatedMetadata
+		if content != "" {
+			updated.Embedding = nil
+		}
+		if _, err := temporalStore.SaveTemporal(ctx, updated, writeOpts); err != nil {
+			return nil, fmt.Errorf("update: %w", err)
+		}
+	} else {
+		// Compatibility path for non-SQLite stores and existing test fakes that
+		// do not advertise the optional temporal capability.
+		if err := s.store.Update(ctx, id, updateContent, updateCategory); err != nil {
+			return nil, fmt.Errorf("update: %w", err)
+		}
+		if err := s.store.UpdateMetadata(ctx, id, updatedMetadata); err != nil {
+			return nil, fmt.Errorf("update metadata: %w", err)
+		}
 	}
 
-	if content != "" {
+	if durableQueue {
+		s.ensureDurableWorkers()
+	} else if content != "" {
 		s.embedAsync(id, content)
 	}
 
@@ -347,7 +463,21 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 		v := projectID.String
 		pid = &v
 	}
-	if err := s.store.Restore(ctx, id); err != nil {
+	if _, durableQueue := s.store.(ProcessingQueueStore); durableQueue {
+		if mutationStore, ok := s.store.(TemporalMutationStore); ok {
+			if _, err := mutationStore.UpdateTemporal(ctx, id, TemporalMutation{
+				ExpectedState: TemporalStateTombstone,
+			}, TemporalWriteOptions{
+				Mode:           TemporalSupersede,
+				ProcessingJobs: s.durableProcessingSpecs(false),
+			}); err != nil {
+				return err
+			}
+			s.ensureDurableWorkers()
+		} else if err := s.store.Restore(ctx, id); err != nil {
+			return err
+		}
+	} else if err := s.store.Restore(ctx, id); err != nil {
 		return err
 	}
 	s.notifyObservers(func(obs MemoryObserver) {
@@ -385,6 +515,12 @@ func (s *Service) BackfillContentHash(ctx context.Context) (int, error) {
 // callers of a capped backfill run (`--max`) can report how much backlog
 // remains.
 func (s *Service) PendingEmbeddings(ctx context.Context) (int, error) {
+	if generations, ok := s.store.(EmbeddingGenerationStore); ok {
+		generationID := s.currentEmbeddingGenerationID()
+		if generationID != "" {
+			return generations.CountMissingEmbeddingRevisions(ctx, generationID)
+		}
+	}
 	return s.store.CountWithoutEmbedding(ctx)
 }
 
@@ -476,7 +612,9 @@ func (s *Service) embedAsync(id, content string) {
 }
 
 func (s *Service) SetKGExtractor(extractor *kg.PatternExtractor) {
+	s.kgMu.Lock()
 	s.kgExtractor = extractor
+	s.kgMu.Unlock()
 }
 
 func (s *Service) RegisterObserver(obs MemoryObserver) {
@@ -500,7 +638,7 @@ func (s *Service) notifyObservers(fn func(obs MemoryObserver)) {
 // loaded + cache present). Callers use it to skip embedding-only background
 // work (e.g. the serve-time backfill) instead of looping on a guaranteed error.
 func (s *Service) EmbeddingsEnabled() bool {
-	return s.embedder != nil && s.cache != nil
+	return s.embedder != nil
 }
 
 // BackfillEmbeddings embeds every memory still missing a vector, as fast as the
@@ -526,11 +664,17 @@ func (s *Service) BackfillEmbeddingsThrottled(ctx context.Context, batchSize int
 // maintenance "backfill" step so a daily timer chews the backlog in bounded
 // slices instead of one multi-hour run.
 func (s *Service) BackfillEmbeddingsLimited(ctx context.Context, batchSize int, pause time.Duration, maxTotal int) (int, error) {
-	if s.embedder == nil || s.cache == nil {
+	if s.embedder == nil {
 		return 0, fmt.Errorf("embedder not available")
 	}
 	if batchSize <= 0 {
 		batchSize = 100
+	}
+	if generations, ok := s.store.(EmbeddingGenerationStore); ok {
+		return s.backfillEmbeddingGeneration(ctx, generations, batchSize, pause, maxTotal)
+	}
+	if s.cache == nil {
+		return 0, fmt.Errorf("embedding cache not available")
 	}
 
 	var total int
@@ -607,14 +751,18 @@ func (s *Service) BackfillEmbeddingsLimited(ctx context.Context, batchSize int, 
 }
 
 func (s *Service) Close() {
-	close(s.shutdown)
-	s.wg.Wait()
-	if s.embedder != nil {
-		s.embedder.Close()
-	}
-	if s.store != nil {
-		s.store.Close()
-	}
+	s.closeOnce.Do(func() {
+		if s.shutdown != nil {
+			close(s.shutdown)
+		}
+		s.wg.Wait()
+		if s.embedder != nil {
+			s.embedder.Close()
+		}
+		if s.store != nil {
+			s.store.Close()
+		}
+	})
 }
 
 // normalizeForDedup folds the trivial variations exact hashing misses:
