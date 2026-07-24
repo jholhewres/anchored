@@ -368,7 +368,7 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 		for _, m := range recentMems {
 			shown[m.ID] = true
 		}
-		identity = s.synthesizeIdentity(ctx, shown)
+		identity = s.synthesizeIdentity(ctx, projectID, shown)
 	}
 
 	var wsSummary string
@@ -454,21 +454,20 @@ func rankBundleMemories(mems []memory.Memory, n int) []memory.Memory {
 }
 
 // synthesizeIdentity builds an identity block from stored preference memories
-// when ~/.anchored/identity.md has nothing curated to say. Preferences are
-// user-level knowledge, so the lookup is global (all projects), ranked by the
-// same importance/pin/recency logic as the recent bundle. `exclude` holds ids
-// the bundle already shows in <recent> so a preference isn't repeated. Returns
-// "" when there's nothing worth showing, leaving the <identity> section empty.
-func (s *Server) synthesizeIdentity(ctx context.Context, exclude map[string]bool) string {
+// when ~/.anchored/identity.md has nothing curated to say. It injects only
+// genuinely user-level preferences (no project) plus the current project's own;
+// preferences captured while working in *other* projects are excluded so they
+// never leak into an unrelated project's identity. Curation-demoted entries are
+// dropped. Ranked by the same importance/pin/recency logic as the recent
+// bundle. `exclude` holds ids the bundle already shows in <recent> so a
+// preference isn't repeated. Returns "" when there's nothing worth showing,
+// leaving the <identity> section empty.
+func (s *Server) synthesizeIdentity(ctx context.Context, projectID string, exclude map[string]bool) string {
 	const (
 		maxPrefs   = 5
 		perPrefCap = 160
 	)
-	prefs, err := s.mem.List(ctx, memory.ListOptions{Category: "preference", Limit: 50})
-	if err != nil {
-		s.logger.Warn("anchored_context: failed to list preferences for identity", "error", err)
-		return ""
-	}
+	prefs := s.scopedPreferences(ctx, projectID)
 	// Over-rank so exclusions don't starve us below maxPrefs.
 	ranked := rankBundleMemories(prefs, maxPrefs+len(exclude))
 	var sb strings.Builder
@@ -492,6 +491,57 @@ func (s *Server) synthesizeIdentity(ctx context.Context, exclude map[string]bool
 	}
 	return "## Preferences (learned)\n" + sb.String() +
 		"(auto-generated from stored preferences — run `anchored identity edit` to write a curated identity)"
+}
+
+// scopedPreferences returns preference memories eligible for the identity
+// block: user-level ones (no project) plus those owned by projectID, with
+// curation-demoted entries removed. Preferences owned by *other* projects are
+// never returned — that leak is what dumped unrelated projects' notes into a
+// fresh project's identity. Scope and curation filtering happen in Go because
+// ListOptions can express neither "project IS NULL" nor a curation-status
+// exclusion; the fetch cap is generous so user-level entries aren't crowded out
+// of the created_at window by a project awash in captured preferences.
+func (s *Server) scopedPreferences(ctx context.Context, projectID string) []memory.Memory {
+	all, err := s.mem.List(ctx, memory.ListOptions{Category: "preference", Limit: 500})
+	if err != nil {
+		s.logger.Warn("anchored_context: failed to list preferences for identity", "error", err)
+		return nil
+	}
+	var out []memory.Memory
+	for _, m := range all {
+		if !preferenceInScope(m.ProjectID, projectID) {
+			continue
+		}
+		if isCurationDemoted(memory.ParseMetadata(m.Metadata).CurationStatus) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// preferenceInScope reports whether a preference belongs in the identity block
+// for the current project: either it is user-level (no project) or it belongs
+// to projectID itself.
+func preferenceInScope(prefProject *string, projectID string) bool {
+	if prefProject == nil || *prefProject == "" {
+		return true // user-level, cross-project by design
+	}
+	return *prefProject == projectID
+}
+
+// isCurationDemoted reports whether a curation status marks a memory as unfit
+// for the identity block. Only hard rejections are excluded: 'low_signal' is a
+// soft, broadly-applied quality demotion (RecurateMetadata flags any short
+// entry that scores below threshold, including legitimate one-line
+// preferences), so — matching hybrid search, which demotes rather than drops
+// it — it stays eligible here.
+func isCurationDemoted(status string) bool {
+	switch status {
+	case "near_duplicate", "rejected":
+		return true
+	}
+	return false
 }
 
 func readIdentityFile() string {

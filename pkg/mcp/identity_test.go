@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestSynthesizeIdentity_FromPreferences(t *testing.T) {
 	ctx := context.Background()
 
 	// No preferences yet → empty synthesis.
-	if got := s.synthesizeIdentity(ctx, nil); got != "" {
+	if got := s.synthesizeIdentity(ctx, "", nil); got != "" {
 		t.Fatalf("expected empty synthesis with no preferences, got %q", got)
 	}
 
@@ -75,7 +76,7 @@ func TestSynthesizeIdentity_FromPreferences(t *testing.T) {
 		}
 	}
 
-	out := s.synthesizeIdentity(ctx, nil)
+	out := s.synthesizeIdentity(ctx, "", nil)
 	if !strings.Contains(out, "## Preferences (learned)") {
 		t.Fatalf("missing header:\n%s", out)
 	}
@@ -85,6 +86,52 @@ func TestSynthesizeIdentity_FromPreferences(t *testing.T) {
 	if !strings.Contains(out, "PT-BR") {
 		t.Fatalf("expected a saved preference in the block:\n%s", out)
 	}
+}
+
+// TestSynthesizeIdentity_ExcludesOtherProjects locks in the cross-project leak
+// fix: a preference captured while working in another project must never appear
+// in a different project's identity block, while genuinely user-level (no
+// project) preferences still do.
+func TestSynthesizeIdentity_ExcludesOtherProjects(t *testing.T) {
+	s := newIdentityTestServer(t)
+	ctx := context.Background()
+
+	// Two distinct git repos so project detection assigns each its own id.
+	projA := initGitRepo(t)
+	projB := initGitRepo(t)
+
+	// A preference captured while working in project A.
+	if _, err := s.mem.SaveWithOptions(ctx, memory.SaveOptions{
+		Content: "usa 4 espaços de indentação alpha-only-token", Category: "preference", Source: "user", CWD: projA,
+	}); err != nil {
+		t.Fatalf("save A: %v", err)
+	}
+	// A genuinely user-level preference (no project).
+	if _, err := s.mem.Save(ctx, "Respond in PT-BR user-level-token", "preference", "user", ""); err != nil {
+		t.Fatalf("save global: %v", err)
+	}
+
+	pidB := s.mem.ResolveProject(projB)
+	if pidB == "" {
+		t.Fatalf("expected a non-empty project id for %s", projB)
+	}
+
+	out := s.synthesizeIdentity(ctx, pidB, nil)
+	if strings.Contains(out, "alpha-only-token") {
+		t.Fatalf("another project's preference leaked into identity:\n%s", out)
+	}
+	if !strings.Contains(out, "user-level-token") {
+		t.Fatalf("user-level preference should still appear:\n%s", out)
+	}
+}
+
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	return dir
 }
 
 func TestSynthesizeIdentity_HonorsExcludeAndCap(t *testing.T) {
@@ -106,14 +153,14 @@ func TestSynthesizeIdentity_HonorsExcludeAndCap(t *testing.T) {
 	}
 
 	// At most 5 bullets.
-	out := s.synthesizeIdentity(ctx, nil)
+	out := s.synthesizeIdentity(ctx, "", nil)
 	if n := strings.Count(out, "\n- "); n > 5 {
 		t.Fatalf("expected <=5 bullets, got %d:\n%s", n, out)
 	}
 
 	// Excluding an id must drop it from the block.
 	exclude := map[string]bool{ids[0]: true, ids[1]: true, ids[2]: true, ids[3]: true, ids[4]: true, ids[5]: true}
-	got := s.synthesizeIdentity(ctx, exclude)
+	got := s.synthesizeIdentity(ctx, "", exclude)
 	for _, id := range []string{ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]} {
 		m, _ := s.mem.Get(ctx, id)
 		if m != nil && strings.Contains(got, m.Content) {
