@@ -27,6 +27,32 @@ task on your personal board.
   `/promote-task`. Notable session events flow into the linked task's journal;
   `/api/tasks` now reports a `live_session_id` when a session is active on it.
 
+## [0.16.0] - 2026-07-24
+
+Fixes cross-project memory bleed and the cold-start experience, plus Windows
+install support.
+
+### Added
+
+- **Cold-start auto-bootstrap** — the first time a project is seen (empty
+  store), the SessionStart hook seeds its memory from repo signal (README,
+  docs, `CLAUDE`/`AGENTS`/`GEMINI.md`, tree) by spawning `anchored bootstrap`
+  as a detached child, so a fresh project isn't a silent, empty store. Opt out
+  with `plugin.auto_bootstrap: false`.
+
+### Fixed
+
+- **Cross-project preference leak** — a new project's `<identity>` block
+  surfaced preferences captured while working in unrelated projects.
+  `synthesizeIdentity` now scopes to user-level (no project) plus the current
+  project, and drops hard curation rejections.
+- **Categorizer false positives** — bare `nunca`/`never` and `padrão é`/`regra
+  é` no longer miscategorize ordinary sentences ("senha nunca exposta") as
+  preferences; the patterns require a usage verb / personal possessive.
+- **Windows installer** — `install.sh` now supports Git Bash / MSYS / Cygwin
+  (`MINGW*`/`MSYS*`/`CYGWIN*`), extracting the published Windows `.zip`
+  (`anchored.exe`) instead of aborting with "Unsupported OS".
+
 ## [0.14.0] - 2026-07-19
 
 Broadens which agent hosts anchored plugs into, and surfaces more of the memory
