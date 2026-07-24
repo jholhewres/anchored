@@ -42,9 +42,10 @@ prompt_yes_no() {
 
 ARCH=$(uname -m)
 case "$(uname -s)" in
-    Linux)  OS="linux" ;;
-    Darwin) OS="darwin" ;;
-    *)      err "Unsupported OS: $(uname -s)"; exit 1 ;;
+    Linux)                 OS="linux" ;;
+    Darwin)                OS="darwin" ;;
+    MINGW*|MSYS*|CYGWIN*)  OS="windows" ;;  # Git Bash / MSYS2 / Cygwin on Windows
+    *)                     err "Unsupported OS: $(uname -s)"; exit 1 ;;
 esac
 
 case "$ARCH" in
@@ -53,40 +54,67 @@ case "$ARCH" in
     *)              err "Unsupported arch: $ARCH"; exit 1 ;;
 esac
 
+# The release ships unix builds as .tar.gz (binary "anchored") and the Windows
+# build as .zip (binary "anchored.exe"). Pick the format, extractor, and binary
+# name up front so the download/extract paths below stay OS-agnostic.
+if [ "$OS" = "windows" ]; then
+    if [ "$ARCH" != "amd64" ]; then
+        err "No Windows build for arch: $ARCH (only amd64 is published)"; exit 1
+    fi
+    EXT="zip"
+    BIN="anchored.exe"
+else
+    EXT="tar.gz"
+    BIN="anchored"
+fi
+
+# extract_archive <url> extracts just the anchored binary into $BIN_DIR.
+extract_archive() {
+    if [ "$EXT" = "zip" ]; then
+        local tmp
+        tmp=$(mktemp -t anchored.XXXXXX.zip) || return 1
+        curl -fsSL "$1" -o "$tmp" || { rm -f "$tmp"; return 1; }
+        unzip -o "$tmp" "$BIN" -d "$BIN_DIR" >/dev/null || { rm -f "$tmp"; return 1; }
+        rm -f "$tmp"
+    else
+        curl -fsSL "$1" | tar xz -C "$BIN_DIR" "$BIN" || return 1
+    fi
+}
+
 LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
 if [ -z "$LATEST" ]; then
     err "Failed to determine latest version"; exit 1
 fi
 
-ARCHIVE="anchored_${LATEST}_${OS}_${ARCH}.tar.gz"
+ARCHIVE="anchored_${LATEST}_${OS}_${ARCH}.${EXT}"
 URL="https://github.com/${REPO}/releases/download/v${LATEST}/${ARCHIVE}"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 # Auto-update: if already installed, just replace binary and exit
-if [ -x "$BIN_DIR/anchored" ]; then
-    CURRENT=$("$BIN_DIR/anchored" --version 2>/dev/null || echo "unknown")
+if [ -x "$BIN_DIR/$BIN" ]; then
+    CURRENT=$("$BIN_DIR/$BIN" --version 2>/dev/null || echo "unknown")
     if [ "$CURRENT" = "$LATEST" ]; then
         ok "anchored v${LATEST} is already up to date."
         exit 0
     fi
     info "Updating anchored ${CURRENT} → v${LATEST}..."
-    curl -fsSL "$URL" | tar xz -C "$BIN_DIR" anchored || {
+    extract_archive "$URL" || {
         err "Download failed."; exit 1
     }
-    chmod +x "$BIN_DIR/anchored"
+    chmod +x "$BIN_DIR/$BIN"
     ok "Updated to v${LATEST}"
     exit 0
 fi
 
 info "Installing anchored v${LATEST} (${OS}/${ARCH})..."
-curl -fsSL "$URL" | tar xz -C "$BIN_DIR" anchored || {
+extract_archive "$URL" || {
     err "Download failed."
     echo "Install Go 1.24+ and run: git clone https://github.com/${REPO}.git && cd anchored && make build" >&2
     exit 1
 }
 
-chmod +x "$BIN_DIR/anchored"
+chmod +x "$BIN_DIR/$BIN"
 
 if ! echo "$PATH" | grep -q "$BIN_DIR"; then
     for rc in .bashrc .zshrc .profile .bash_profile; do
@@ -134,7 +162,7 @@ if ! prompt_yes_no "Import memories from existing tools?"; then
     info "Open a new terminal (or run: source ~/.bashrc)"
     echo ""
     info "Add to your MCP config:"
-    echo '  { "mcpServers": { "anchored": { "command": "anchored" } } }'
+    echo "  { \"mcpServers\": { \"anchored\": { \"command\": \"$BIN\" } } }"
     exit 0
 fi
 
@@ -212,7 +240,7 @@ echo ""
 info "Importing from: ${sources[*]}..."
 echo ""
 
-"$BIN_DIR/anchored" import --skip-embeddings "${sources[@]}" 2>&1 | while IFS= read -r line; do
+"$BIN_DIR/$BIN" import --skip-embeddings "${sources[@]}" 2>&1 | while IFS= read -r line; do
     case "$line" in
         *level=WARN*)  warn "$line" ;;
         *level=ERROR*) err "$line" ;;
@@ -228,4 +256,4 @@ echo ""
 info "Open a new terminal (or run: source ~/.bashrc)"
 echo ""
 info "Add to your MCP config:"
-echo '  { "mcpServers": { "anchored": { "command": "anchored" } } }'
+echo "  { \"mcpServers\": { \"anchored\": { \"command\": \"$BIN\" } } }"
