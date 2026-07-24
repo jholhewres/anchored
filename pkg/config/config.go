@@ -104,6 +104,11 @@ type PluginConfig struct {
 	// AutoSaveStop controls whether the Stop hook extracts and saves durable
 	// candidates at the end of each turn. nil resolves to true.
 	AutoSaveStop *bool `yaml:"auto_save_stop"`
+	// AutoBootstrap controls whether the SessionStart hook seeds a brand-new
+	// project's memory from repo signal (README, docs, CLAUDE/AGENTS/GEMINI.md,
+	// tree) the first time it is seen, so a fresh project isn't a cold, empty
+	// store. nil resolves to true; set false to opt out.
+	AutoBootstrap *bool `yaml:"auto_bootstrap"`
 	// AdaptiveReminder controls whether the UserPromptSubmit hook adjusts
 	// the recall reminder based on the quality of the hits. nil resolves to true.
 	AdaptiveReminder *bool `yaml:"adaptive_reminder"`
@@ -179,6 +184,15 @@ func (p PluginConfig) SessionStartBudgetTokensResolved() int {
 func (p PluginConfig) AutoSaveStopEnabled() bool {
 	if p.AutoSaveStop != nil {
 		return *p.AutoSaveStop
+	}
+	return true
+}
+
+// AutoBootstrapEnabled reports whether the SessionStart hook should seed a
+// brand-new project's memory from repo signal. nil → true.
+func (p PluginConfig) AutoBootstrapEnabled() bool {
+	if p.AutoBootstrap != nil {
+		return *p.AutoBootstrap
 	}
 	return true
 }

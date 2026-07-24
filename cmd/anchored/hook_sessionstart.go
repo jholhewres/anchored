@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -120,6 +121,16 @@ func runHookSessionStart(args []string) {
 
 	projectID := hc.ResolveProject(cwdVal)
 	ctx := context.Background()
+
+	// Cold-start seeding: the first time a project is seen its store is empty,
+	// so anchored_context/search return nothing and the tool reads as "not
+	// working". Seed it from repo signal in a detached child so the session
+	// never blocks. A5: tell the model it's happening so an empty first recall
+	// isn't mistaken for a broken memory.
+	autoBootstrap := cfg != nil && cfg.Plugin.AutoBootstrapEnabled()
+	if maybeAutoBootstrap(hc, projectID, cwdVal, *configPath, autoBootstrap, dlog) {
+		additional += "\n\n<anchored_bootstrap>New project detected — seeding memory from this repo (README, docs, project rules). Recall will fill in shortly.</anchored_bootstrap>"
+	}
 
 	// Register/resume this session so the cockpit can show it live. StartSession
 	// itself is unchanged; provider/model come from the environment (this is
@@ -554,6 +565,55 @@ func sessionEscapeAttr(s string) string {
 		"\"", "&quot;", "\r", "&#xD;", "\n", "&#xA;", "\t", "&#x9;",
 	)
 	return r.Replace(s)
+}
+
+// maybeAutoBootstrap seeds a brand-new project's memory the first time it is
+// seen. It runs only when enabled and the project's store is cold (zero
+// memories), and it spawns `anchored bootstrap` as a fully detached child so
+// the session hook never blocks on file reads, inserts, or embedding backfill.
+// Returns true when a bootstrap was launched. Best-effort: any failure leaves
+// the session start untouched.
+func maybeAutoBootstrap(hc *HookContext, projectID, cwd, configPath string, enabled bool, dlog *debuglog.Logger) bool {
+	if !enabled || projectID == "" {
+		return false // disabled, or no git project to scope a bootstrap to
+	}
+
+	// Cold check: any existing memory means the project was already seen, so
+	// never re-seed. content_hash dedup inside `bootstrap` covers the rare race
+	// where two sessions both observe an empty store.
+	ctx, cancel := context.WithTimeout(context.Background(), sessionStartQueryTimeout)
+	defer cancel()
+	var count int
+	if err := hc.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memories WHERE project_id = ? AND deleted_at IS NULL",
+		projectID,
+	).Scan(&count); err != nil || count > 0 {
+		return false
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		dlog.Event("hook.sessionstart", map[string]any{"stage": "autobootstrap_no_executable", "error": err.Error()})
+		return false
+	}
+
+	args := []string{"bootstrap", "--cwd", cwd}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	cmd := exec.Command(self, args...)
+	// Detach: no inherited stdio, no Wait. The child opens its own DB handle
+	// (WAL + busy_timeout) and exits independently of this short-lived hook.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	if err := cmd.Start(); err != nil {
+		dlog.Event("hook.sessionstart", map[string]any{"stage": "autobootstrap_spawn_failed", "error": err.Error()})
+		return false
+	}
+	_ = cmd.Process.Release()
+	dlog.Event("hook.sessionstart", map[string]any{
+		"stage": "autobootstrap_spawned", "project_id": projectID, "pid": cmd.Process.Pid,
+	})
+	return true
 }
 
 func emitSessionStart(additional string) {
