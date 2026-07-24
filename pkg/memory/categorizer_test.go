@@ -32,6 +32,12 @@ func TestCategorize(t *testing.T) {
 		{"pref_en_i_never", "I never use git push --force on main", "preference"},
 		{"pref_en_rule_of_thumb", "Rule of thumb: keep PRs under 400 lines", "preference"},
 
+		// preference false-positives fixed: bare nunca/never and bare "padrão é"/
+		// "regra é" must not hijack ordinary sentences into the preference bucket.
+		{"not_pref_senha_nunca", "A senha nunca é exposta nos logs", "fact"},
+		{"not_pref_padrao_porta", "O padrão é a porta 8080", "fact"},
+		{"not_pref_regra_negocio", "A regra é validar entradas antes de processar", "fact"},
+
 		// plan
 		{"plan_todo", "TODO: migrar pro novo SDK", "plan"},
 		{"plan_pt_vou_fazer", "Vou implementar o webhook na próxima sprint", "plan"},

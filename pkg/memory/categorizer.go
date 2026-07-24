@@ -49,10 +49,16 @@ func init() {
 
 		// preference
 		{`(?i)\b(prefere|prefer[es]?|gosta\s+de|likes?|sempre\s+usa|always\s+use)\b`, "preference"},
-		{`(?i)\b(não\s+gosta|dislikes?|evita|avoids?|nunca|never)\b`, "preference"},
+		// nunca/never are anchored to a usage verb (mirroring sempre+usa above):
+		// bare "nunca"/"never" matched any negated sentence ("senha nunca
+		// exposta") and dumped it into the preference bucket.
+		{`(?i)\b(não\s+gosta|dislikes?|evita|avoids?|nunca\s+usa|never\s+use)\b`, "preference"},
 		{`(?i)\b(modo|mode|theme|layout)\b.*(escuro|dark|claro|light)`, "preference"},
 		{`(?i)\b(favorit[oa]|favorite|preferid[oa]|preferred)\b`, "preference"},
-		{`(?i)\b(habito\s+de|costum[oa]|minha\s+preferência|padrão\s+é|regra\s+é)\b`, "preference"},
+		// "padrão é"/"regra é" require a personal possessive: bare forms matched
+		// config/domain facts ("o padrão é 8080", "a regra é X") rather than a
+		// personal convention.
+		{`(?i)\b(habito\s+de|costum[oa]|minha\s+preferência|meu\s+padrão\s+é|minha\s+regra\s+é)\b`, "preference"},
 		{`(?i)\b(i\s+(always|never|tend\s+to)|rule\s+of\s+thumb|by\s+convention)\b`, "preference"},
 		{`(?i)\b(estilo\s+de\s+código|coding\s+style|convention[ao]?\b)`, "preference"},
 
