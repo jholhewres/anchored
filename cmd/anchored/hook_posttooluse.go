@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jholhewres/anchored/pkg/config"
 	ctxpkg "github.com/jholhewres/anchored/pkg/context"
 	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/jholhewres/anchored/pkg/hookroute"
@@ -125,6 +126,19 @@ func runHookPostToolUse(args []string) {
 	runPostToolUseWithIO(*configPath, *sessionIDFlag, *cwdFlag, bytes.NewReader(content), os.Stdout, dlog)
 }
 
+// artifactCaptureEnabled reports whether tool output should be indexed into
+// content_chunks.
+//
+// This MUST track the flag that gates the Evictor. Chunks are written with a
+// 72h TTL, but the Evictor that acts on that TTL is constructed only inside the
+// context optimizer (pkg/context/optimizer.go, wired from serve.go behind this
+// same flag). Capturing while the optimizer is off therefore writes rows that
+// nothing ever reclaims: on one machine that left 23k expired chunks, the
+// oldest 78 days past a 72h TTL, holding ~300 MB — over half the database.
+func artifactCaptureEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.ContextOptimizer.Enabled
+}
+
 // runPostToolUseWithIO wires the DB / artifact-capture / working-set
 // collaborators and runs the recording core against the given stdin/stdout. It
 // is split from runHookPostToolUse so the Cursor afterFileEdit path can reuse
@@ -143,9 +157,13 @@ func runPostToolUseWithIO(configPath, sessionIDFlag, cwdFlag string, stdin io.Re
 	// InsertChunk uses prepared statements, so PrepareStatements MUST run
 	// first; on failure we leave capture nil and fall back to the event-only
 	// path rather than risk a nil-statement panic in the fail-safe hook.
+	//
+	// Capture is gated on the same flag as eviction — see artifactCaptureEnabled.
 	var capture func(projectID, sessionID, artifactType, sourceTool, sourceLabel, content string) (string, error)
 	artStore := ctxpkg.NewStore(hc.db, nil)
-	if perr := artStore.PrepareStatements(); perr != nil {
+	if !artifactCaptureEnabled(hc.cfg) {
+		dlog.Event("hook.posttooluse", map[string]any{"stage": "artifact_capture_disabled"})
+	} else if perr := artStore.PrepareStatements(); perr != nil {
 		slog.Warn("posttooluse: prepare statements failed; artifact capture disabled", "error", perr)
 		dlog.Event("hook.posttooluse", map[string]any{"stage": "artifact_prepare_failed", "error": perr.Error()})
 	} else {
