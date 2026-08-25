@@ -99,7 +99,15 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 		searchOpts = opts[0]
 	}
 	cfg := h.config
-	maxResults := cfg.MaxResults
+	// The per-call option wins; the configured value is only the default for
+	// callers that do not ask. Reading cfg unconditionally made SearchOptions
+	// .MaxResults dead weight: `anchored search --limit 100` came back with
+	// search.max_results rows, and no caller could ever look deeper than the
+	// config allowed.
+	maxResults := searchOpts.MaxResults
+	if maxResults <= 0 {
+		maxResults = cfg.MaxResults
+	}
 	if maxResults <= 0 {
 		maxResults = 20
 	}
