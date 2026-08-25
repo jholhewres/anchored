@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -89,17 +90,25 @@ func TestPutEmbeddingVectorRestampsStaleRow(t *testing.T) {
 	}
 
 	var got string
+	var gotBlob []byte
 	if err := store.db.QueryRowContext(ctx,
-		`SELECT content_hash FROM memory_embedding_vectors
+		`SELECT content_hash, embedding FROM memory_embedding_vectors
 		 WHERE revision_id = ? AND generation_id = 'gen-restamp' AND purpose = 'document'`,
 		revisionID,
-	).Scan(&got); err != nil {
+	).Scan(&got, &gotBlob); err != nil {
 		t.Fatalf("read vector: %v", err)
 	}
 	if got != revisionHash {
 		t.Fatalf("stale content_hash survived the upsert: got %q, want %q — "+
 			"the write was silently skipped, which is what strands a generation "+
 			"in 'building' forever", got, revisionHash)
+	}
+	// The hash alone is not enough: a regression that restamps the hash but drops
+	// `embedding = excluded.embedding` would leave the stale vector in place and
+	// still pass the coverage check, which is a worse failure than the original.
+	wantBlob := float32sToBlob([]float32{0.1, 0.2, 0.3})
+	if !bytes.Equal(gotBlob, wantBlob) {
+		t.Errorf("embedding blob was not replaced: got %x, want %x", gotBlob, wantBlob)
 	}
 
 	// And the row must now satisfy the very predicate activation checks.

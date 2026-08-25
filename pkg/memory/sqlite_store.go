@@ -690,32 +690,55 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 
 	where := strings.Join(conditions, " AND ")
 
-	// Resolve the target ids ONCE. Every downstream delete keys off this exact
-	// list, so a --limit run is deterministic (oldest first) instead of letting
-	// each subquery re-evaluate its own LIMIT over a shifting row set.
-	// A hard prune also reclaims rows already tombstoned; a soft one would have
-	// nothing left to do on them.
-	ids, err := s.resolveScopeIDs(ctx, where, args, opts.Limit, opts.Hard)
-	if err != nil {
-		return 0, err
-	}
-	if opts.DryRun || len(ids) == 0 {
+	if opts.DryRun {
+		ids, err := s.resolveScopeIDs(ctx, s.db, where, args, opts.Limit, opts.Hard)
+		if err != nil {
+			return 0, err
+		}
 		return len(ids), nil
-	}
-
-	if !opts.Hard {
-		return s.softDeleteIDsTemporal(ctx, ids)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin hard delete by scope: %w", err)
+		return 0, fmt.Errorf("begin delete by scope: %w", err)
 	}
 	defer tx.Rollback()
 
+	// Resolve INSIDE the transaction. _txlock=immediate takes the write lock at
+	// BEGIN, so nothing can re-scope a row between the resolve and the delete;
+	// resolving outside would let a concurrent anchored_update move a memory to
+	// another category and still have it deleted under the old one.
+	// Resolving once (rather than per statement) also makes --limit
+	// deterministic: every delete keys off this exact oldest-first list instead
+	// of each subquery re-evaluating its own LIMIT over a shifting row set.
+	// A hard prune reclaims rows already tombstoned; a soft one has nothing
+	// left to do on them.
+	ids, err := s.resolveScopeIDs(ctx, tx, where, args, opts.Limit, opts.Hard)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	if !opts.Hard {
+		n, err := s.softDeleteIDsTx(ctx, tx, ids)
+		if err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit soft delete by scope: %w", err)
+		}
+		for _, id := range ids {
+			s.cache.Remove(id)
+		}
+		return n, nil
+	}
+
 	// A temp table keeps the id list out of bound parameters: SQLite caps those
 	// (SQLITE_MAX_VARIABLE_NUMBER) well below the tens of thousands of rows an
-	// import-wide prune touches.
+	// import-wide prune touches. Temp tables are per-connection, and the
+	// transaction owns this one's lifetime.
 	if err := stageScopeTargets(ctx, tx, ids); err != nil {
 		return 0, err
 	}
@@ -724,26 +747,33 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 	// by the memories_fts_delete trigger, and memory_embedding_vectors cascades
 	// off memory_revisions (FK ON DELETE CASCADE, with _foreign_keys=on in the
 	// DSN) — so revisions must be deleted before memories for it to fire.
+	// dream_actions references memories twice; both columns need clearing, or a
+	// scope-wide prune leaves one orphan per action it was party to.
 	satellites := []struct{ table, column string }{
 		{"memory_processing_jobs", "memory_id"},
 		{"remote_outbox", "memory_id"},
 		{"memory_revisions", "memory_id"},
+		{"dream_actions", "memory_id"},
+		{"dream_actions", "related_memory_id"},
 	}
 	for _, sat := range satellites {
 		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM "+sat.table+" WHERE "+sat.column+" IN (SELECT id FROM scope_delete_targets)",
+			"DELETE FROM "+sat.table+" WHERE "+sat.column+" IN (SELECT id FROM temp.scope_delete_targets)",
 		); err != nil {
 			return 0, fmt.Errorf("hard delete %s by scope: %w", sat.table, err)
 		}
 	}
 
 	result, err := tx.ExecContext(ctx,
-		"DELETE FROM memories WHERE id IN (SELECT id FROM scope_delete_targets)",
+		"DELETE FROM memories WHERE id IN (SELECT id FROM temp.scope_delete_targets)",
 	)
 	if err != nil {
 		return 0, fmt.Errorf("hard delete by scope: %w", err)
 	}
 	n, _ := result.RowsAffected()
+	if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.scope_delete_targets"); err != nil {
+		return 0, fmt.Errorf("drop scope target table: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit hard delete by scope: %w", err)
 	}
@@ -753,16 +783,23 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 	return int(n), nil
 }
 
-func (s *SQLiteStore) resolveScopeIDs(ctx context.Context, where string, args []any, limit int, includeDeleted bool) ([]string, error) {
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx, so the scope resolve can
+// run inside the deleting transaction (the only safe place for it) while the
+// dry-run path still reads without opening one.
+type rowQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *SQLiteStore) resolveScopeIDs(ctx context.Context, q rowQuerier, where string, args []any, limit int, includeDeleted bool) ([]string, error) {
 	if !includeDeleted {
 		where = "deleted_at IS NULL AND " + where
 	}
-	q := "SELECT id FROM memories WHERE " + where + " ORDER BY created_at ASC"
+	query := "SELECT id FROM memories WHERE " + where + " ORDER BY created_at ASC"
 	if limit > 0 {
-		q += " LIMIT ?"
+		query += " LIMIT ?"
 		args = append(append([]any{}, args...), limit)
 	}
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list delete scope: %w", err)
 	}
@@ -781,23 +818,40 @@ func (s *SQLiteStore) resolveScopeIDs(ctx context.Context, where string, args []
 	return ids, nil
 }
 
+// stageScopeTargets materializes the id list in a temp table for the deletes to
+// join against. Temp tables are per-connection, so this cannot leak across
+// processes; DROP at the end keeps it from outliving the call on a pooled
+// connection. The name is qualified everywhere it is used, since an unqualified
+// reference would resolve to TEMP even if a main-schema table ever shared it.
 func stageScopeTargets(ctx context.Context, tx *sql.Tx, ids []string) error {
 	if _, err := tx.ExecContext(ctx,
-		"CREATE TEMP TABLE IF NOT EXISTS scope_delete_targets (id TEXT PRIMARY KEY)",
+		"DROP TABLE IF EXISTS temp.scope_delete_targets",
+	); err != nil {
+		return fmt.Errorf("reset scope target table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"CREATE TEMP TABLE scope_delete_targets (id TEXT PRIMARY KEY)",
 	); err != nil {
 		return fmt.Errorf("create scope target table: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM scope_delete_targets"); err != nil {
-		return fmt.Errorf("reset scope target table: %w", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, "INSERT INTO scope_delete_targets (id) VALUES (?)")
-	if err != nil {
-		return fmt.Errorf("prepare scope target insert: %w", err)
-	}
-	defer stmt.Close()
-	for _, id := range ids {
-		if _, err := stmt.ExecContext(ctx, id); err != nil {
-			return fmt.Errorf("stage scope target %s: %w", id, err)
+	// Batched multi-row VALUES: one round trip per batch instead of one per id
+	// turns an 11k-row prune from 11k statements into ~23.
+	const batch = 500
+	for start := 0; start < len(ids); start += batch {
+		end := min(start+batch, len(ids))
+		chunk := ids[start:end]
+		q := strings.Builder{}
+		q.WriteString("INSERT INTO temp.scope_delete_targets (id) VALUES ")
+		args := make([]any, 0, len(chunk))
+		for i, id := range chunk {
+			if i > 0 {
+				q.WriteString(",")
+			}
+			q.WriteString("(?)")
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx, q.String(), args...); err != nil {
+			return fmt.Errorf("stage scope targets: %w", err)
 		}
 	}
 	return nil

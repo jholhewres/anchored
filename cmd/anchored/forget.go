@@ -69,18 +69,41 @@ func runForget(args []string) {
 			Limit:     *limit,
 			DryRun:    !*yes,
 		}
-		n, err := svc.ForgetScope(ctx, opts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "forget error: %v\n", err)
-			os.Exit(1)
-		}
 		mode := "soft-delete"
 		if *hard {
 			mode = "permanent delete"
 		}
+
 		if opts.DryRun {
-			fmt.Printf("%d memories match (%s). Nothing deleted — pass --yes to apply.\n", n, mode)
+			// Report the true match count alongside the capped one. With --limit
+			// the capped number alone reads as "that is all there is", which is
+			// the opposite of what it means.
+			capped, err := svc.ForgetScope(ctx, opts)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "forget error: %v\n", err)
+				os.Exit(1)
+			}
+			uncapped := capped
+			if opts.Limit > 0 {
+				noLimit := opts
+				noLimit.Limit = 0
+				if total, terr := svc.ForgetScope(ctx, noLimit); terr == nil {
+					uncapped = total
+				}
+			}
+			if uncapped != capped {
+				fmt.Printf("%d memories match; %d would be removed (%s, --limit %d). Nothing deleted — pass --yes to apply.\n",
+					uncapped, capped, mode, opts.Limit)
+			} else {
+				fmt.Printf("%d memories match (%s). Nothing deleted — pass --yes to apply.\n", capped, mode)
+			}
 			return
+		}
+
+		n, err := svc.ForgetScope(ctx, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "forget error: %v\n", err)
+			os.Exit(1)
 		}
 		fmt.Printf("%d memories removed (%s).\n", n, mode)
 		return
@@ -101,20 +124,31 @@ func runForget(args []string) {
 	fmt.Printf("Soft-deleted memory %s\n", id)
 }
 
+// maxAgeDays bounds --older-than. Past this a time.Duration overflows int64 and
+// wraps negative, which turns `now - age` into a cutoff in the FUTURE that
+// matches every row — so `--older-than 106752d --hard --yes` would delete the
+// whole corpus. The realistic way to hit it is a script passing epoch seconds
+// where days are expected. A century is beyond any retention policy; anything
+// larger is a typo, and a typo on a destructive command must be rejected, not
+// silently reinterpreted.
+const maxAgeDays = 36500
+
 // parseAge accepts the durations a retention cut is actually expressed in.
 // time.ParseDuration tops out at hours, so days get their own suffix.
 func parseAge(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if raw, ok := strings.CutSuffix(s, "d"); ok {
 		days, err := strconv.Atoi(raw)
-		if err != nil || days < 0 {
-			return 0, fmt.Errorf("invalid age %q: want something like 60d", s)
+		if err != nil || days <= 0 || days > maxAgeDays {
+			return 0, fmt.Errorf("invalid age %q: want 1d..%dd", s, maxAgeDays)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	d, err := time.ParseDuration(s)
-	if err != nil || d < 0 {
-		return 0, fmt.Errorf("invalid age %q: want something like 60d or 12h", s)
+	// A zero age puts the cutoff at now, silently matching everything — the same
+	// hazard as the overflow, reached by a much likelier typo.
+	if err != nil || d <= 0 || d > maxAgeDays*24*time.Hour {
+		return 0, fmt.Errorf("invalid age %q: want something like 60d or 12h (max %dd)", s, maxAgeDays)
 	}
 	return d, nil
 }

@@ -128,7 +128,7 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 	// stored hash instead would make a stale stamp permanent — the write is
 	// skipped, no error is raised, and the generation can never reach the
 	// coverage its activation check demands.
-	_, err = tx.ExecContext(ctx, `INSERT INTO memory_embedding_vectors (
+	result, err := tx.ExecContext(ctx, `INSERT INTO memory_embedding_vectors (
 		revision_id, memory_id, generation_id, semantic_space_id, purpose,
 		provider, model, model_revision, dimensions, normalization,
 		content_hash, embedding, embedded_at
@@ -145,6 +145,16 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 		float32sToBlob(record.Vector), record.EmbeddedAt.UnixNano())
 	if err != nil {
 		return fmt.Errorf("store embedding vector: %w", err)
+	}
+	// The remaining semantic_space_id guard can still drop the upsert. Reporting
+	// that as success is the exact failure this function was fixed to stop: the
+	// coverage check would never be satisfied, the generation would never leave
+	// 'building', and the worker would re-embed the same revision forever with
+	// nothing in the logs. A dropped write is an error.
+	if n, raErr := result.RowsAffected(); raErr == nil && n == 0 {
+		return fmt.Errorf(
+			"embedding vector write dropped for revision %s: stored semantic space differs from %s",
+			record.RevisionID, record.SemanticSpaceID)
 	}
 	projected := false
 	if currentState == EmbeddingGenerationActive && record.Purpose == EmbeddingPurposeDocument {

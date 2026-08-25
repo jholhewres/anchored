@@ -151,29 +151,15 @@ func copyEmbeddingVectorsToRevisionTx(
 	return nil
 }
 
-// softDeleteIDsTemporal tombstones an already-resolved id list in one
-// transaction. DeleteByScope resolves ids up front so that a capped run is
-// deterministic, so the scope variant delegates here rather than re-querying.
-func (s *SQLiteStore) softDeleteIDsTemporal(ctx context.Context, ids []string) (int, error) {
-	if len(ids) == 0 {
-		return 0, nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin soft delete by scope: %w", err)
-	}
-	defer tx.Rollback()
-
+// softDeleteIDsTx tombstones an already-resolved id list inside the caller's
+// transaction. DeleteByScope resolves and deletes in one transaction so a
+// concurrent re-scope cannot slip between the two, so this must not open its
+// own; the caller owns the commit and the cache eviction that follows it.
+func (s *SQLiteStore) softDeleteIDsTx(ctx context.Context, tx *sql.Tx, ids []string) (int, error) {
 	for _, id := range ids {
 		if err := s.softDeleteMemoryTx(ctx, tx, id); err != nil {
 			return 0, fmt.Errorf("soft delete %s by scope: %w", id, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit soft delete by scope: %w", err)
-	}
-	for _, id := range ids {
-		s.cache.Remove(id)
 	}
 	return len(ids), nil
 }
