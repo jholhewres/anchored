@@ -679,70 +679,128 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 		args = append(args, opts.Source)
 	}
 
+	if !opts.OlderThan.IsZero() {
+		conditions = append(conditions, "created_at < ?")
+		args = append(args, opts.OlderThan.UTC().Format("2006-01-02 15:04:05"))
+	}
+
 	if len(conditions) == 0 {
 		return 0, fmt.Errorf("at least one scope condition is required")
 	}
 
-	if opts.Hard {
-		where := strings.Join(conditions, " AND ")
-		rows, err := s.db.QueryContext(ctx, "SELECT id FROM memories WHERE "+where, args...)
-		if err != nil {
-			return 0, fmt.Errorf("list hard-delete scope: %w", err)
-		}
-		var ids []string
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return 0, err
-			}
-			ids = append(ids, id)
-		}
-		if err := rows.Close(); err != nil {
-			return 0, err
-		}
-		if err := rows.Err(); err != nil {
-			return 0, err
-		}
+	where := strings.Join(conditions, " AND ")
 
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return 0, fmt.Errorf("begin hard delete by scope: %w", err)
-		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM memory_processing_jobs WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
-			args...,
-		); err != nil {
-			return 0, fmt.Errorf("hard delete processing jobs by scope: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM remote_outbox WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
-			args...,
-		); err != nil {
-			return 0, fmt.Errorf("hard delete remote outbox by scope: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM memory_revisions WHERE memory_id IN (SELECT id FROM memories WHERE "+where+")",
-			args...,
-		); err != nil {
-			return 0, fmt.Errorf("hard delete revision history by scope: %w", err)
-		}
-		result, err := tx.ExecContext(ctx, "DELETE FROM memories WHERE "+where, args...)
-		if err != nil {
-			return 0, fmt.Errorf("hard delete by scope: %w", err)
-		}
-		n, _ := result.RowsAffected()
-		if err := tx.Commit(); err != nil {
-			return 0, fmt.Errorf("commit hard delete by scope: %w", err)
-		}
-		for _, id := range ids {
-			s.cache.Remove(id)
-		}
-		return int(n), nil
+	// Resolve the target ids ONCE. Every downstream delete keys off this exact
+	// list, so a --limit run is deterministic (oldest first) instead of letting
+	// each subquery re-evaluate its own LIMIT over a shifting row set.
+	// A hard prune also reclaims rows already tombstoned; a soft one would have
+	// nothing left to do on them.
+	ids, err := s.resolveScopeIDs(ctx, where, args, opts.Limit, opts.Hard)
+	if err != nil {
+		return 0, err
+	}
+	if opts.DryRun || len(ids) == 0 {
+		return len(ids), nil
 	}
 
-	return s.softDeleteByScopeTemporal(ctx, strings.Join(conditions, " AND "), args)
+	if !opts.Hard {
+		return s.softDeleteIDsTemporal(ctx, ids)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin hard delete by scope: %w", err)
+	}
+	defer tx.Rollback()
+
+	// A temp table keeps the id list out of bound parameters: SQLite caps those
+	// (SQLITE_MAX_VARIABLE_NUMBER) well below the tens of thousands of rows an
+	// import-wide prune touches.
+	if err := stageScopeTargets(ctx, tx, ids); err != nil {
+		return 0, err
+	}
+
+	// Only the satellites that need an explicit delete. memories_fts is driven
+	// by the memories_fts_delete trigger, and memory_embedding_vectors cascades
+	// off memory_revisions (FK ON DELETE CASCADE, with _foreign_keys=on in the
+	// DSN) — so revisions must be deleted before memories for it to fire.
+	satellites := []struct{ table, column string }{
+		{"memory_processing_jobs", "memory_id"},
+		{"remote_outbox", "memory_id"},
+		{"memory_revisions", "memory_id"},
+	}
+	for _, sat := range satellites {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM "+sat.table+" WHERE "+sat.column+" IN (SELECT id FROM scope_delete_targets)",
+		); err != nil {
+			return 0, fmt.Errorf("hard delete %s by scope: %w", sat.table, err)
+		}
+	}
+
+	result, err := tx.ExecContext(ctx,
+		"DELETE FROM memories WHERE id IN (SELECT id FROM scope_delete_targets)",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("hard delete by scope: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit hard delete by scope: %w", err)
+	}
+	for _, id := range ids {
+		s.cache.Remove(id)
+	}
+	return int(n), nil
+}
+
+func (s *SQLiteStore) resolveScopeIDs(ctx context.Context, where string, args []any, limit int, includeDeleted bool) ([]string, error) {
+	if !includeDeleted {
+		where = "deleted_at IS NULL AND " + where
+	}
+	q := "SELECT id FROM memories WHERE " + where + " ORDER BY created_at ASC"
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(append([]any{}, args...), limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list delete scope: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func stageScopeTargets(ctx context.Context, tx *sql.Tx, ids []string) error {
+	if _, err := tx.ExecContext(ctx,
+		"CREATE TEMP TABLE IF NOT EXISTS scope_delete_targets (id TEXT PRIMARY KEY)",
+	); err != nil {
+		return fmt.Errorf("create scope target table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM scope_delete_targets"); err != nil {
+		return fmt.Errorf("reset scope target table: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, "INSERT INTO scope_delete_targets (id) VALUES (?)")
+	if err != nil {
+		return fmt.Errorf("prepare scope target insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.ExecContext(ctx, id); err != nil {
+			return fmt.Errorf("stage scope target %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) FindByContentHash(ctx context.Context, hash string, projectID *string) (*Memory, error) {
