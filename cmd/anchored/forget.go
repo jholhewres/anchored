@@ -124,13 +124,10 @@ func runForget(args []string) {
 	fmt.Printf("Soft-deleted memory %s\n", id)
 }
 
-// maxAgeDays bounds --older-than. Past this a time.Duration overflows int64 and
-// wraps negative, which turns `now - age` into a cutoff in the FUTURE that
-// matches every row — so `--older-than 106752d --hard --yes` would delete the
-// whole corpus. The realistic way to hit it is a script passing epoch seconds
-// where days are expected. A century is beyond any retention policy; anything
-// larger is a typo, and a typo on a destructive command must be rejected, not
-// silently reinterpreted.
+// maxAgeDays bounds --older-than. Beyond it a time.Duration overflows int64 and
+// wraps negative, putting the cutoff in the FUTURE where it matches every row —
+// on a --hard run that deletes the corpus. A century exceeds any retention
+// policy, so anything larger is a typo and must be rejected, not reinterpreted.
 const maxAgeDays = 36500
 
 // parseAge accepts the durations a retention cut is actually expressed in.

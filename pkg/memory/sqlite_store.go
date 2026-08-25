@@ -735,10 +735,6 @@ func (s *SQLiteStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions
 		return n, nil
 	}
 
-	// A temp table keeps the id list out of bound parameters: SQLite caps those
-	// (SQLITE_MAX_VARIABLE_NUMBER) well below the tens of thousands of rows an
-	// import-wide prune touches. Temp tables are per-connection, and the
-	// transaction owns this one's lifetime.
 	if err := stageScopeTargets(ctx, tx, ids); err != nil {
 		return 0, err
 	}
@@ -834,8 +830,7 @@ func stageScopeTargets(ctx context.Context, tx *sql.Tx, ids []string) error {
 	); err != nil {
 		return fmt.Errorf("create scope target table: %w", err)
 	}
-	// Batched multi-row VALUES: one round trip per batch instead of one per id
-	// turns an 11k-row prune from 11k statements into ~23.
+	// Batched so an 11k-id prune is ~23 statements, not 11k.
 	const batch = 500
 	for start := 0; start < len(ids); start += batch {
 		end := min(start+batch, len(ids))

@@ -129,12 +129,10 @@ func runHookPostToolUse(args []string) {
 // artifactCaptureEnabled reports whether tool output should be indexed into
 // content_chunks.
 //
-// This MUST track the flag that gates the Evictor. Chunks are written with a
-// 72h TTL, but the Evictor that acts on that TTL is constructed only inside the
-// context optimizer (pkg/context/optimizer.go, wired from serve.go behind this
-// same flag). Capturing while the optimizer is off therefore writes rows that
-// nothing ever reclaims: on one machine that left 23k expired chunks, the
-// oldest 78 days past a 72h TTL, holding ~300 MB — over half the database.
+// This MUST track the flag that gates the Evictor: chunks are written with a
+// TTL, but the Evictor that acts on it is constructed only inside the context
+// optimizer (pkg/context/optimizer.go, wired from serve.go behind this same
+// flag). Capturing while the optimizer is off writes rows nothing reclaims.
 func artifactCaptureEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.ContextOptimizer.Enabled
 }

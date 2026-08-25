@@ -276,9 +276,8 @@ func TestDeleteByScopeRequiresACondition(t *testing.T) {
 	}
 }
 
-// The soft path was rewired by this change (softDeleteByScopeTemporal removed,
-// resolve moved into the caller's transaction) and every other test here runs
-// Hard:true. This covers the success case plus the two modifiers.
+// Every other test in this file runs Hard:true, so this covers the soft path's
+// success case plus its two modifiers.
 func TestDeleteByScopeSoftTombstonesAndKeepsRows(t *testing.T) {
 	s := newScopeTestStore(t)
 	ctx := context.Background()

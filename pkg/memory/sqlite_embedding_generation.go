@@ -146,11 +146,8 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 	if err != nil {
 		return fmt.Errorf("store embedding vector: %w", err)
 	}
-	// The remaining semantic_space_id guard can still drop the upsert. Reporting
-	// that as success is the exact failure this function was fixed to stop: the
-	// coverage check would never be satisfied, the generation would never leave
-	// 'building', and the worker would re-embed the same revision forever with
-	// nothing in the logs. A dropped write is an error.
+	// The semantic_space_id guard can still drop the upsert; reporting that as
+	// success would strand the generation in 'building' forever.
 	if n, raErr := result.RowsAffected(); raErr == nil && n == 0 {
 		return fmt.Errorf(
 			"embedding vector write dropped for revision %s: stored semantic space differs from %s",
