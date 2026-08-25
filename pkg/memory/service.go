@@ -486,13 +486,10 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *Service) ForgetByScope(ctx context.Context, projectID, category, source string, hard bool) (int, error) {
-	return s.store.DeleteByScope(ctx, DeleteScopeOptions{
-		ProjectID: projectID,
-		Category:  category,
-		Source:    source,
-		Hard:      hard,
-	})
+// ForgetScope removes every memory matching the scope; with DryRun it only
+// counts them.
+func (s *Service) ForgetScope(ctx context.Context, opts DeleteScopeOptions) (int, error) {
+	return s.store.DeleteByScope(ctx, opts)
 }
 
 func (s *Service) Stats(ctx context.Context) (*StoreStats, error) {

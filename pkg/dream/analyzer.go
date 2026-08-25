@@ -66,14 +66,23 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 
 	for rows.Next() {
 		var m memInfo
-		if err := rows.Scan(&m.id, &m.content, &m.contentHash, &m.projectID, &m.createdAt); err != nil {
+		// content_hash is nullable: rows predating the hashing backfill, and
+		// legacy revisions, carry NULL. Scanning that into a plain string fails
+		// the whole run. The empty case is already excluded from hash grouping
+		// below, so unhashed memories simply skip exact dedup.
+		var hash sql.NullString
+		if err := rows.Scan(&m.id, &m.content, &hash, &m.projectID, &m.createdAt); err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
 		}
+		m.contentHash = hash.String
 		idx := len(memories)
 		memories = append(memories, m)
 		if m.contentHash != "" {
 			hashGroups[m.contentHash] = append(hashGroups[m.contentHash], idx)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memories: %w", err)
 	}
 
 	report.TotalMemories = len(memories)

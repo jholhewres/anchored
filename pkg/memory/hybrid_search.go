@@ -99,7 +99,11 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 		searchOpts = opts[0]
 	}
 	cfg := h.config
-	maxResults := cfg.MaxResults
+	// The per-call option wins; the config value is only the default.
+	maxResults := searchOpts.MaxResults
+	if maxResults <= 0 {
+		maxResults = cfg.MaxResults
+	}
 	if maxResults <= 0 {
 		maxResults = 20
 	}

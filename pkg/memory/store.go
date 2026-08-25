@@ -106,6 +106,15 @@ type DeleteScopeOptions struct {
 	Category  string
 	Source    string
 	Hard      bool
+	// OlderThan restricts the scope to memories created strictly before this
+	// instant. Zero value disables the filter.
+	OlderThan time.Time
+	// Limit caps how many memories a single call removes. Zero means no cap.
+	// Targets are resolved once, ordered by created_at, so repeated capped
+	// runs drain oldest-first instead of re-picking arbitrary rows.
+	Limit int
+	// DryRun resolves and counts the scope without deleting anything.
+	DryRun bool
 }
 
 type Store interface {

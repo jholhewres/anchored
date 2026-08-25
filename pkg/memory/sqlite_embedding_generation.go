@@ -122,16 +122,22 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 	if storedMemoryID != record.MemoryID || storedHash.String != record.ContentHash {
 		return fmt.Errorf("embedding vector source does not match immutable revision")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO memory_embedding_vectors (
+	// The check above already pins record.ContentHash to the revision's own
+	// hash, so the incoming stamp is authoritative: an existing row carrying a
+	// different one is stale and must be overwritten. Gating the upsert on the
+	// stored hash instead would make a stale stamp permanent — the write is
+	// skipped, no error is raised, and the generation can never reach the
+	// coverage its activation check demands.
+	result, err := tx.ExecContext(ctx, `INSERT INTO memory_embedding_vectors (
 		revision_id, memory_id, generation_id, semantic_space_id, purpose,
 		provider, model, model_revision, dimensions, normalization,
 		content_hash, embedding, embedded_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(revision_id, generation_id, purpose) DO UPDATE SET
 		embedding = excluded.embedding,
-		embedded_at = excluded.embedded_at
-	WHERE memory_embedding_vectors.content_hash = excluded.content_hash
-	  AND memory_embedding_vectors.semantic_space_id = excluded.semantic_space_id`,
+		embedded_at = excluded.embedded_at,
+		content_hash = excluded.content_hash
+	WHERE memory_embedding_vectors.semantic_space_id = excluded.semantic_space_id`,
 		record.RevisionID, record.MemoryID, record.GenerationID, record.SemanticSpaceID,
 		record.Purpose, record.Identity.Provider, record.Identity.Model,
 		record.Identity.ModelRevision, record.Identity.Dimensions,
@@ -139,6 +145,13 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 		float32sToBlob(record.Vector), record.EmbeddedAt.UnixNano())
 	if err != nil {
 		return fmt.Errorf("store embedding vector: %w", err)
+	}
+	// The semantic_space_id guard can still drop the upsert; reporting that as
+	// success would strand the generation in 'building' forever.
+	if n, raErr := result.RowsAffected(); raErr == nil && n == 0 {
+		return fmt.Errorf(
+			"embedding vector write dropped for revision %s: stored semantic space differs from %s",
+			record.RevisionID, record.SemanticSpaceID)
 	}
 	projected := false
 	if currentState == EmbeddingGenerationActive && record.Purpose == EmbeddingPurposeDocument {

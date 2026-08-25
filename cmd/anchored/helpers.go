@@ -143,8 +143,14 @@ func reorderArgsForFlag(fs *flag.FlagSet, args []string) []string {
 		}
 		name := strings.TrimLeft(a, "-")
 		f := fs.Lookup(name)
-		_, isBool := f.Value.(boolFlag)
-		if isBool || f == nil {
+		if f == nil {
+			// Unregistered flag — `--help` is the common one. Pass it through
+			// untouched and let fs.Parse report it. Reading f.Value first would
+			// dereference nil and take the whole process down.
+			flagArgs = append(flagArgs, a)
+			continue
+		}
+		if _, isBool := f.Value.(boolFlag); isBool {
 			flagArgs = append(flagArgs, a)
 		} else if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 			flagArgs = append(flagArgs, a, args[i+1])
