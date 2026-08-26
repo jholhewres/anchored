@@ -20,10 +20,11 @@ import (
 	"github.com/jholhewres/anchored/pkg/updater"
 )
 
-func runServe() {
+func runServe(args []string) {
 	logger := newServeLogger()
+	configPath := serveConfigPath(args)
 
-	cfg, err := loadConfig("")
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -86,6 +87,13 @@ func runServe() {
 		slog.Error("serve error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func serveConfigPath(args []string) string {
+	fs := newFlagSet("serve")
+	configPath := fs.String("config", "", "path to config file")
+	fs.Parse(args)
+	return *configPath
 }
 
 // newServeLogger builds the logger for the long-running MCP server. It writes
