@@ -229,6 +229,14 @@ func gitOrigin(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// isMissingTable separates "this database predates the feature" from a real
+// read failure. Without it a locked database or a broken query would be
+// silently reported as an empty section and the migration would claim success
+// while leaving data behind.
+func isMissingTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
 type pushTotals struct{ sent, created, skipped, rejected, embedding int }
 
 func (m *migrator) pushMemories(ctx context.Context, batchID string) (pushTotals, error) {
@@ -340,8 +348,12 @@ func (m *migrator) pushTriples(ctx context.Context, batchID string) (int, error)
 		LEFT JOIN projects p ON p.id = t.project_id`)
 	if err != nil {
 		// A local database from an older version may not have the graph tables.
-		// That is not a reason to fail the whole migration.
-		return 0, nil
+		// That is not a reason to fail the whole migration — but every other
+		// failure is, and must not be reported as "nothing to migrate".
+		if isMissingTable(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read triples: %w", err)
 	}
 	defer rows.Close()
 
@@ -377,6 +389,9 @@ func (m *migrator) pushTriples(ctx context.Context, batchID string) (int, error)
 			batch = batch[:0]
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return sent, fmt.Errorf("read triples: %w", err)
+	}
 	if len(batch) > 0 {
 		if _, err := m.sendRecords(ctx, batchID, map[string]any{"triples": batch}); err != nil {
 			return sent, err
@@ -391,7 +406,10 @@ func (m *migrator) pushThreads(ctx context.Context, batchID string) (int, error)
 		SELECT task_key, coalesce(external_ref,''), coalesce(status,'active'), coalesce(journal,'[]')
 		FROM task_threads`)
 	if err != nil {
-		return 0, nil // older database without task threads
+		if isMissingTable(err) {
+			return 0, nil // older database without task threads
+		}
+		return 0, fmt.Errorf("read task threads: %w", err)
 	}
 	defer rows.Close()
 
@@ -407,6 +425,9 @@ func (m *migrator) pushThreads(ctx context.Context, batchID string) (int, error)
 			rec["journal"] = notes
 		}
 		batch = append(batch, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read task threads: %w", err)
 	}
 	if len(batch) == 0 {
 		return 0, nil

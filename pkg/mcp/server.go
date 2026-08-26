@@ -190,9 +190,7 @@ func (s *Server) handleToolsList(ctx context.Context, id json.RawMessage) []byte
 // stale linked-project ID alone must not advertise an unusable tool.
 func (s *Server) toolsForCWD(ctx context.Context, cwd string) []Tool {
 	tools := ToolDefinitions()
-	probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
-	defer cancel()
-	if !s.hasReachableRemoteRepositoryProject(probeCtx, cwd) {
+	if !s.remoteSkillsAdvertisable(ctx, cwd) {
 		filtered := tools[:0]
 		for _, tool := range tools {
 			if tool.Name != "anchored_skill" {
@@ -203,6 +201,23 @@ func (s *Server) toolsForCWD(ctx context.Context, cwd string) []Tool {
 	}
 	SortTools(tools)
 	return tools
+}
+
+// remoteSkillsAdvertisable answers the tools/list question without paying for
+// it on the common path: a client with no remote configured cannot have a
+// remote project, so it never reaches the network. Only a user who opted into
+// a remote pays the bounded probe.
+//
+// The timeout is deliberately not tightened below remoteSkillPriorityTimeout.
+// A probe that expires hides anchored_skill for the rest of the session, which
+// is a worse outcome than a bounded wait on a path clients call once.
+func (s *Server) remoteSkillsAdvertisable(ctx context.Context, cwd string) bool {
+	if !s.hasAnyRemote() {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
+	defer cancel()
+	return s.hasReachableRemoteRepositoryProject(probeCtx, cwd)
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params json.RawMessage) []byte {
