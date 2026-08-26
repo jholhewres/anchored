@@ -27,6 +27,55 @@ task on your personal board.
   `/promote-task`. Notable session events flow into the linked task's journal;
   `/api/tasks` now reports a `live_session_id` when a session is active on it.
 
+## [0.17.0] - 2026-08-26
+
+Bulk pruning for `anchored forget`, and a set of fixes for paths that were
+losing data or silently doing nothing.
+
+### Added
+
+- **Bulk `anchored forget`** — prune by `--category`, `--older-than`,
+  `--project` and `--source` instead of one id per process. Removing an
+  imported category used to mean one spawn (and one ONNX load) per memory.
+  Bulk mode reports the match count and deletes nothing by default; `--yes`
+  is required to act, `--limit` drains oldest-first, and `--older-than` is
+  bounded to 1d..36500d so a typo on a destructive command is refused rather
+  than reinterpreted.
+
+### Fixed
+
+- **`--limit` was ignored by search** — `HybridSearcher.Search` took its limit
+  from `search.max_results` regardless of the per-call option, so
+  `anchored search --limit 100` returned the configured default (20) and no
+  caller could look deeper. The per-call value now wins and the config is what
+  it reads like: a default for callers that do not ask.
+- **Data-loss paths in bulk forget** — `parseAge` overflowed `time.Duration`
+  past 106752d and produced a cutoff in the *future*, matching every row;
+  `DeleteByScope` resolved its target ids outside the transaction that deleted
+  them, so a concurrent update could move a memory and still have it deleted
+  under its old category; and `dream_actions`, which references memories
+  through two unconstrained columns, was missing from satellite cleanup and
+  left an orphan per action per pruned memory.
+- **Stale embedding vectors were never restamped** — `PutEmbeddingVector`
+  gated its `DO UPDATE` on the stored `content_hash` already equalling the
+  incoming one, so a row with a stale stamp could not be corrected: the
+  conflict fired, the update was dropped, and the call returned success. The
+  upsert now sets `content_hash` and a dropped write is an error.
+- **Artifact capture ran with the optimizer switched off** — `posttooluse`
+  indexed every large tool output into `content_chunks`, but the evictor that
+  reclaims those rows is constructed only when `context_optimizer.enabled` is
+  on. Turning the optimizer off left the writes running with nothing acting on
+  the 72h TTL — on one machine 23,198 of 23,617 chunk rows were expired, about
+  300 MB. Capture is now gated on the same flag as eviction.
+- **Dream aborted on a single unhashed row** — `Analyze` scanned the nullable
+  `memories.content_hash` into a plain string, so one NULL killed the whole
+  consolidation pass and `anchored maintenance run` failed hard. Unhashed rows
+  now fall out of exact dedup and are still considered by the semantic tiers.
+- **`--help` crashed subcommands** — `reorderArgsForFlag` dereferenced the
+  result of `fs.Lookup` before its own nil check, so `anchored search --help`
+  and every other reordering subcommand died with SIGSEGV instead of printing
+  usage.
+
 ## [0.16.0] - 2026-07-24
 
 Fixes cross-project memory bleed and the cold-start experience, plus Windows
