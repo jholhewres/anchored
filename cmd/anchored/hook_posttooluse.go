@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -246,10 +245,7 @@ func recordPostToolUseEvent(deps PostToolUseDeps) {
 	// stale plugin matcher). Done before the artifact early-return so a large
 	// anchored_search response still satisfies the gate. Best-effort.
 	if deps.GateEnforced {
-		bareTool := input.ToolName
-		if i := strings.LastIndex(bareTool, "__"); i >= 0 {
-			bareTool = bareTool[i+2:]
-		}
+		bareTool := mcpLeafName(input.ToolName)
 		if satisfyGateFromPostToolUse(deps.GateStorageDir, sessionID, bareTool) {
 			dlog.Event("hook.posttooluse", map[string]any{"stage": "context_gate_satisfied", "tool": input.ToolName})
 		}

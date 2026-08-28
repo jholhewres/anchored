@@ -54,7 +54,7 @@
         ]
       },
       {
-        "matcher": "mcp__anchored__.*",
+        "matcher": "mcp__.*__anchored_",
         "hooks": [
           {
             "type": "command",

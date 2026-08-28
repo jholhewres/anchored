@@ -36,6 +36,63 @@ task on your personal board.
   builds entirely — previously a local install under `~/.anchored/bin` could
   be silently reverted to the release tag on the next `serve` start — and
   plugin drift detection treats them like the bare `dev` placeholder.
+- **Name-agnostic ToolSearch hints** — every agent-facing bootstrap hint (the
+  context-gate deny reason, the MCP `instructions` handshake, the SessionStart
+  routing block, the subagent block, and the sandbox-redirect deny hint) used
+  to hardcode `ToolSearch(select:mcp__anchored__…)`. Harnesses register the
+  tools under drifting prefixes (`mcp__plugin_anchored_anchored__*`), so the
+  select loaded nothing and agents retried the blocked tool instead of
+  complying — measured as 2–3 gate denies per session in ~35% of sessions.
+  All hints now search by leaf name. Regression tests pin that no
+  agent-facing block contains `select:mcp__`.
+- **PostToolUse never fired for anchored's own MCP tools** — `hooks/hooks.json`
+  matched them with `mcp__anchored__.*`, but hook matchers are substring
+  regexes and the tools register as `mcp__plugin_anchored_anchored__*`, where
+  that literal never occurs. The hook had therefore never run for a single
+  anchored tool call: across 13,038 recorded events the only `mcp__` tool ever
+  seen is another server's. Artifact capture of large `anchored_search` /
+  `anchored_context` responses, the working-set feed, the session-event
+  timeline and the redundant context-gate credit were all silently dead. The
+  matcher is now `mcp__.*__anchored_`, which matches anchored's tools under any
+  registration prefix while rejecting near-misses like `mcp__anchored-work__*`
+  (this workspace's own sibling project) and `mcp__notion__get_anchored_page`.
+  A new manifest test fails if an anchored-scoped matcher stops firing under a
+  drifted prefix, starts firing for unrelated servers, or disappears entirely —
+  a deleted matcher is the same silent death as a drifted one. `PreToolUse`
+  keeps its deliberate `mcp__.*` catch-all: the context gate must observe every
+  tool call, or an agent walks past it via any third-party MCP tool.
+  The prefix-stripping that feeds every "is this one of my tools" decision was
+  copy-pasted across three hooks; it is now a single `mcpLeafName` with the
+  drifting prefixes pinned by test, and `isAnchoredTool` takes the leaf only.
+- **Context gate blind to the memory it already had** — the gate only counted
+  an explicit anchored *tool call* as consulting memory, while the
+  UserPromptSubmit auto-recall was retrieving and injecting memories into the
+  same session and persisting the injected ids to `working_sets.memory_ids`.
+  Over 95 gated sessions, 50 (53%) were denied with memories already in
+  context. SessionStart now leaves a companion marker when its rich block
+  lands, and a recall that delivers memories into such a session credits the
+  gate. Crediting requires BOTH signals: the recall pass is keyword-only and
+  never carries identity (L0), so hits alone still leave the gate armed.
+  Both signals are checked against what actually reached the model rather than
+  what was retrieved: the credit is taken from the *rendered* recall preview,
+  since `renderRecallPreview` drops hits to fit the byte budget and returns
+  nothing at all when even the top hit overflows; and the SessionStart marker
+  requires the assembled block to actually contain the identity text, since
+  `contextbudget.Assemble` does not guarantee `MinItems` and long standing
+  directives can push L0 out of a block that is still non-empty.
+- **Context-gate satisfaction could be revoked by a racing deny** — the gate
+  kept satisfaction as the literal `"ok"` inside its deny-counter file, and
+  wrote markers with a plain `os.WriteFile`. Two consequences, both reachable
+  whenever Claude Code issues a parallel tool batch: a reader in the `O_TRUNC`
+  window saw a zero-length marker and read the deny count as 0, making the
+  relent bound unenforceable; and a deny write still in flight when a credit
+  landed overwrote `"ok"` with a counter, re-arming a gate the agent had
+  already satisfied — both contradicting the module's documented promise that
+  it can never permanently wedge a session. Satisfaction now lives in its own
+  sentinel file, so no counter write can revoke it, and marker writes are
+  atomic (temp file + rename) so a concurrent reader sees old content or new,
+  never nothing. Legacy `"ok"` counter files are still honored, so upgrading
+  mid-session does not re-arm a gate that was already satisfied.
 
 ## [0.17.0] - 2026-08-26
 

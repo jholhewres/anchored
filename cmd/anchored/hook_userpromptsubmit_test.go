@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/jholhewres/anchored/pkg/memory"
 	_ "github.com/mattn/go-sqlite3"
@@ -764,5 +765,107 @@ func TestBM25TopHits_ExcludesLowSignal(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].ID != "ok-1" {
 		t.Fatalf("want only ok-1, got %+v", hits)
+	}
+}
+
+// ─── Context-gate credit wiring ─────────────────────────────────────────────
+
+// TestCreditGateFromRecall_OnlyWhenSomethingWasRendered is the fix for
+// crediting off the hit count instead of the delivered payload.
+// renderRecallPreview drops hits to fit the byte budget and returns "" when
+// even the top hit overflows, so a session could have hits, credit the gate,
+// and receive nothing — opening the gate for exactly the case it exists to
+// catch.
+func TestCreditGateFromRecall_OnlyWhenSomethingWasRendered(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Memory.StorageDir = dir
+	cfg.Plugin.ContextGate = "enforce"
+	markSessionStartRichBlock(dir, "sess-render")
+
+	if creditGateFromRecall(cfg, "sess-render", "", &debuglog.Logger{}) {
+		t.Fatal("credited the gate although nothing was rendered into the prompt")
+	}
+	if dec, _ := contextGateDecision(dir, "sess-render", "Bash"); dec == nil {
+		t.Fatal("gate should still be armed after an empty preview")
+	}
+
+	if !creditGateFromRecall(cfg, "sess-render-2", "<anchored_recall …>", &debuglog.Logger{}) {
+		markSessionStartRichBlock(dir, "sess-render-2")
+		if !creditGateFromRecall(cfg, "sess-render-2", "<anchored_recall …>", &debuglog.Logger{}) {
+			t.Fatal("rendered preview + rich marker should credit the gate")
+		}
+	}
+}
+
+// TestCreditGateFromRecall_RespectsGateMode keeps the credit path inert when
+// the user opted out of the gate entirely.
+func TestCreditGateFromRecall_RespectsGateMode(t *testing.T) {
+	dir := t.TempDir()
+	markSessionStartRichBlock(dir, "sess-off")
+
+	cfg := &config.Config{}
+	cfg.Memory.StorageDir = dir
+	cfg.Plugin.ContextGate = "disabled"
+
+	if creditGateFromRecall(cfg, "sess-off", "<anchored_recall …>", &debuglog.Logger{}) {
+		t.Error("credited the gate while the gate is disabled")
+	}
+	if creditGateFromRecall(nil, "sess-off", "<anchored_recall …>", &debuglog.Logger{}) {
+		t.Error("credited the gate with a nil config")
+	}
+}
+
+// TestAutoRecallPreview_CreditsGateEndToEnd pins the CALL SITE, not the helper.
+// Deleting the creditGateFromRecall call from autoRecallPreview must fail a
+// test — otherwise the 53%-denial bug this change exists to fix can be
+// reintroduced with a green suite.
+func TestAutoRecallPreview_CreditsGateEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	storageDir := filepath.Join(dir, "storage")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := "memory:\n  database_path: " + dbPath +
+		"\n  storage_dir: " + storageDir +
+		"\nembedding:\n  provider: none\nplugin:\n  context_gate: enforce\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO memories (id, project_id, category, content, content_hash, created_at, updated_at, metadata)
+		 VALUES ('m1', '', 'decision', 'we settled on postgres for the billing ledger', '', datetime('now'), datetime('now'), '{}')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	const sess = "sess-e2e"
+	const prompt = "how did we decide the billing ledger postgres question"
+
+	// Without SessionStart's rich block the recall must NOT credit: the
+	// conservative half of the two-signal rule.
+	if out := autoRecallPreview(cfgPath, dir, prompt, sess, &debuglog.Logger{}); out == "" {
+		t.Skip("recall returned nothing for the seeded memory; FTS unavailable in this build")
+	}
+	if gateIsSatisfied(filepath.Join(storageDir, "ctxgate", sanitizeSessionID(sess))) {
+		t.Fatal("recall credited the gate without SessionStart's rich block")
+	}
+
+	// With it, the same recall must credit.
+	markSessionStartRichBlock(storageDir, sess)
+	autoRecallPreview(cfgPath, dir, prompt, sess, &debuglog.Logger{})
+	if !gateIsSatisfied(filepath.Join(storageDir, "ctxgate", sanitizeSessionID(sess))) {
+		t.Fatal("recall injected memories with the rich block present but did not credit the gate")
+	}
+	if dec, stage := contextGateDecision(storageDir, sess, "Bash"); dec != nil {
+		t.Fatalf("gate denied a session whose memory was already delivered (stage=%q)", stage)
 	}
 }

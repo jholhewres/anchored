@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/jholhewres/anchored/pkg/debuglog"
@@ -119,10 +118,7 @@ func cursorPreToolDecision(configPath, tool string, args map[string]any) *hookro
 	// Security: dangerous-pattern guard for the anchored sandbox tools. The
 	// prefix strip leaves a bare "anchored_execute" unchanged, so the bare
 	// comparison matches Cursor's un-prefixed tool names.
-	bareTool := tool
-	if i := strings.LastIndex(bareTool, "__"); i >= 0 {
-		bareTool = bareTool[i+2:]
-	}
+	bareTool := mcpLeafName(tool)
 	if bareTool == "anchored_execute" || bareTool == "anchored_execute_file" || bareTool == "anchored_batch_execute" {
 		code, _ := args["code"].(string)
 		if bareTool == "anchored_batch_execute" {

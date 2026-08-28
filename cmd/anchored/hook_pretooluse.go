@@ -93,10 +93,7 @@ func runHookPreToolUse(args []string) {
 	// Security checks for command execution tools. Claude Code sends the
 	// fully-qualified MCP tool name (mcp__anchored__anchored_execute); strip the
 	// server prefix to the bare leaf so the match works regardless of wire form.
-	bareTool := tool
-	if i := strings.LastIndex(bareTool, "__"); i >= 0 {
-		bareTool = bareTool[i+2:]
-	}
+	bareTool := mcpLeafName(tool)
 	if bareTool == "anchored_execute" || bareTool == "anchored_execute_file" || bareTool == "anchored_batch_execute" {
 		code, _ := args2["code"].(string)
 		if bareTool == "anchored_batch_execute" {
@@ -136,7 +133,7 @@ func runHookPreToolUse(args []string) {
 	// after the security blocks (a gate deny must never pre-empt a security
 	// deny) and before routing (a gated tool need not be routed).
 	if cfg != nil && cfg.Plugin.ContextGateMode() == "enforce" {
-		if dec, stage := contextGateDecision(cfg.Memory.StorageDir, input.SessionID, bareTool, tool); dec != nil {
+		if dec, stage := contextGateDecision(cfg.Memory.StorageDir, input.SessionID, bareTool); dec != nil {
 			dlog.Event("hook.pretooluse", map[string]any{"stage": "context_gate_" + stage, "tool": tool})
 			emitDecision(dec)
 			return
