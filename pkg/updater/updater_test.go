@@ -29,11 +29,33 @@ func TestIsNewer(t *testing.T) {
 		{"0.3.2", "0.3.2-rc1", true},
 		{"0.3.2-rc2", "0.3.2-rc1", true},
 		{"0.3.2-rc1", "0.3.2", false},
+		// Documents WHY the Run guard on IsDevBuild is load-bearing: without
+		// it, an equal-content release "outranks" a dev stamp, so autoupdate
+		// would revert a freshly installed local build.
+		{"0.3.2", "0.3.2-dev+gabc1234.dirty", true},
 	}
 	for _, tc := range cases {
 		got := isNewer(tc.latest, tc.current)
 		if got != tc.want {
 			t.Errorf("isNewer(%q, %q) = %v, want %v", tc.latest, tc.current, got, tc.want)
+		}
+	}
+}
+
+func TestIsDevBuild(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"", false},
+		{"v0.17.0", false},
+		{"dev", true},
+		{"v0.17.0-dev+g3926a8c", true},
+		{"v0.17.0-dev+g3926a8c.dirty", true},
+	}
+	for _, tc := range cases {
+		if got := IsDevBuild(tc.v); got != tc.want {
+			t.Errorf("IsDevBuild(%q) = %v, want %v", tc.v, got, tc.want)
 		}
 	}
 }

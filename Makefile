@@ -11,7 +11,20 @@ endif
 # via -ldflags so the binary, plugin manifests, and goreleaser tags stay in
 # lockstep. Bumping the release is `echo X.Y.Z > VERSION && make sync-version`.
 VERSION := $(shell cat VERSION)
-LDFLAGS := -X main.Version=$(VERSION)
+
+# Local builds self-identify so a dev binary is never mistaken for its release
+# tag: the binary reports v0.17.0-dev+g<hash>[.dirty] while plugin manifests
+# and release tags keep the clean VERSION above (goreleaser injects its own
+# stamp, overriding this). Dev-suffixed builds also disable self-update
+# (pkg/updater.IsDevBuild) so autoupdate can't revert a local checkout install.
+GIT_HASH  := $(shell git rev-parse --short HEAD 2>/dev/null)
+GIT_DIRTY := $(shell git status --porcelain 2>/dev/null | grep -q . && echo .dirty)
+ifeq ($(GIT_HASH),)
+BUILD_VERSION := $(VERSION)
+else
+BUILD_VERSION := $(VERSION)-dev+g$(GIT_HASH)$(GIT_DIRTY)
+endif
+LDFLAGS := -X main.Version=$(BUILD_VERSION)
 
 # Canonical location the installer (install/install.sh) writes to, and the
 # freshly built binary produced by `make build`.

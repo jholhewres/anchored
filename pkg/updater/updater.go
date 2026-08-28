@@ -59,6 +59,14 @@ func Run(ctx context.Context, opts Options) {
 		return
 	}
 
+	if IsDevBuild(opts.CurrentVersion) {
+		// A dev build installed into the canonical dir is an intentional
+		// local checkout (make sync-bin); self-updating it would silently
+		// revert the developer's working binary back to the release tag.
+		log.Debug("autoupdate: dev build, self-update disabled", "current", opts.CurrentVersion)
+		return
+	}
+
 	binPath := opts.BinPath
 	if binPath == "" {
 		exe, err := os.Executable()
@@ -339,6 +347,14 @@ func downloadAndReplace(ctx context.Context, url, dst, wantSum string) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
+}
+
+// IsDevBuild reports whether v is a local development build: the bare "dev"
+// placeholder (go build without ldflags) or a `make build` stamp carrying
+// "-dev+g<hash>". Dev builds are excluded from self-update and from plugin
+// drift comparison — the git suffix makes both comparisons meaningless.
+func IsDevBuild(v string) bool {
+	return v == "dev" || strings.Contains(v, "-dev+")
 }
 
 // isNewer reports whether latest > current using lexical semver split.

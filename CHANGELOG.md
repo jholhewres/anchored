@@ -27,6 +27,16 @@ task on your personal board.
   `/promote-task`. Notable session events flow into the linked task's journal;
   `/api/tasks` now reports a `live_session_id` when a session is active on it.
 
+### Fixed
+
+- **Dev-stamped local builds** — `make build` binaries now report
+  `v0.17.0-dev+g<hash>[.dirty]` instead of the bare release semver, so a
+  local checkout install is never mistaken for the published tag. Plugin
+  manifests and goreleaser keep the clean version. Autoupdate now skips dev
+  builds entirely — previously a local install under `~/.anchored/bin` could
+  be silently reverted to the release tag on the next `serve` start — and
+  plugin drift detection treats them like the bare `dev` placeholder.
+
 ## [0.17.0] - 2026-08-26
 
 Bulk pruning for `anchored forget`, and a set of fixes for paths that were
