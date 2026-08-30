@@ -268,6 +268,12 @@ func TestTaskThreadItem_CrossRepoInjection(t *testing.T) {
 // recall has for telling "memory was already delivered this session" from "the
 // model has seen nothing yet".
 func TestAppendRichContextBlock_MarksWhatItEmits(t *testing.T) {
+	// appendRichContextBlock reaches the real ~/.anchored/identity.md through
+	// richBlockCarriesIdentity, so without an isolated HOME this passes only
+	// on machines that have no identity file — CI and nowhere else. Every
+	// developer with anchored actually installed would see it red.
+	t.Setenv("HOME", t.TempDir())
+
 	cfgFor := func(dir, mode string) *config.Config {
 		c := &config.Config{}
 		c.Memory.StorageDir = dir
