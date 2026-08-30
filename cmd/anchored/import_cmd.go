@@ -83,6 +83,18 @@ func runImport(args []string) {
 		}
 	}
 
+	// Stamp normalized hashes for anything the import just wrote through a path
+	// that predates the column, plus any legacy backlog. Cheap, no model needed,
+	// and it is what keeps the next import's dedup on the indexed path.
+	if pending, err := memSvc.PendingNormalizedHash(ctx); err == nil && pending > 0 {
+		fmt.Printf("\nStamping normalized hashes for %d memories...\n", pending)
+		if stamped, err := memSvc.BackfillNormalizedHash(ctx, normalizedHashBatch); err != nil {
+			logger.Warn("normalized hash backfill failed", "error", err)
+		} else {
+			fmt.Printf("Normalized hashes stamped: %d\n", stamped)
+		}
+	}
+
 	if *skipEmbeddings {
 		fmt.Println("\nEmbedding backfill skipped.")
 	} else {

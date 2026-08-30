@@ -839,17 +839,22 @@ func upsertCurrentMemoryTx(
 	if tombstone {
 		deletedAt = now
 	}
+	// normalized_hash is derived here rather than carried on Memory: it is a
+	// pure function of content, and this upsert is the single write path into
+	// the table, so deriving it at the boundary keeps it from ever going stale
+	// against the content it describes.
 	_, err = tx.ExecContext(ctx, `INSERT INTO memories (
-		id, project_id, category, content, content_hash, keywords, embedding,
+		id, project_id, category, content, content_hash, normalized_hash, keywords, embedding,
 		source, source_id, created_at, updated_at, access_count, last_accessed_at,
 		metadata, sync_dirty, sync_origin, author, remote_project_key,
 		deleted_at, logical_id, current_revision_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		project_id = excluded.project_id,
 		category = excluded.category,
 		content = excluded.content,
 		content_hash = excluded.content_hash,
+		normalized_hash = excluded.normalized_hash,
 		keywords = excluded.keywords,
 		embedding = excluded.embedding,
 		source = excluded.source,
@@ -863,7 +868,7 @@ func upsertCurrentMemoryTx(
 		deleted_at = excluded.deleted_at,
 		logical_id = excluded.logical_id,
 		current_revision_id = excluded.current_revision_id`,
-		m.ID, m.ProjectID, m.Category, m.Content, m.ContentHash, keywords, embedding,
+		m.ID, m.ProjectID, m.Category, m.Content, m.ContentHash, normalizedHash(m.Content), keywords, embedding,
 		m.Source, m.SourceID, m.CreatedAt, m.UpdatedAt, m.AccessCount, m.LastAccessed,
 		metadata, m.SyncDirty, m.SyncOrigin, m.Author, m.RemoteProjectKey,
 		deletedAt, logicalID, revisionID,

@@ -19,6 +19,11 @@ import (
 //
 // It is the same idempotent drain (ListWithoutEmbedding), so it is safe to run
 // alongside or repeatedly; a fully-embedded store finishes immediately.
+// normalizedHashBatch caps one backfill pass. Stamping is a read plus a hash
+// per row, so the bound is about keeping a single run's transaction short on a
+// multi-GB store, not about CPU.
+const normalizedHashBatch = 20000
+
 func runBackfillEmbeddings(args []string) {
 	fs := newFlagSet("backfill")
 	batch := fs.Int("batch", 200, "embeddings per batch")
@@ -45,12 +50,28 @@ func runBackfillEmbeddings(args []string) {
 	}
 	defer memSvc.Close()
 
-	if !memSvc.EmbeddingsEnabled() {
-		fmt.Fprintln(os.Stderr, "embeddings unavailable (provider 'none' or ONNX model missing) — nothing to backfill")
-		os.Exit(1)
+	ctx := context.Background()
+
+	// Normalized hashes first, and before the embeddings guard: the stamp needs
+	// no model, and until a row carries one it is invisible to near-duplicate
+	// detection on the save path. Bounded per run like the embedding drain.
+	if pending, err := memSvc.PendingNormalizedHash(ctx); err == nil && pending > 0 {
+		fmt.Printf("anchored: stamping normalized hashes for %d memories…\n", pending)
+		stamped, err := memSvc.BackfillNormalizedHash(ctx, normalizedHashBatch)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "normalized hash backfill error after %d stamped: %v\n", stamped, err)
+		} else if remaining := pending - stamped; remaining > 0 {
+			fmt.Printf("anchored: %d stamped, %d left — run again to continue\n", stamped, remaining)
+		} else {
+			fmt.Printf("anchored: %d normalized hashes stamped\n", stamped)
+		}
 	}
 
-	ctx := context.Background()
+	if !memSvc.EmbeddingsEnabled() {
+		fmt.Fprintln(os.Stderr, "embeddings unavailable (provider 'none' or ONNX model missing) — nothing more to backfill")
+		return
+	}
+
 	start := time.Now()
 	fmt.Println("anchored: backfilling embeddings for memories missing a vector…")
 

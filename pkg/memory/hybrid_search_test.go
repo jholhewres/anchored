@@ -126,6 +126,14 @@ func (s *hybridMockStore) Restore(ctx context.Context, id string) error    { ret
 func (s *hybridMockStore) DeleteByScope(ctx context.Context, opts DeleteScopeOptions) (int, error) {
 	return 0, nil
 }
+func (s *hybridMockStore) FindByNormalizedHash(_ context.Context, _ string, _ *string) (*Memory, error) {
+	return nil, nil
+}
+
+func (s *hybridMockStore) BackfillNormalizedHash(_ context.Context, _ int) (int, error) { return 0, nil }
+
+func (s *hybridMockStore) PendingNormalizedHash(_ context.Context) (int, error) { return 0, nil }
+
 func (s *hybridMockStore) FindByContentHash(ctx context.Context, hash string, projectID *string) (*Memory, error) {
 	return nil, nil
 }

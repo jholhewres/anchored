@@ -407,6 +407,21 @@ func Migrate(db *sql.DB) error {
 				SELECT RAISE(ABORT, 'invalid embedding generation transition');
 			END;
 		`},
+		// The near-duplicate check on the save path accepts a candidate only
+		// when its content is byte-identical after lowercasing and collapsing
+		// whitespace. It used to find candidates with an FTS5 query built from
+		// EVERY keyword in the incoming content (plus a prefix term per
+		// keyword), which on a large store costs seconds per save — measured at
+		// 3.6s average and 16s worst case against a 3.3GB store, turning a
+		// nightly `import all` into hours of CPU. An indexed lookup answers the
+		// same question exactly. Existing rows carry NULL until backfilled by
+		// `anchored backfill`; a NULL simply misses, which costs a duplicate
+		// row that dream already reclaims, never a wrong match.
+		{Name: "020_normalized_hash", Up: `
+			ALTER TABLE memories ADD COLUMN normalized_hash TEXT;
+			CREATE INDEX IF NOT EXISTS idx_memories_normalized_hash
+				ON memories(normalized_hash, project_id);
+		`},
 	}
 
 	for _, m := range migrations {

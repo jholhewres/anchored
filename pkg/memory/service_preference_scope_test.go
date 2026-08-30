@@ -16,6 +16,14 @@ func (s *capturePreferenceScopeStore) Save(_ context.Context, m Memory) error {
 	return nil
 }
 
+func (s *capturePreferenceScopeStore) FindByNormalizedHash(_ context.Context, _ string, _ *string) (*Memory, error) {
+	return nil, nil
+}
+
+func (s *capturePreferenceScopeStore) BackfillNormalizedHash(_ context.Context, _ int) (int, error) { return 0, nil }
+
+func (s *capturePreferenceScopeStore) PendingNormalizedHash(_ context.Context) (int, error) { return 0, nil }
+
 func (s *capturePreferenceScopeStore) FindByContentHash(_ context.Context, _ string, _ *string) (*Memory, error) {
 	return s.existing, nil
 }

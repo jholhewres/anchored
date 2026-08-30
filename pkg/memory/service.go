@@ -508,6 +508,17 @@ func (s *Service) BackfillContentHash(ctx context.Context) (int, error) {
 	return s.store.BackfillContentHash(ctx)
 }
 
+// BackfillNormalizedHash stamps a bounded slice of pre-migration rows so they
+// rejoin near-duplicate detection.
+func (s *Service) BackfillNormalizedHash(ctx context.Context, limit int) (int, error) {
+	return s.store.BackfillNormalizedHash(ctx, limit)
+}
+
+// PendingNormalizedHash reports how many rows still need stamping.
+func (s *Service) PendingNormalizedHash(ctx context.Context) (int, error) {
+	return s.store.PendingNormalizedHash(ctx)
+}
+
 // PendingEmbeddings reports how many memories are still missing a vector, so
 // callers of a capped backfill run (`--max`) can report how much backlog
 // remains.
@@ -777,29 +788,22 @@ func normalizeForDedup(s string) string {
 // nil. It fetches a few BM25 candidates so the check stays cheap (no
 // synchronous embedding). This catches "Postgres" vs "postgres " without the
 // false-merge risk of fuzzy similarity.
+// findNearDuplicate returns an existing memory whose content is identical after
+// lowercasing and collapsing whitespace — a restatement that exact hashing
+// misses. It is an indexed equality lookup, not a search: the predicate has
+// always been exact normalized equality, and generating candidates with a
+// full-text query over every keyword in the content cost seconds per save on a
+// large store (3.6s average, 16s worst case at 3.3GB) for a question an index
+// answers outright.
+//
+// Rows predating the normalized_hash column read as a miss until `anchored
+// backfill` stamps them, which costs a duplicate row that dream reclaims —
+// never a wrong match.
 func (s *Service) findNearDuplicate(ctx context.Context, content string, projectID *string) *Memory {
-	kws := ExtractKeywords(content)
-	if len(kws) == 0 {
-		return nil
-	}
-	fts := ExpandQueryForFTS(kws)
-	if fts == "" {
-		return nil
-	}
-	opts := SearchOptions{MaxResults: 10}
-	if projectID != nil {
-		opts.ProjectID = *projectID
-	}
-	cands, err := s.store.Search(ctx, fts, opts)
+	existing, err := s.store.FindByNormalizedHash(ctx, normalizedHash(content), projectID)
 	if err != nil {
+		s.logger.Warn("normalized hash lookup failed, proceeding with save", "error", err)
 		return nil
 	}
-	want := normalizeForDedup(content)
-	for i := range cands {
-		if normalizeForDedup(cands[i].Memory.Content) == want {
-			m := cands[i].Memory
-			return &m
-		}
-	}
-	return nil
+	return existing
 }

@@ -122,8 +122,8 @@ func runMaintenanceRun(args []string) {
 		}{step, true})
 	}
 
-	// 1. Import — pulls fresh memories from connected tools. Embeddings are
-	// generated inline by the importer.
+	// 1. Import — pulls fresh memories from connected tools. It saves with
+	// SkipEmbed, so vectors are the next step's job, not this one's.
 	runStep("import", *skipImport, func() *exec.Cmd {
 		return maintenanceCmd(exe, *configPath, "import", "all")
 	})

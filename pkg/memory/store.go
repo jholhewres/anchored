@@ -134,6 +134,9 @@ type Store interface {
 	CountWithoutEmbedding(ctx context.Context) (int, error)
 	FindByContentHash(ctx context.Context, hash string, projectID *string) (*Memory, error)
 	BackfillContentHash(ctx context.Context) (int, error)
+	FindByNormalizedHash(ctx context.Context, hash string, projectID *string) (*Memory, error)
+	BackfillNormalizedHash(ctx context.Context, limit int) (int, error)
+	PendingNormalizedHash(ctx context.Context) (int, error)
 	DB() *sql.DB
 	VectorCache() *VectorCache
 	Close() error

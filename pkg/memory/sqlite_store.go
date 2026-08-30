@@ -98,6 +98,14 @@ func contentHash(content string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// normalizedHash is contentHash over the dedup-normalized form, so two
+// memories that differ only in case or whitespace share one value. It backs an
+// indexed equality lookup for the near-duplicate check, which previously had to
+// generate candidates with a full-text query over the whole store.
+func normalizedHash(content string) string {
+	return contentHash(normalizeForDedup(content))
+}
+
 func (s *SQLiteStore) Save(ctx context.Context, m Memory) error {
 	_, err := s.SaveTemporal(ctx, m, TemporalWriteOptions{})
 	return err
@@ -876,6 +884,104 @@ func (s *SQLiteStore) FindByContentHash(ctx context.Context, hash string, projec
 		return nil, fmt.Errorf("find by content hash: %w", err)
 	}
 	return m, nil
+}
+
+// FindByNormalizedHash returns the live memory whose content matches after
+// normalization, scoped to the same project. Rows written before the
+// 020_normalized_hash migration hold NULL and are invisible here until
+// BackfillNormalizedHash reaches them.
+func (s *SQLiteStore) FindByNormalizedHash(ctx context.Context, hash string, projectID *string) (*Memory, error) {
+	if hash == "" {
+		return nil, nil
+	}
+	var row *sql.Row
+	if projectID != nil {
+		row = s.db.QueryRowContext(ctx,
+			`SELECT id, project_id, category, content, content_hash, keywords, embedding, source, source_id, created_at, updated_at, access_count, last_accessed_at, metadata, sync_dirty, sync_origin, author, remote_project_key
+			 FROM memories WHERE normalized_hash = ? AND project_id = ? AND deleted_at IS NULL`,
+			hash, *projectID,
+		)
+	} else {
+		row = s.db.QueryRowContext(ctx,
+			`SELECT id, project_id, category, content, content_hash, keywords, embedding, source, source_id, created_at, updated_at, access_count, last_accessed_at, metadata, sync_dirty, sync_origin, author, remote_project_key
+			 FROM memories WHERE normalized_hash = ? AND project_id IS NULL AND deleted_at IS NULL`,
+			hash,
+		)
+	}
+
+	m, err := scanMemory(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find by normalized hash: %w", err)
+	}
+	return m, nil
+}
+
+// BackfillNormalizedHash stamps rows written before the column existed, newest
+// first so the memories most likely to be re-saved regain dedup coverage
+// soonest. Bounded by limit so a large store drains in slices instead of one
+// long pass; returns how many rows it stamped.
+func (s *SQLiteStore) BackfillNormalizedHash(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, content FROM memories
+		 WHERE normalized_hash IS NULL OR normalized_hash = ''
+		 ORDER BY updated_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("backfill normalized hash query: %w", err)
+	}
+	type pending struct{ id, hash string }
+	var batch []pending
+	for rows.Next() {
+		var id, content string
+		if err := rows.Scan(&id, &content); err != nil {
+			continue
+		}
+		batch = append(batch, pending{id, normalizedHash(content)})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("backfill normalized hash scan: %w", err)
+	}
+	rows.Close()
+
+	// The writes run after the cursor is closed and in one transaction: the
+	// query above holds a read on the same table the updates target, and a
+	// per-row Exec against a multi-GB store is what made the old backfill slow.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("backfill normalized hash tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var total int
+	for _, p := range batch {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE memories SET normalized_hash = ? WHERE id = ?", p.hash, p.id,
+		); err != nil {
+			s.logger.Warn("backfill normalized hash failed", "id", p.id, "error", err)
+			continue
+		}
+		total++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("backfill normalized hash commit: %w", err)
+	}
+	return total, nil
+}
+
+// PendingNormalizedHash counts rows still missing a normalized hash.
+func (s *SQLiteStore) PendingNormalizedHash(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memories WHERE normalized_hash IS NULL OR normalized_hash = ''",
+	).Scan(&n)
+	return n, err
 }
 
 func (s *SQLiteStore) BackfillContentHash(ctx context.Context) (int, error) {

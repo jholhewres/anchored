@@ -15,6 +15,14 @@ func (s *captureSaveStore) Save(_ context.Context, m Memory) error {
 	return nil
 }
 
+func (s *captureSaveStore) FindByNormalizedHash(_ context.Context, _ string, _ *string) (*Memory, error) {
+	return nil, nil
+}
+
+func (s *captureSaveStore) BackfillNormalizedHash(_ context.Context, _ int) (int, error) { return 0, nil }
+
+func (s *captureSaveStore) PendingNormalizedHash(_ context.Context) (int, error) { return 0, nil }
+
 func (s *captureSaveStore) FindByContentHash(_ context.Context, _ string, _ *string) (*Memory, error) {
 	return nil, nil
 }
