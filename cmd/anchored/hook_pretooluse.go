@@ -18,13 +18,17 @@ import (
 )
 
 // runHookPreToolUse inspects an anchored sandbox tool call before execution
-// and blocks payloads that contain dangerous patterns. The hook IS registered
-// in hooks/hooks.json with a narrow matcher (mcp__anchored__anchored_execute*)
-// — the matcher exists because checkDangerousPattern is substring-based and
-// would generate false positives if applied to general-purpose Bash. Limiting
-// it to the sandbox tools means we only block code the user explicitly asked
-// us to execute via anchored, where false positives are easier to reason
-// about and the cost of a false negative (rm -rf /, mkfs, dd) is highest.
+// and blocks payloads that contain dangerous patterns. hooks/hooks.json wires
+// it behind an MCP catch-all matcher (mcp__.*), which this function narrows
+// itself: the dangerous-pattern check runs only for the sandbox-execute leaves.
+// The catch-all is there for the context gate below, which must observe every
+// tool call or an agent walks past it via any third-party MCP tool.
+//
+// The narrowing matters because checkDangerousPattern is substring-based and
+// would generate false positives on general-purpose Bash. Limiting it to the
+// sandbox tools means we only block code the user explicitly asked us to
+// execute via anchored, where false positives are easier to reason about and
+// the cost of a false negative (rm -rf /, mkfs, dd) is highest.
 func runHookPreToolUse(args []string) {
 	fs := newFlagSet("hook pretooluse")
 	configPath := fs.String("config", "", "path to config file")

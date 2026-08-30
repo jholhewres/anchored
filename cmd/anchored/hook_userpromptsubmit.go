@@ -322,7 +322,7 @@ func creditGateFromRecall(cfg *config.Config, sessionID, preview string, dlog *d
 	if cfg == nil || preview == "" || cfg.Plugin.ContextGateMode() != "enforce" {
 		return false
 	}
-	if !satisfyGateFromRecall(cfg.Memory.StorageDir, sessionID, 1) {
+	if !satisfyGateFromRecall(cfg.Memory.StorageDir, sessionID) {
 		return false
 	}
 	dlog.Event("hook.userpromptsubmit.recall", map[string]any{"stage": "context_gate_satisfied"})

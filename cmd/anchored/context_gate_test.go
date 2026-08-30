@@ -186,7 +186,7 @@ func TestSanitizeSessionID(t *testing.T) {
 func TestGateFromRecall_RequiresRichBlock(t *testing.T) {
 	dir := t.TempDir()
 
-	if satisfyGateFromRecall(dir, "sess-recall-1", 5) {
+	if satisfyGateFromRecall(dir, "sess-recall-1") {
 		t.Fatal("credited the gate on hits alone, without the SessionStart rich block")
 	}
 
@@ -206,7 +206,7 @@ func TestGateFromRecall_CreditsWhenBothSignalsLand(t *testing.T) {
 	const sess = "sess-recall-2"
 
 	markSessionStartRichBlock(dir, sess)
-	if !satisfyGateFromRecall(dir, sess, 3) {
+	if !satisfyGateFromRecall(dir, sess) {
 		t.Fatal("rich block + injected hits did not credit the gate")
 	}
 
@@ -219,19 +219,42 @@ func TestGateFromRecall_CreditsWhenBothSignalsLand(t *testing.T) {
 	}
 }
 
-// TestGateFromRecall_NoHitsNeverCredits guards the other edge: the rich block
-// landing on its own says nothing about whether this prompt's retrieval found
-// anything, so an empty recall must leave the gate armed.
-func TestGateFromRecall_NoHitsNeverCredits(t *testing.T) {
+// TestGateFromRecall_CreditsOnceThenShortCircuits pins the hot-path guarantee:
+// this runs on every user prompt inside the injection budget, so only the first
+// call may write. A later call must report that it did nothing and leave the
+// existing credit exactly as it found it.
+//
+// (The "recall found nothing" edge is the caller's: creditGateFromRecall
+// measures the rendered preview, which is covered by
+// TestCreditGateFromRecall_OnlyWhenSomethingWasRendered.)
+func TestGateFromRecall_CreditsOnceThenShortCircuits(t *testing.T) {
 	dir := t.TempDir()
 	const sess = "sess-recall-3"
+	gateDir := filepath.Join(dir, "ctxgate")
+	okMarker := filepath.Join(gateDir, sanitizeSessionID(sess)) + ctxGateOKMarkerSuffix
 
 	markSessionStartRichBlock(dir, sess)
-	if satisfyGateFromRecall(dir, sess, 0) {
-		t.Fatal("credited the gate on an empty recall")
+	if !satisfyGateFromRecall(dir, sess) {
+		t.Fatal("first credit did not land")
 	}
-	if dec, _ := contextGateDecision(dir, sess, "Bash"); dec == nil {
-		t.Fatal("expected deny when recall found nothing")
+	info, err := os.Stat(okMarker)
+	if err != nil {
+		t.Fatalf("stat sentinel: %v", err)
+	}
+
+	if satisfyGateFromRecall(dir, sess) {
+		t.Error("a second call reported a fresh credit for an already-credited session")
+	}
+	again, err := os.Stat(okMarker)
+	if err != nil {
+		t.Fatalf("stat sentinel after second call: %v", err)
+	}
+	if !again.ModTime().Equal(info.ModTime()) {
+		t.Error("the second call rewrote the sentinel instead of short-circuiting")
+	}
+
+	if dec, stage := contextGateDecision(dir, sess, "Bash"); dec != nil {
+		t.Fatalf("gate denied a credited session (stage=%s)", stage)
 	}
 }
 
@@ -244,10 +267,10 @@ func TestGateFromRecall_FailsOpenOnMissingInputs(t *testing.T) {
 	markSessionStartRichBlock("", "sess-recall-4")
 	markSessionStartRichBlock(dir, "")
 
-	if satisfyGateFromRecall("", "sess-recall-4", 2) {
+	if satisfyGateFromRecall("", "sess-recall-4") {
 		t.Error("credited with an empty storage dir")
 	}
-	if satisfyGateFromRecall(dir, "", 2) {
+	if satisfyGateFromRecall(dir, "") {
 		t.Error("credited with an empty session id")
 	}
 }

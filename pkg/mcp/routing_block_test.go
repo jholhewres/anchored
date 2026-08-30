@@ -48,3 +48,22 @@ func TestRoutingBlocks_HaveNoHardcodedFQN(t *testing.T) {
 		}
 	}
 }
+
+// TestRoutingBlocks_LiftToolSearchResultCap guards the other half of the hint.
+// ToolSearch keyword search returns only its max_results best matches and
+// defaults to 5, so a hint naming more tools than that silently loads a subset
+// and the agent hits "not found" on whichever one was trimmed.
+func TestRoutingBlocks_LiftToolSearchResultCap(t *testing.T) {
+	for name, block := range map[string]string{
+		"AnchoredRoutingBlock":    AnchoredRoutingBlock,
+		"AnchoredMCPInstructions": AnchoredMCPInstructions,
+		"AnchoredSubagentBlock":   AnchoredSubagentBlock,
+	} {
+		if !strings.Contains(block, "ToolSearch") {
+			continue
+		}
+		if !strings.Contains(block, "max_results") {
+			t.Errorf("%s asks for several tools without raising max_results (defaults to 5)", name)
+		}
+	}
+}

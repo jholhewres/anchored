@@ -152,7 +152,7 @@ func contextGateDecision(storageDir, sessionID, bareTool string) (*hookroute.Dec
 			// by leaf name — a select: with a hardcoded FQN loads nothing and the
 			// model retries the blocked tool, burning deny budget.
 			"If the anchored_* tools are not loaded yet (deferred — a direct call fails as not-found), " +
-			"FIRST run ToolSearch(query: \"anchored_context anchored_search\") and load whatever it " +
+			"FIRST run ToolSearch(query: \"+anchored_ context search\", max_results: 12) and load whatever it " +
 			"returns (never assume an exact tool name — the prefix varies by harness), " +
 			"THEN call anchored_context — do not retry the blocked tool until you have. " +
 			"Calling anchored_context (or a search) clears this gate for the rest of the session. " +
@@ -228,19 +228,28 @@ func markSessionStartRichBlock(storageDir, sessionID string) {
 	sweepStaleGateMarkers(gateDir)
 }
 
-// satisfyGateFromRecall credits the gate when the auto-recall actually injected
-// memories AND SessionStart's rich block landed for the same session. Returns
-// true when it wrote the satisfied marker. A session whose gate is already
-// satisfied is written again harmlessly (the marker is idempotent).
-func satisfyGateFromRecall(storageDir, sessionID string, hits int) bool {
-	if storageDir == "" || sessionID == "" || hits <= 0 {
+// satisfyGateFromRecall credits the gate when SessionStart's rich block landed
+// for this session. Whether the recall actually delivered anything is the
+// caller's half of the rule: it holds the rendered preview, which is the only
+// honest measure of what reached the model, and a hit count here would be a
+// second, weaker version of that same check.
+//
+// Returns true only when THIS call wrote the credit. It runs on every user
+// prompt inside a 100ms budget, so an already-credited session must cost one
+// stat rather than a fresh MkdirAll + temp file + rename.
+func satisfyGateFromRecall(storageDir, sessionID string) bool {
+	if storageDir == "" || sessionID == "" {
 		return false
 	}
 	gateDir := filepath.Join(storageDir, "ctxgate")
+	marker := filepath.Join(gateDir, sanitizeSessionID(sessionID))
+	if gateIsSatisfied(marker) {
+		return false
+	}
 	if _, err := os.Stat(richMarkerPath(gateDir, sessionID)); err != nil {
 		return false
 	}
-	markGateSatisfied(gateDir, filepath.Join(gateDir, sanitizeSessionID(sessionID)))
+	markGateSatisfied(gateDir, marker)
 	return true
 }
 
