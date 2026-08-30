@@ -32,3 +32,19 @@ func TestAnchoredMCPInstructions_KeepsLoadBearingDirectives(t *testing.T) {
 		}
 	}
 }
+
+// Agent-facing bootstrap hints must never hardcode a fully-qualified MCP tool
+// name: registration prefixes drift across harnesses (mcp__anchored__*,
+// mcp__plugin_anchored_anchored__*), and a ToolSearch select: with a stale FQN
+// loads nothing — the model then retries the blocked tool instead of complying.
+func TestRoutingBlocks_HaveNoHardcodedFQN(t *testing.T) {
+	for name, block := range map[string]string{
+		"AnchoredRoutingBlock":    AnchoredRoutingBlock,
+		"AnchoredMCPInstructions": AnchoredMCPInstructions,
+		"AnchoredSubagentBlock":   AnchoredSubagentBlock,
+	} {
+		if strings.Contains(block, "select:mcp__anchored__") {
+			t.Errorf("%s hardcodes an MCP FQN in its ToolSearch hint — search by leaf name instead", name)
+		}
+	}
+}

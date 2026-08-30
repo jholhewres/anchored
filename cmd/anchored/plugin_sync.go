@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jholhewres/anchored/pkg/config"
+	"github.com/jholhewres/anchored/pkg/updater"
 )
 
 // gitFastForwardTimeout caps how long the SessionStart hook can spend pulling
@@ -78,9 +79,10 @@ func detectPluginDrift(cfg *config.Config, binaryVersion string) PluginDrift {
 		MarketplaceDir: cfg.Plugin.MarketplaceDir,
 		CacheDir:       cfg.Plugin.CacheDir,
 	}
-	if binaryVersion == "" || binaryVersion == "dev" {
-		// "dev" placeholder = local `go build` without ldflags. Drift
-		// comparison is meaningless then.
+	if binaryVersion == "" || updater.IsDevBuild(binaryVersion) {
+		// "dev" placeholder = local `go build` without ldflags; dev-stamped
+		// builds (make build) carry a git hash suffix. Drift comparison is
+		// meaningless for either.
 		return d
 	}
 

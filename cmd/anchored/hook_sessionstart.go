@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/contextbudget"
 	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/jholhewres/anchored/pkg/mcp"
@@ -170,9 +171,7 @@ func runHookSessionStart(args []string) {
 	tiers := buildSessionStartTiers(ctx, hc, resolvedSessionID, projectID, cwdVal)
 	richBlock, dropped := contextbudget.Assemble(tiers, budget)
 
-	if richBlock != "" {
-		additional += "\n\n<anchored_context>\n" + richBlock + "\n</anchored_context>"
-	}
+	additional = appendRichContextBlock(additional, richBlock, cfg, resolvedSessionID)
 
 	// Token telemetry for `anchored stats --tokens`: how many tokens this
 	// injection cost vs. the static-context baseline it stands in for.
@@ -189,6 +188,44 @@ func runHookSessionStart(args []string) {
 		"budget_tokens": budget,
 	})
 	emitSessionStart(additional)
+}
+
+// appendRichContextBlock emits the rich context block AND records that it
+// reached the model, as one unit. The two must not drift apart: the marker is
+// the only signal the UserPromptSubmit recall pass has for telling "memory was
+// already delivered this session" from "the model has seen nothing yet", and
+// without it the gate denies the first work tool of sessions that already have
+// what it would force them to fetch.
+func appendRichContextBlock(additional, richBlock string, cfg *config.Config, sessionID string) string {
+	if richBlock == "" {
+		return additional
+	}
+	if cfg != nil && cfg.Plugin.ContextGateMode() == "enforce" && richBlockCarriesIdentity(richBlock) {
+		markSessionStartRichBlock(cfg.Memory.StorageDir, sessionID)
+	}
+	return additional + "\n\n<anchored_context>\n" + richBlock + "\n</anchored_context>"
+}
+
+// richBlockCarriesIdentity reports whether the assembled block actually carries
+// the L0 identity, rather than merely being non-empty.
+//
+// This is load-bearing for the recall credit. contextbudget.Assemble does not
+// guarantee MinItems — it reserves for higher tiers first and takes what fits —
+// so a user with several long standing directives can exhaust the budget in
+// tier 0 and have identity dropped, leaving a non-empty block that carries no
+// L0 at all. Marking on "non-empty" would then let the recall credit the gate
+// on the strength of a signal that never arrived, which is exactly the premise
+// the two-signal rule rests on.
+//
+// No identity file means there is nothing to deliver, and absence is not a
+// failure to deliver: those sessions still qualify. Anything else fails closed
+// (no mark, gate stays armed), which costs a deny and never a wrong open.
+func richBlockCarriesIdentity(richBlock string) bool {
+	identity := readSessionIdentity()
+	if identity == "" {
+		return true
+	}
+	return strings.Contains(richBlock, identity)
 }
 
 // buildSessionStartTiers assembles the five tiers for the rich context block.

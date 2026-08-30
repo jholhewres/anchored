@@ -126,6 +126,12 @@ func TestDetectPluginDrift(t *testing.T) {
 		t.Fatalf("dev binary must never be considered drifting, got %+v", d3)
 	}
 
+	// Dev-stamped builds (make build) are as uncomparable as bare "dev":
+	// drift detection must short-circuit before touching mirror or cache.
+	if d5 := detectPluginDrift(cfgStale, "v0.17.0-dev+g3926a8c.dirty"); d5.MirrorVersion != "" || d5.CacheVersion != "" || d5.HasDrift {
+		t.Errorf("dev-stamped build must skip drift comparison: %+v", d5)
+	}
+
 	// Cache absent but mirror current: CacheBehind only — anchored cannot
 	// fix this, user must run /plugin install. MirrorBehind must NOT be set.
 	freshMirror := t.TempDir()

@@ -85,7 +85,7 @@ func RoutePreToolUse(tool string, toolInput map[string]any, opt Options) *Decisi
 // not-found — and the agent then tends to abandon anchored entirely, falling
 // back to nothing because the original command is blocked. This tells it to
 // load the tools once via ToolSearch and keep going instead of giving up.
-const deferredToolHint = " If the anchored_* tools are not loaded yet (deferred — a direct call fails as not-found), FIRST run ToolSearch(query: \"select:mcp__anchored__anchored_execute,mcp__anchored__anchored_fetch_and_index,mcp__anchored__anchored_ctx_search\") to load them, THEN make the call — do not stop using anchored or silently drop the task just because the schema was not loaded yet."
+const deferredToolHint = " If the anchored_* tools are not loaded yet (deferred — a direct call fails as not-found), FIRST run ToolSearch(query: \"anchored_execute anchored_fetch_and_index anchored_ctx_search\") to load them, THEN make the call — do not stop using anchored or silently drop the task just because the schema was not loaded yet."
 
 // ─── WebFetch ───────────────────────────────────────────────────────────────
 

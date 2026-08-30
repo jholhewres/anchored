@@ -41,9 +41,17 @@ const ctxGateMaxDenies = 3
 // lazy sweep on the (rare) deny path removes them.
 const ctxGateMarkerTTL = 7 * 24 * time.Hour
 
-// ctxGateSatisfied is the marker content once memory has been consulted (or the
-// gate has relented). Any other content is a decimal deny counter.
+// ctxGateSatisfied is the content written into the satisfaction sentinel, and
+// the legacy content that older builds wrote into the counter file itself.
 const ctxGateSatisfied = "ok"
+
+// ctxGateOKMarkerSuffix names the satisfaction sentinel, a file distinct from
+// the counter file. Satisfaction USED to be a value inside the counter file,
+// which made it destructible: a deny write that raced with a credit could
+// overwrite "ok" with a stale counter and re-arm a gate the agent had already
+// satisfied. A separate file makes the state machine monotonic — once credited,
+// no counter write can revoke it, whatever the interleaving.
+const ctxGateOKMarkerSuffix = ".ok"
 
 // contextGateSatisfyingTools are the anchored MCP leaf tools whose use proves
 // the agent engaged its memory and therefore satisfies the gate for the rest of
@@ -55,11 +63,31 @@ var contextGateSatisfyingTools = map[string]bool{
 	"anchored_kg_query":   true,
 }
 
+// mcpLeafName strips an MCP server prefix from a wire tool name, returning the
+// leaf: mcp__anchored__anchored_save and
+// mcp__plugin_anchored_anchored__anchored_save both yield anchored_save. Every
+// decision anchored makes about "is this one of my tools" must go through here
+// rather than test the wire name, because the registration prefix is chosen by
+// the harness and changes without notice. Non-MCP names pass through unchanged.
+func mcpLeafName(tool string) string {
+	if i := strings.LastIndex(tool, "__"); i >= 0 {
+		return tool[i+2:]
+	}
+	return tool
+}
+
 // isAnchoredTool reports whether a tool belongs to anchored itself. Such tools
 // must never be gated: gating them would deadlock the session, since the only
 // way to satisfy the gate is to call one of them.
-func isAnchoredTool(bareTool, fullTool string) bool {
-	return strings.HasPrefix(fullTool, "mcp__anchored__") || strings.HasPrefix(bareTool, "anchored_")
+//
+// It takes the LEAF name only, deliberately. Registration prefixes drift across
+// harnesses (mcp__anchored__*, mcp__plugin_anchored_anchored__*, …), so a test
+// against the wire name silently stops matching the day a harness renames the
+// server — the failure mode that kept the PostToolUse matcher dead for this
+// tool's entire history. The caller strips the prefix once; there is no second
+// derivation here to fall out of sync with it.
+func isAnchoredTool(bareTool string) bool {
+	return strings.HasPrefix(bareTool, "anchored_")
 }
 
 // contextGateDecision applies the optional PreToolUse context gate. It returns
@@ -69,9 +97,8 @@ func isAnchoredTool(bareTool, fullTool string) bool {
 // yields passthrough so the gate can never block on infrastructure faults.
 //
 // storageDir is cfg.Memory.StorageDir (already home-expanded); sessionID is the
-// client session id; bareTool is the leaf tool name (server prefix stripped)
-// and fullTool the wire name.
-func contextGateDecision(storageDir, sessionID, bareTool, fullTool string) (*hookroute.Decision, string) {
+// client session id; bareTool is the leaf tool name, stripped by mcpLeafName.
+func contextGateDecision(storageDir, sessionID, bareTool string) (*hookroute.Decision, string) {
 	if sessionID == "" || storageDir == "" {
 		return nil, "skip_no_session"
 	}
@@ -83,37 +110,26 @@ func contextGateDecision(storageDir, sessionID, bareTool, fullTool string) (*hoo
 	// check first so an agent that correctly leads with anchored_context sees
 	// zero friction.
 	if contextGateSatisfyingTools[bareTool] {
-		writeGateMarker(gateDir, marker, ctxGateSatisfied)
+		markGateSatisfied(gateDir, marker)
 		return nil, "satisfied"
 	}
 
 	// Never gate anchored's own tools (would deadlock).
-	if isAnchoredTool(bareTool, fullTool) {
+	if isAnchoredTool(bareTool) {
 		return nil, "exempt_anchored"
 	}
 
-	data, readErr := os.ReadFile(marker)
-	content := ""
-	if readErr == nil {
-		content = strings.TrimSpace(string(data))
-	}
-
 	// Already satisfied (or relented): never block again this session.
-	if content == ctxGateSatisfied {
+	if gateIsSatisfied(marker) {
 		return nil, "already_satisfied"
 	}
 
-	denies := 0
-	if content != "" {
-		if n, err := strconv.Atoi(content); err == nil {
-			denies = n
-		}
-	}
+	denies := readDenyCount(marker)
 
 	// Relent: a model that ignored the redirect ctxGateMaxDenies times is let
 	// through so it can never be permanently wedged.
 	if denies >= ctxGateMaxDenies {
-		writeGateMarker(gateDir, marker, ctxGateSatisfied)
+		markGateSatisfied(gateDir, marker)
 		return nil, "relented"
 	}
 
@@ -122,7 +138,7 @@ func contextGateDecision(storageDir, sessionID, bareTool, fullTool string) (*hoo
 	if err := os.MkdirAll(gateDir, 0o755); err != nil {
 		return nil, "skip_mkdir_failed"
 	}
-	_ = os.WriteFile(marker, []byte(strconv.Itoa(denies+1)), 0o644)
+	writeGateMarker(gateDir, marker, strconv.Itoa(denies+1))
 	sweepStaleGateMarkers(gateDir)
 
 	return &hookroute.Decision{
@@ -131,9 +147,14 @@ func contextGateDecision(storageDir, sessionID, bareTool, fullTool string) (*hoo
 			"anchored_context(cwd: \"<this project's absolute path>\") to load identity, " +
 			"the project, and recent decisions — your prior work and the user's conventions " +
 			"live there, not in the codebase. (Already know what you need? anchored_search works too.) " +
+			// The exact MCP registration prefix varies by harness (mcp__anchored__*,
+			// mcp__plugin_anchored_anchored__*, …), so the bootstrap hint must search
+			// by leaf name — a select: with a hardcoded FQN loads nothing and the
+			// model retries the blocked tool, burning deny budget.
 			"If the anchored_* tools are not loaded yet (deferred — a direct call fails as not-found), " +
-			"FIRST run ToolSearch(query: \"select:mcp__anchored__anchored_context,mcp__anchored__anchored_search\") " +
-			"to load them, THEN call anchored_context — do not retry the blocked tool until you have. " +
+			"FIRST run ToolSearch(query: \"anchored_context anchored_search\") and load whatever it " +
+			"returns (never assume an exact tool name — the prefix varies by harness), " +
+			"THEN call anchored_context — do not retry the blocked tool until you have. " +
 			"Calling anchored_context (or a search) clears this gate for the rest of the session. " +
 			"It is NOT a permanent block: it auto-relents after a few denies, so consulting memory is the " +
 			"way through, not retrying the same tool.",
@@ -154,18 +175,149 @@ func satisfyGateFromPostToolUse(storageDir, sessionID, bareTool string) bool {
 		return false
 	}
 	gateDir := filepath.Join(storageDir, "ctxgate")
-	writeGateMarker(gateDir, filepath.Join(gateDir, sanitizeSessionID(sessionID)), ctxGateSatisfied)
+	markGateSatisfied(gateDir, filepath.Join(gateDir, sanitizeSessionID(sessionID)))
 	return true
 }
 
-// writeGateMarker best-effort writes content to the session marker, creating the
-// gate dir if needed. Errors are swallowed: a failed write degrades to "gate not
-// yet satisfied", which at worst costs one extra (bounded) deny — never a block.
+// ─── Recall-side satisfaction ───────────────────────────────────────────────
+//
+// The gate exists to guarantee ONE thing: that memory reached the model before
+// it started working. A tool call is not the only way that happens — the
+// UserPromptSubmit auto-recall retrieves and injects memories directly into the
+// context, and SessionStart injects the rich block (identity + project + recent
+// decisions). When both land, the gate's precondition is already met and
+// denying the first work tool buys nothing: measured over 95 gated sessions, 53%
+// were denied with memories already injected.
+//
+// Crediting is deliberately conservative — hits alone are NOT enough. The
+// recall pass is keyword-only and never carries identity (L0), so a session
+// that got one weak hit and no rich block has genuinely not seen what
+// anchored_context would have shown it. Both signals are required.
+//
+// The two signals are produced by different hook processes, so SessionStart
+// leaves a companion marker next to the gate marker for the recall pass to read.
+
+// ctxGateRichMarkerSuffix names the companion marker written by SessionStart
+// when its rich context block was non-empty. Only its EXISTENCE is read; the
+// content is a fixed human-readable breadcrumb for anyone inspecting the
+// directory, never parsed.
+const ctxGateRichMarkerSuffix = ".rich"
+
+// ctxGateRichPresent is that breadcrumb.
+const ctxGateRichPresent = "rich-block-emitted"
+
+// richMarkerPath is the companion-marker path for a session.
+func richMarkerPath(gateDir, sessionID string) string {
+	return filepath.Join(gateDir, sanitizeSessionID(sessionID)+ctxGateRichMarkerSuffix)
+}
+
+// markSessionStartRichBlock records that SessionStart emitted a non-empty rich
+// context block for this session. Best-effort: a failed write only costs the
+// session the recall-side credit, never a block. Swept by the same TTL sweep as
+// the gate markers, since it lives in the same directory.
+func markSessionStartRichBlock(storageDir, sessionID string) {
+	if storageDir == "" || sessionID == "" {
+		return
+	}
+	gateDir := filepath.Join(storageDir, "ctxgate")
+	writeGateMarker(gateDir, richMarkerPath(gateDir, sessionID), ctxGateRichPresent)
+	// The deny path used to be the only sweep trigger. Now that most sessions
+	// are credited without ever denying — and each one writes two markers
+	// instead of one — sweeping here is what keeps ctxgate/ bounded. Once per
+	// session, off the hot tool-call path.
+	sweepStaleGateMarkers(gateDir)
+}
+
+// satisfyGateFromRecall credits the gate when the auto-recall actually injected
+// memories AND SessionStart's rich block landed for the same session. Returns
+// true when it wrote the satisfied marker. A session whose gate is already
+// satisfied is written again harmlessly (the marker is idempotent).
+func satisfyGateFromRecall(storageDir, sessionID string, hits int) bool {
+	if storageDir == "" || sessionID == "" || hits <= 0 {
+		return false
+	}
+	gateDir := filepath.Join(storageDir, "ctxgate")
+	if _, err := os.Stat(richMarkerPath(gateDir, sessionID)); err != nil {
+		return false
+	}
+	markGateSatisfied(gateDir, filepath.Join(gateDir, sanitizeSessionID(sessionID)))
+	return true
+}
+
+// gateIsSatisfied reports whether this session has already been credited.
+func gateIsSatisfied(marker string) bool {
+	if _, err := os.Stat(marker + ctxGateOKMarkerSuffix); err == nil {
+		return true
+	}
+	// Legacy state: builds before the sentinel wrote "ok" INTO the counter
+	// file. Honor it so upgrading mid-session does not re-arm a gate the agent
+	// already satisfied.
+	data, err := os.ReadFile(marker)
+	return err == nil && strings.TrimSpace(string(data)) == ctxGateSatisfied
+}
+
+// markGateSatisfied credits the session. Writing a dedicated sentinel rather
+// than a value inside the counter file is what makes the credit permanent: a
+// concurrent deny can still bump the counter, but it can no longer erase this.
+func markGateSatisfied(gateDir, marker string) {
+	writeGateMarker(gateDir, marker+ctxGateOKMarkerSuffix, ctxGateSatisfied)
+}
+
+// readDenyCount reads the deny counter, treating anything unparseable (missing
+// file, legacy "ok", a torn write) as zero. Zero is the safe reading: it costs
+// at most a bounded number of extra denies and can never wedge a session.
+func readDenyCount(marker string) int {
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// writeGateMarker best-effort writes content to a marker, creating the gate dir
+// if needed. The write is ATOMIC (temp file + rename): a plain os.WriteFile
+// opens O_TRUNC, so a concurrent hook process — and Claude Code issues tool
+// calls in parallel batches — can read a zero-length file mid-write and see a
+// deny counter of 0, making the relent bound unenforceable. Rename gives every
+// reader either the old content or the new, never nothing.
+//
+// Errors are swallowed: a failed write degrades to "gate not yet satisfied",
+// which at worst costs one extra (bounded) deny — never a block.
+//
+// This does not make the counter's read-modify-write atomic; two concurrent
+// denies can still collapse into one increment. That is deliberate — the
+// counter only decides WHEN to relent, so losing an increment costs at most an
+// extra deny, while the state it must never lose (satisfaction) now lives in
+// its own file and is never rewritten by this path.
 func writeGateMarker(gateDir, marker, content string) {
 	if err := os.MkdirAll(gateDir, 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(marker, []byte(content), 0o644)
+	tmp, err := os.CreateTemp(gateDir, ".tmp-marker-*")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := os.Rename(tmpName, marker); err != nil {
+		_ = os.Remove(tmpName)
+	}
 }
 
 // sanitizeSessionID turns a client session id into a filesystem-safe marker

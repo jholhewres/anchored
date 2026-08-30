@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/jholhewres/anchored/pkg/session"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/jholhewres/anchored/pkg/config"
 )
 
 // newSessionStartTestDB runs the REAL client migrations so the queries in the
@@ -255,5 +259,95 @@ func TestTaskThreadItem_CrossRepoInjection(t *testing.T) {
 	exec.Command("git", "init", "-q", repo2).Run()
 	if _, ok := taskThreadItem(ctx, hc, mgr, "sC", "projA", repo2); ok {
 		t.Error("non-ticket branch must not produce a task item")
+	}
+}
+
+// TestAppendRichContextBlock_MarksWhatItEmits welds the two halves together:
+// the rich block reaching the model and the marker recording that it did. They
+// must not drift apart — the marker is the only signal the UserPromptSubmit
+// recall has for telling "memory was already delivered this session" from "the
+// model has seen nothing yet".
+func TestAppendRichContextBlock_MarksWhatItEmits(t *testing.T) {
+	cfgFor := func(dir, mode string) *config.Config {
+		c := &config.Config{}
+		c.Memory.StorageDir = dir
+		c.Plugin.ContextGate = mode
+		return c
+	}
+	markerFor := func(dir, sess string) string {
+		return richMarkerPath(filepath.Join(dir, "ctxgate"), sess)
+	}
+
+	t.Run("empty block emits nothing and marks nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		got := appendRichContextBlock("base", "", cfgFor(dir, "enforce"), "s1")
+		if got != "base" {
+			t.Errorf("additional = %q, want unchanged", got)
+		}
+		if _, err := os.Stat(markerFor(dir, "s1")); !os.IsNotExist(err) {
+			t.Error("marked the session although no rich block was emitted")
+		}
+	})
+
+	t.Run("non-empty block is emitted and marked", func(t *testing.T) {
+		dir := t.TempDir()
+		got := appendRichContextBlock("base", "IDENTITY", cfgFor(dir, "enforce"), "s2")
+		if !strings.Contains(got, "<anchored_context>") || !strings.Contains(got, "IDENTITY") {
+			t.Errorf("rich block not emitted: %q", got)
+		}
+		if _, err := os.Stat(markerFor(dir, "s2")); err != nil {
+			t.Errorf("emitted the rich block without marking the session: %v", err)
+		}
+	})
+
+	t.Run("gate disabled still emits, does not mark", func(t *testing.T) {
+		dir := t.TempDir()
+		got := appendRichContextBlock("base", "IDENTITY", cfgFor(dir, "disabled"), "s3")
+		if !strings.Contains(got, "<anchored_context>") {
+			t.Error("rich block must be emitted regardless of gate mode")
+		}
+		if _, err := os.Stat(markerFor(dir, "s3")); !os.IsNotExist(err) {
+			t.Error("marked the session while the gate is disabled")
+		}
+	})
+
+	t.Run("nil config still emits", func(t *testing.T) {
+		if got := appendRichContextBlock("base", "IDENTITY", nil, "s4"); !strings.Contains(got, "IDENTITY") {
+			t.Error("nil config must not suppress the rich block")
+		}
+	})
+}
+
+// TestRichBlockCarriesIdentity pins the premise the recall credit rests on.
+// contextbudget.Assemble does not guarantee MinItems, so a non-empty rich
+// block is NOT evidence that identity reached the model — long standing
+// directives in tier 0 can push it out. Marking on non-emptiness would credit
+// the gate on a signal that never arrived.
+func TestRichBlockCarriesIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No identity file: nothing to deliver, so any block qualifies.
+	if !richBlockCarriesIdentity("decisions only") {
+		t.Error("absent identity.md must not disqualify a session")
+	}
+
+	const identity = "Aron prefers small, thematic commits."
+	if err := os.MkdirAll(filepath.Join(home, ".anchored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".anchored", "identity.md"), []byte(identity), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !richBlockCarriesIdentity("## identity\n" + identity + "\n## decisions\n…") {
+		t.Error("block containing the identity text should qualify")
+	}
+	// The load-bearing case: budget consumed by tier 0, identity dropped.
+	if richBlockCarriesIdentity("## standing rules\n- rule\n- rule\n## decisions\n…") {
+		t.Error("block without the identity text must NOT be marked as carrying L0")
+	}
+	if richBlockCarriesIdentity("") {
+		t.Error("empty block cannot carry identity")
 	}
 }

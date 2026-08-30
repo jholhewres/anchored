@@ -16,6 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/jholhewres/anchored/pkg/hookroute"
 	"github.com/jholhewres/anchored/pkg/intent"
@@ -284,6 +285,14 @@ func autoRecallPreview(configPath, cwd, prompt, sessionID string, dlog *debuglog
 
 	preview := renderRecallPreview(expandedQ, in.Kind, hits, arts, kgLine, adaptiveMode, hc.cfg.Plugin.HookBudget())
 
+	// Credit the context gate off the RENDERED preview, never off the hit
+	// count: renderRecallPreview drops hits to fit the byte budget and returns
+	// "" when even the top hit overflows, so retrieving memories is not the
+	// same as delivering them. Crediting on hits alone would open the gate for
+	// a session that received nothing — precisely what the gate exists to
+	// prevent.
+	creditGateFromRecall(hc.cfg, sessionID, preview, dlog)
+
 	// Record token telemetry for `anchored stats --tokens`. Best-effort and
 	// fast (local writes); happens before the caller emits so it never delays
 	// the injected context beyond a sub-millisecond insert.
@@ -301,6 +310,24 @@ const injectionWriteTimeout = 50 * time.Millisecond
 // call, including config load and directory/DB setup that the inner context
 // cannot bound.
 const injectionTotalBudget = 100 * time.Millisecond
+
+// creditGateFromRecall satisfies the context gate when this recall actually
+// delivered memories to the model. It is the UserPromptSubmit half of the
+// recall-credit rule; the SessionStart half writes the companion marker that
+// satisfyGateFromRecall requires. Reports whether the gate was credited.
+//
+// Taking the rendered preview (not the hit slice) is deliberate — see the call
+// site. A no-op when the gate is disabled or nothing was rendered.
+func creditGateFromRecall(cfg *config.Config, sessionID, preview string, dlog *debuglog.Logger) bool {
+	if cfg == nil || preview == "" || cfg.Plugin.ContextGateMode() != "enforce" {
+		return false
+	}
+	if !satisfyGateFromRecall(cfg.Memory.StorageDir, sessionID, 1) {
+		return false
+	}
+	dlog.Event("hook.userpromptsubmit.recall", map[string]any{"stage": "context_gate_satisfied"})
+	return true
+}
 
 // recordInjection captures the usage-feedback signal for Feature D: which
 // memories were put in front of the model this turn. It merges the IDs into

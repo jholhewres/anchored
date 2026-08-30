@@ -164,3 +164,16 @@ func TestFormatDecisionWireShapes(t *testing.T) {
 		t.Error("nil decision must format to nil (passthrough)")
 	}
 }
+
+// The redirect deny hint must never hardcode a fully-qualified MCP tool name:
+// registration prefixes drift across harnesses (mcp__anchored__*,
+// mcp__plugin_anchored_anchored__*), and a ToolSearch select: with a stale FQN
+// loads nothing — the agent then abandons the redirect target entirely.
+func TestDeferredToolHintHasNoHardcodedFQN(t *testing.T) {
+	if strings.Contains(deferredToolHint, "select:mcp__anchored__") {
+		t.Error("deferredToolHint hardcodes an MCP FQN — search by leaf name instead")
+	}
+	if !strings.Contains(deferredToolHint, "ToolSearch") {
+		t.Error("deferredToolHint should still point at ToolSearch")
+	}
+}
