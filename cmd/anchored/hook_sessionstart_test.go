@@ -97,6 +97,13 @@ func TestQueryDecisions_MetadataPinnedAndLifecycle(t *testing.T) {
 // TestBuildSessionStartTiers_FailSafeOnEmptyDB ensures an empty (but migrated)
 // DB produces tiers without errors and Assemble-able output.
 func TestBuildSessionStartTiers_FailSafeOnEmptyDB(t *testing.T) {
+	// An empty cwd makes currentGitBranch fall back to the process directory,
+	// so the task tier reads the CHECKOUT'S branch name: run this from a branch
+	// whose name parses as a ticket key (say "pr-6" → PR-6) and the tier comes
+	// back with an item on a database that has nothing in it. Run from a
+	// directory with no git branch at all instead.
+	t.Chdir(t.TempDir())
+
 	db := newSessionStartTestDB(t)
 	hc := &HookContext{db: db}
 
@@ -106,7 +113,7 @@ func TestBuildSessionStartTiers_FailSafeOnEmptyDB(t *testing.T) {
 	}
 	// standing_rules/decisions/task/events must be empty on a fresh DB
 	// (identity may pick up the developer's real ~/.anchored/identity.md,
-	// which is fine).
+	// which is fine — it is read from $HOME, not the database).
 	for _, tier := range tiers {
 		switch tier.Name {
 		case "standing_rules", "task", "events", "decisions":
