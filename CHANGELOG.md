@@ -6,29 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Session Cockpit (first slice): see every live coding session and bind one to a
-task on your personal board.
-
-### Added
-
-- **`anchored hub`** — an always-on local daemon that serves the dashboard and
-  runs upkeep workers (ending stale sessions, pruning old events) on a ticker,
-  so the live view stays honest even with no tool connected. `hub
-  install/uninstall/status` manage a systemd --user service; the per-tool
-  `serve --stdio` processes stay lightweight producers.
-- **Live sessions** — sessions now record provider/model/intent (telling Claude
-  Code on Anthropic apart from Claude Code + GLM, detected from the
-  environment). `GET /api/sessions/live` and a new **Cockpit** dashboard tab
-  show each open session with its tool, project, intent, recent activity and
-  active/idle state.
-- **Session ↔ task link** — bind a live session to a board task (1 session → 1
-  task; a task accumulates many sessions), create a task from a session, or
-  unlink, via the cockpit and `POST/DELETE /api/sessions/{id}/link` +
-  `/promote-task`. Notable session events flow into the linked task's journal;
-  `/api/tasks` now reports a `live_session_id` when a session is active on it.
-
 ### Fixed
 
+- **The nightly `maintenance run` burned hours of CPU** — on this machine the
+  import step grew from 31 minutes to **6h57m of CPU time** over a week, and the
+  cause was one line on the save path. Every save that misses the exact content
+  hash falls through to a near-duplicate check, and that check generated its
+  candidates with an FTS5 query built from *every* keyword in the incoming
+  content plus a prefix term per keyword — hundreds of `OR` terms against a
+  multi-GB index — only to accept a candidate whose content is byte-identical
+  after lowercasing and collapsing whitespace. It was paying for a search to
+  answer a question about equality.
+  Measured against a 3.3 GB / 78k-memory store: **3.64s per save on average, 16s
+  worst case**. A nightly `import all` re-sends ~10k memories, which is where the
+  hours went. The predicate now has an index behind it — a `normalized_hash`
+  column stamped on write — and the same measurement reads **13.5ms**, a 270×
+  improvement that takes the step from ~10 hours to ~2 minutes.
+  This is on the shared save path, so every `anchored_save`, hook capture and
+  bootstrap gets it too, not just the importer. Existing rows are stamped by
+  `anchored backfill` in bounded slices (the maintenance timer already runs it);
+  until a row is stamped it simply misses, which costs a duplicate row that
+  dream reclaims, never a wrong match.
+- **`maintenance run --config` killed the backfill step** — `maintenance` threads
+  `--config` into every step it spawns, but `backfill` never declared the flag,
+  so pointing maintenance at a non-default config aborted that step with "flag
+  provided but not defined: -config". It accepts `--config` now, like every
+  other step.
+- **ToolSearch bootstrap hints asked for more tools than ToolSearch returns** —
+  the hints list up to six leaf names, and keyword search returns only its
+  `max_results` best matches, which defaults to 5. At least one tool was being
+  silently trimmed, and the agent then hit "not found" on whichever one it was.
+  The hints now use the required-substring form (`+anchored_`, which also stays
+  prefix-agnostic) and raise `max_results` explicitly.
+- **Recall credit rewrote the gate sentinel on every prompt** — the
+  UserPromptSubmit credit re-ran its full marker write (MkdirAll, temp file,
+  rename) for sessions it had already credited, on a path with a 100ms budget.
+  It short-circuits on a single `stat` once credited.
 - **Dev-stamped local builds** — `make build` binaries now report
   `v0.17.0-dev+g<hash>[.dirty]` instead of the bare release semver, so a
   local checkout install is never mistaken for the published tag. Plugin
@@ -168,6 +181,84 @@ install support.
 - **Windows installer** — `install.sh` now supports Git Bash / MSYS / Cygwin
   (`MINGW*`/`MSYS*`/`CYGWIN*`), extracting the published Windows `.zip`
   (`anchored.exe`) instead of aborting with "Unsupported OS".
+
+## [0.15.2] - 2026-07-21
+
+### Fixed
+
+- **ONNX saturated every core during a re-embed** — the embedding runtime was
+  left at its default thread count, so a backfill or a large re-embed took the
+  whole machine with it. Threads are now capped, which is what makes an
+  unattended `maintenance run` survivable on a laptop.
+
+## [0.15.1] - 2026-07-21
+
+### Fixed
+
+- **Durable processing worker ran flat out** — the queue introduced in 0.15.0
+  drained with no throttle and pinned the CPU. It now paces itself.
+
+## [0.15.0] - 2026-07-20
+
+Session Cockpit — see every live coding session and bind one to a task on your
+personal board — on top of a substantially reworked memory core: a bitemporal
+revision ledger, a durable processing queue, and local-first saves that reach a
+remote through an outbox instead of a blocking call.
+
+### Added
+
+- **`anchored hub`** — an always-on local daemon that serves the dashboard and
+  runs upkeep workers (ending stale sessions, pruning old events) on a ticker,
+  so the live view stays honest even with no tool connected. `hub
+  install/uninstall/status` manage a systemd --user service; the per-tool
+  `serve --stdio` processes stay lightweight producers.
+- **Live sessions** — sessions now record provider/model/intent (telling Claude
+  Code on Anthropic apart from Claude Code + GLM, detected from the
+  environment). `GET /api/sessions/live` and a new **Cockpit** dashboard tab
+  show each open session with its tool, project, intent, recent activity and
+  active/idle state.
+- **Session ↔ task link** — bind a live session to a board task (1 session → 1
+  task; a task accumulates many sessions), create a task from a session, or
+  unlink, via the cockpit and `POST/DELETE /api/sessions/{id}/link` +
+  `/promote-task`. Notable session events flow into the linked task's journal;
+  `/api/tasks` now reports a `live_session_id` when a session is active on it.
+- **Bitemporal revision ledger** — every write records a revision with valid /
+  system time and tombstones instead of overwriting in place, so a memory's
+  history is reconstructable and a delete is a fact rather than an absence.
+- **Durable processing queue** — derived work (embeddings above all) moves to a
+  leased, retrying job table instead of best-effort goroutines that die with the
+  process. `anchored stats` reports queue depth, in-flight and failed counts.
+- **Embedding generation identity** — vectors are stamped with the provider,
+  model, dimensions and normalization that produced them, so a model swap is a
+  new generation to build and retire rather than a silently mixed index.
+- **Local-first saves via a remote outbox** — a save commits locally and enqueues
+  delivery; the outbox retries with idempotency keys and dead-letters what it
+  cannot deliver, so a remote being down never blocks or loses a save.
+- **Federated search** — `anchored_search` merges local and remote hits with
+  reciprocal rank fusion, defaults to semantic, and falls back cleanly when the
+  remote answers 422.
+- **Retrieval evaluation harness** — `pkg/eval` scores recall/ranking and runs
+  ablations, so a change to search can be measured instead of argued about.
+- **Dashboard: Projects tab** — linked vs local-only projects, their memory
+  counts and live sessions.
+- **`anchored stats` for the derived-work paths** — processing queue and remote
+  outbox depth, age and dead letters.
+
+### Changed
+
+- **Dashboard UI overhaul** — the whole interface moved to English, the cockpit
+  was redesigned, the board gained a Backlog column with collapsing and a
+  context menu, and link/create-task moved from `prompt()`/`alert()` to a real
+  modal with toasts.
+- **Remote link resolution runs in parallel** rather than one project at a time.
+
+### Fixed
+
+- **False "plugin lags the binary" drift warning** on every session start.
+- **Cockpit card actions** were wired with inline `onclick`; they now use event
+  delegation, which is what makes them survive a re-render.
+- **`anchored init --tool`** listed an invalid host target and hid gatorclaw
+  behind another host instead of offering it as its own.
 
 ## [0.14.0] - 2026-07-19
 
