@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Contextual remote skills** — when a repo has an active remote, procedural
+  work routes through `anchored_skill(action=search, intent=...)` before memory
+  search, and only the best-matching skill body is loaded. Skills are a separate
+  instruction plane from memories, so a procedure the team maintains centrally
+  reaches the agent without being mixed into recall. Fail-open: no match, or no
+  remote capability, and the session continues normally.
+- **`anchored migrate --remote <url>`** — move a local database to a hosted
+  Anchored server. It pushes records rather than uploading the SQLite file, so
+  the transfer is resumable and the server never opens a database it did not
+  create. The first run is a **dry run** that reports what would move and what
+  the import would cost; writing takes an explicit `--apply`. It only ever reads
+  the local database — switching the local client off stays a separate, manual
+  decision.
+
 ### Fixed
 
 - **The nightly `maintenance run` burned hours of CPU** — on this machine the
