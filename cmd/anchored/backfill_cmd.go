@@ -26,6 +26,11 @@ const normalizedHashBatch = 20000
 
 func runBackfillEmbeddings(args []string) {
 	fs := newFlagSet("backfill")
+	// `maintenance run --config X` threads --config into every step it spawns,
+	// so a backfill that does not accept it aborts the step with "flag provided
+	// but not defined" the moment anyone points maintenance at a non-default
+	// config.
+	configPath := fs.String("config", "", "path to config file")
 	batch := fs.Int("batch", 200, "embeddings per batch")
 	pause := fs.Duration("pause", 0, "sleep between batches (e.g. 500ms) to stay gentle on CPU")
 	max := fs.Int("max", 0, "max memories to embed this run (0 = unlimited)")
@@ -33,7 +38,7 @@ func runBackfillEmbeddings(args []string) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	cfg, err := loadConfig("")
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
