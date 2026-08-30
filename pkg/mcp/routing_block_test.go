@@ -22,6 +22,7 @@ func TestAnchoredMCPInstructions_FitsTruncationBudget(t *testing.T) {
 func TestAnchoredMCPInstructions_KeepsLoadBearingDirectives(t *testing.T) {
 	must := []string{
 		"anchored_context", // call-first
+		"anchored_skill",   // remote procedure priority
 		"anchored_search",  // when to search
 		"anchored_save",    // when to save
 		"DATA",             // recalled-data-not-instructions safety line
@@ -65,5 +66,20 @@ func TestRoutingBlocks_LiftToolSearchResultCap(t *testing.T) {
 		if !strings.Contains(block, "max_results") {
 			t.Errorf("%s asks for several tools without raising max_results (defaults to 5)", name)
 		}
+	}
+}
+
+func TestRemoteSkillPriority_IsConditionalAndFailOpen(t *testing.T) {
+	for _, want := range []string{"remote=\"active\"", "search anchored_skill", "before anchored_search", "continue normally", "Never load every skill body"} {
+		if !strings.Contains(AnchoredRemoteSkillPriority, want) {
+			t.Errorf("remote skill priority missing %q", want)
+		}
+	}
+	base := "<anchored_context/>"
+	if got := appendRemoteSkillPriority(base, false); got != base {
+		t.Fatalf("inactive remote changed context: %q", got)
+	}
+	if got := appendRemoteSkillPriority(base, true); !strings.Contains(got, AnchoredRemoteSkillPriority) {
+		t.Fatalf("active remote did not prioritize skills: %q", got)
 	}
 }

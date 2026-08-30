@@ -150,7 +150,7 @@ func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
 	case "notifications/initialized":
 		return nil
 	case "tools/list":
-		return s.handleToolsList(req.ID)
+		return s.handleToolsList(ctx, req.ID)
 	case "tools/call":
 		return s.handleToolsCall(ctx, req.ID, req.Params)
 	case "resources/list":
@@ -180,10 +180,44 @@ func (s *Server) handleInitialize(id json.RawMessage, params json.RawMessage) []
 	return MarshalResponse(NewResponse(id, result))
 }
 
-func (s *Server) handleToolsList(id json.RawMessage) []byte {
-	tools := ToolDefinitions()
-	SortTools(tools)
+func (s *Server) handleToolsList(ctx context.Context, id json.RawMessage) []byte {
+	tools := s.toolsForCWD(ctx, ".")
 	return MarshalResponse(NewResponse(id, map[string]any{"tools": tools}))
+}
+
+// toolsForCWD conditionally exposes anchored_skill only after this repository
+// is proven to resolve to a reachable remote project. A configured remote or
+// stale linked-project ID alone must not advertise an unusable tool.
+func (s *Server) toolsForCWD(ctx context.Context, cwd string) []Tool {
+	tools := ToolDefinitions()
+	if !s.remoteSkillsAdvertisable(ctx, cwd) {
+		filtered := tools[:0]
+		for _, tool := range tools {
+			if tool.Name != "anchored_skill" {
+				filtered = append(filtered, tool)
+			}
+		}
+		tools = filtered
+	}
+	SortTools(tools)
+	return tools
+}
+
+// remoteSkillsAdvertisable answers the tools/list question without paying for
+// it on the common path: a client with no remote configured cannot have a
+// remote project, so it never reaches the network. Only a user who opted into
+// a remote pays the bounded probe.
+//
+// The timeout is deliberately not tightened below remoteSkillPriorityTimeout.
+// A probe that expires hides anchored_skill for the rest of the session, which
+// is a worse outcome than a bounded wait on a path clients call once.
+func (s *Server) remoteSkillsAdvertisable(ctx context.Context, cwd string) bool {
+	if !s.hasAnyRemote() {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
+	defer cancel()
+	return s.hasReachableRemoteRepositoryProject(probeCtx, cwd)
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params json.RawMessage) []byte {
@@ -233,6 +267,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolContext(ctx, args)
 	case "anchored_search":
 		return s.toolSearch(ctx, args)
+	case "anchored_skill":
+		return s.toolSkill(ctx, args)
 	case "anchored_save":
 		return s.toolSave(ctx, args)
 	case "anchored_list":
@@ -271,6 +307,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 // anchoredContextBudget caps the size of the bundle returned by toolContext.
 // Identity is truncated first if budget pressure is hit, then recent items.
 const anchoredContextBudget = 4096
+
+// remoteSkillPriorityTimeout bounds the project-resolution probe performed by
+// anchored_context. Priority is advertised only for a remote project that is
+// actually reachable/resolved, never merely because a server exists in config.
+const remoteSkillPriorityTimeout = 2 * time.Second
 
 // toolContext returns a structured bundle the model uses as the bootstrap
 // memory snapshot for a conversation:
@@ -312,10 +353,20 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 		recentMems               []memory.Memory
 		events                   []ctxRecentEvent
 		rels                     []kg.Triple
+		remoteProjectResolved    bool
 	)
 
 	var wg sync.WaitGroup
 	wg.Add(4)
+	if s.hasAnyRemote() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
+			defer cancel()
+			remoteProjectResolved = s.hasReachableRemoteRepositoryProject(probeCtx, p.CWD)
+		}()
+	}
 
 	go func() {
 		defer wg.Done()
@@ -378,15 +429,22 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 		}
 	}
 
-	if identity == "" && projectID == "" && len(recentMems) == 0 && len(events) == 0 && len(rels) == 0 && wsSummary == "" {
-		return "No memory context available yet. Save memories with anchored_save.", nil
+	empty := identity == "" && projectID == "" && len(recentMems) == 0 && len(events) == 0 && len(rels) == 0 && wsSummary == ""
+	bundle := "No memory context available yet. Save memories with anchored_save."
+	if !empty {
+		bundle = renderContextBundle(identity, projectName, projectPath, projectID, memCount, byCategory, recentMems, events, rels, anchoredContextBudget)
 	}
-
-	bundle := renderContextBundle(identity, projectName, projectPath, projectID, memCount, byCategory, recentMems, events, rels, anchoredContextBudget)
 	if wsSummary != "" {
 		bundle = bundle + "\n" + wsSummary
 	}
-	return bundle, nil
+	return appendRemoteSkillPriority(bundle, remoteProjectResolved), nil
+}
+
+func appendRemoteSkillPriority(bundle string, remoteActive bool) string {
+	if !remoteActive {
+		return bundle
+	}
+	return bundle + "\n" + AnchoredRemoteSkillPriority
 }
 
 // renderWorkingSet emits a compact summary of the session's current focus so
@@ -1687,6 +1745,32 @@ func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*conf
 // inside resolveAutoRemoteTarget still searches every configured remote.
 func (s *Server) hasAnyRemote() bool {
 	return s.cfg != nil && len(s.cfg.Remotes) > 0
+}
+
+// hasReachableRemoteRepositoryProject is stricter than automatic remote
+// routing: it intentionally refuses the non-repository linked-project
+// fallback. The skill-priority banner is a promise that this repository has a
+// live server project, so a stale configured link must not activate it.
+func (s *Server) hasReachableRemoteRepositoryProject(ctx context.Context, cwd string) bool {
+	target, remoteProjectID := s.resolveReachableRemoteRepositoryProject(ctx, cwd)
+	return target != nil && remoteProjectID != ""
+}
+
+// resolveReachableRemoteRepositoryProject resolves only through the current
+// repository's canonical/legacy remote keys. Unlike resolveAutoRemoteTarget,
+// it never falls back to a configured linked project, which could belong to a
+// different repository after configuration drift.
+func (s *Server) resolveReachableRemoteRepositoryProject(ctx context.Context, cwd string) (*config.RemoteEntry, string) {
+	if s.cfg == nil || s.mem == nil {
+		return nil, ""
+	}
+	proj, err := s.mem.ResolveProjectInfo(cwd)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		return nil, ""
+	}
+	canonicalKey, legacyKey := project.RemoteKeysFromDir(proj.Path)
+	target, remoteProjectID, _ := remotesync.ResolveProjectAcrossRemotes(ctx, s.cfg, cwd, "mcp", canonicalKey, legacyKey)
+	return target, remoteProjectID
 }
 
 func (s *Server) hasAutoSyncRemote() bool {

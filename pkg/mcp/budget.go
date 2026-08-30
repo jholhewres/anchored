@@ -24,6 +24,15 @@ const (
 	searchBudgetBytesFull = 24 * 1024
 	// listItemRunes caps one memory's content in anchored_list output.
 	listItemRunes = 700
+	// skillSearchLimit keeps remote instruction discovery compact. Full bodies
+	// are intentionally available only through anchored_skill(action="load").
+	skillSearchLimit = 12
+	// skillLoadBudgetBytes caps a loaded skill response so a malformed or
+	// unexpectedly large remote body cannot consume the entire tool context.
+	skillLoadBudgetBytes = 24 * 1024
+	// skillLoadContentRunes reserves space for the explicit instruction fence,
+	// escaped Markdown, and provenance metadata inside skillLoadBudgetBytes.
+	skillLoadContentRunes = 3000
 	// execInlineBytes is the largest execution output returned inline;
 	// anything bigger is indexed and answered with a head/tail preview.
 	execInlineBytes = 8 * 1024

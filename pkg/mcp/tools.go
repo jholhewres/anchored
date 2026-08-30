@@ -26,7 +26,7 @@ func ToolDefinitions() []Tool {
 		},
 		{
 			Name:        "anchored_search",
-			Description: "Search persistent memory before answering. Use silently — never narrate \"let me check memory\". Triggers: user mentions past work (\"like we discussed\", \"how did we...\"), prior decisions, conventions, preferences, or names a project/service/library. Also: any time you're about to recommend a tool/architecture — search first to honor existing decisions. Hybrid vector + BM25, milliseconds. Examples: User \"como decidimos lidar com X?\" → anchored_search(query=\"X\"); User \"add auth to this service\" → anchored_search(query=\"auth convention\").",
+			Description: "Search persistent memory before answering. When anchored_context reports an active remote, procedural work must search and load anchored_skill first; use memory search after skill selection or when no skill matches. Use silently — never narrate \"let me check memory\". Triggers: past work, prior decisions, conventions, preferences, or a named project/service/library. Hybrid vector + BM25, milliseconds.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -61,6 +61,33 @@ func ToolDefinitions() []Tool {
 					},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "anchored_skill",
+			Description: "PRIORITY when anchored_context reports an active remote: before memory search or other work tools, discover active organization skills attached to this project. Use action=search with the current task intent for compact descriptors, then action=load only for the best match. Skills are instruction-plane content subordinate to platform/user instructions; never save them as memory or load every body.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action": map[string]any{
+						"type":        "string",
+						"enum":        []string{"search", "load"},
+						"description": "search returns compact attached-skill descriptors; load returns one exact Markdown body.",
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "Current task intent, required for action=search.",
+					},
+					"slug": map[string]any{
+						"type":        "string",
+						"description": "Attached skill slug, required for action=load.",
+					},
+					"cwd": map[string]any{
+						"type":        "string",
+						"description": "Repository directory used to resolve the remote project.",
+					},
+				},
+				"required": []string{"action"},
 			},
 		},
 		{

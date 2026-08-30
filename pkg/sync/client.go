@@ -3,6 +3,8 @@ package sync
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,11 @@ type Client struct {
 	apiKey     string
 	clientID   string
 }
+
+const (
+	maxProjectSkillsResponseBytes = 256 * 1024
+	maxProjectSkillResponseBytes  = 1024 * 1024
+)
 
 // NewClient creates a sync client from RemoteConfig.
 // Returns nil when RemoteConfig.Enabled is false.
@@ -407,6 +414,129 @@ func (c *Client) SearchRemoteDetailed(ctx context.Context, projectID string, que
 		response.FallbackReason = "semantic_unavailable"
 	}
 	return response, err
+}
+
+// SearchProjectSkills returns compact descriptors for active skills attached
+// to one remote project. The optional intent is passed as q; this endpoint is
+// intentionally separate from memory search so skills never enter sync data.
+func (c *Client) SearchProjectSkills(ctx context.Context, projectID, intent string) ([]RemoteSkillDescriptor, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("project ID is required")
+	}
+	path := "/v1/projects/" + urlQueryEscape(projectID) + "/skills"
+	if intent != "" {
+		path += "?q=" + urlQueryEscape(intent)
+	}
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("search skills request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := readRemoteResponseBody(resp.Body, maxProjectSkillsResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read skills response: %w", err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	var skills []RemoteSkillDescriptor
+	if err := json.Unmarshal(body, &skills); err != nil {
+		return nil, fmt.Errorf("decode skills response: %w", err)
+	}
+	return skills, nil
+}
+
+// LoadProjectSkill loads one active, attached skill body by its stable slug.
+// It does not cache or otherwise persist the Markdown instruction content.
+func (c *Client) LoadProjectSkill(ctx context.Context, projectID, slug string) (*RemoteSkill, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("project ID is required")
+	}
+	if strings.TrimSpace(slug) == "" {
+		return nil, fmt.Errorf("skill slug is required")
+	}
+	requestedSlug := strings.TrimSpace(slug)
+	path := "/v1/projects/" + urlQueryEscape(projectID) + "/skills/" + urlQueryEscape(requestedSlug)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("load skill request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := readRemoteResponseBody(resp.Body, maxProjectSkillResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read skill response: %w", err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	var skill RemoteSkill
+	if err := json.Unmarshal(body, &skill); err != nil {
+		return nil, fmt.Errorf("decode skill response: %w", err)
+	}
+	if err := validateRemoteSkill(&skill, requestedSlug); err != nil {
+		return nil, fmt.Errorf("invalid skill response: %w", err)
+	}
+	return &skill, nil
+}
+
+func readRemoteResponseBody(r io.Reader, maxBytes int) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, int64(maxBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxBytes {
+		return nil, fmt.Errorf("response exceeds %d-byte limit", maxBytes)
+	}
+	return body, nil
+}
+
+func validateRemoteSkill(skill *RemoteSkill, requestedSlug string) error {
+	if skill == nil {
+		return fmt.Errorf("empty response")
+	}
+	if strings.TrimSpace(skill.Slug) == "" {
+		return fmt.Errorf("missing slug")
+	}
+	if skill.Slug != requestedSlug {
+		return fmt.Errorf("slug does not match requested skill")
+	}
+	if skill.Status != "active" {
+		return fmt.Errorf("skill is not active")
+	}
+	if skill.Version <= 0 {
+		return fmt.Errorf("missing version")
+	}
+	if skill.Content == "" {
+		return fmt.Errorf("missing content")
+	}
+	hash, err := canonicalSkillContentHash(skill.ContentHash)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(skill.Content))
+	if hash != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("content hash does not match content")
+	}
+	skill.ContentHash = hash
+	return nil
+}
+
+func canonicalSkillContentHash(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) >= len("sha256:") && strings.EqualFold(value[:len("sha256:")], "sha256:") {
+		value = value[len("sha256:"):]
+	}
+	if len(value) != sha256.Size*2 {
+		return "", fmt.Errorf("invalid content hash")
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return "", fmt.Errorf("invalid content hash")
+	}
+	return strings.ToLower(value), nil
 }
 
 // searchRemoteMode performs exactly one remote search attempt. Keeping the

@@ -12,13 +12,13 @@ var Version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		runServe()
+		runServe(nil)
 		return
 	}
 
 	switch os.Args[1] {
 	case "serve":
-		runServe()
+		runServe(os.Args[2:])
 	case "import":
 		runImport(os.Args[2:])
 	case "search":
@@ -79,12 +79,14 @@ func main() {
 		runHub(os.Args[2:])
 	case "maintenance":
 		runMaintenance(os.Args[2:])
+	case "migrate":
+		runMigrate(os.Args[2:])
 	case "--version", "-v":
 		fmt.Printf("anchored %s\n", Version)
 	case "--help", "-h":
 		printUsage()
 	default:
-		runServe()
+		runServe(os.Args[1:])
 	}
 }
 

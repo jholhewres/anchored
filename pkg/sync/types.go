@@ -159,3 +159,27 @@ type RemoteSearchResponse struct {
 	Fallback       bool              `json:"fallback"`
 	FallbackReason string            `json:"fallback_reason,omitempty"`
 }
+
+// RemoteSkillDescriptor is the compact runtime view of an active skill
+// attached to a remote project. Skills are instruction-plane objects; they
+// are deliberately separate from RemoteMemory and the sync envelope.
+type RemoteSkillDescriptor struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Purpose     string `json:"purpose"`
+	Status      string `json:"status"`
+	Version     int    `json:"version"`
+	ContentHash string `json:"content_hash"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	AttachedAt  string `json:"attached_at,omitempty"`
+}
+
+// RemoteSkill is the exact active skill body returned by a project-scoped
+// load. Content is Markdown instruction content and must never be saved as a
+// memory by callers.
+type RemoteSkill struct {
+	RemoteSkillDescriptor
+	Content string `json:"content"`
+}
