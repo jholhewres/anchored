@@ -130,7 +130,7 @@ func TestDreamConfig_Levels(t *testing.T) {
 func insertTestMemory(t *testing.T, ctx context.Context, db *sql.DB, id, content string) {
 	t.Helper()
 	_, err := db.ExecContext(ctx,
-		"INSERT INTO memories (id, category, content, content_hash) VALUES (?, 'fact', ?, 'hash1')",
+		"INSERT INTO memories (id, category, content, content_hash, logical_id, current_revision_id) VALUES (?, 'fact', ?, 'hash1', ?1, ?1)",
 		id, content)
 	if err != nil {
 		t.Fatal(err)

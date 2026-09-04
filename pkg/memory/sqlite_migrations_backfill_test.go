@@ -20,6 +20,14 @@ func TestBackfillLedgerOrphans_AdoptsRowsWithoutRevision(t *testing.T) {
 	db := store.DB()
 	ctx := context.Background()
 
+	// Migration 022 installs a trigger that refuses exactly the write this
+	// test needs to stage. Dropping it here is the point: the fixture has to
+	// reproduce a database written before the guard existed, which is the only
+	// state the backfill is there to repair.
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER IF EXISTS memories_require_ledger_identity`); err != nil {
+		t.Fatalf("drop guard: %v", err)
+	}
+
 	// Reproduce both orphan shapes: an active row and a soft-deleted one.
 	for _, o := range []struct{ id, deletedAt string }{
 		{"orphan-active", ""},

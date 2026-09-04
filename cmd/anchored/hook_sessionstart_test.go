@@ -43,8 +43,8 @@ func insertSessionStartMem(t *testing.T, db *sql.DB, id, projectID, category, co
 		deletedAt = "2026-01-01T00:00:00Z"
 	}
 	_, err := db.Exec(
-		`INSERT INTO memories (id, project_id, category, content, content_hash, created_at, updated_at, metadata, deleted_at)
-		 VALUES (?, ?, ?, ?, '', datetime('now'), datetime('now'), ?, ?)`,
+		`INSERT INTO memories (id, project_id, category, content, content_hash, created_at, updated_at, metadata, deleted_at, logical_id, current_revision_id)
+		 VALUES (?, ?, ?, ?, '', datetime('now'), datetime('now'), ?, ?, ?1, ?1)`,
 		id, projectID, category, content, metadata, deletedAt,
 	)
 	if err != nil {

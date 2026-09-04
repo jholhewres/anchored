@@ -40,7 +40,9 @@ func setupEntityTestDB(t *testing.T) *sql.DB {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			access_count INTEGER DEFAULT 0,
 			last_accessed_at DATETIME,
-			metadata TEXT
+			metadata TEXT,
+			logical_id TEXT,
+			current_revision_id TEXT
 		);
 	`)
 	if err != nil {
@@ -89,7 +91,7 @@ func TestEntityDetector_Detect_Keywords(t *testing.T) {
 	db := setupEntityTestDB(t)
 
 	kws, _ := json.Marshal([]string{"kubernetes", "docker", "deployment"})
-	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords) VALUES ('m1', 'fact', 'deploy stuff', ?)`, string(kws))
+	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords, logical_id, current_revision_id) VALUES ('m1', 'fact', 'deploy stuff', ?, ?1, ?1)`, string(kws))
 	if err != nil {
 		t.Fatalf("insert memory: %v", err)
 	}
@@ -108,7 +110,7 @@ func TestEntityDetector_Detect_Keywords(t *testing.T) {
 func TestEntityDetector_Detect_ContentTokens(t *testing.T) {
 	db := setupEntityTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords) VALUES ('m2', 'fact', 'The Prometheus plan uses Grafana for monitoring', NULL)`)
+	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords, logical_id, current_revision_id) VALUES ('m2', 'fact', 'The Prometheus plan uses Grafana for monitoring', NULL, 'm2', 'm2')`)
 	if err != nil {
 		t.Fatalf("insert memory: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestEntityDetector_Detect_Deduplicates(t *testing.T) {
 func TestEntityDetector_Detect_SkipsStopWords(t *testing.T) {
 	db := setupEntityTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords) VALUES ('m3', 'fact', 'the quick brown fox', '["that","with","have"]')`)
+	_, err := db.Exec(`INSERT INTO memories (id, category, content, keywords, logical_id, current_revision_id) VALUES ('m3', 'fact', 'the quick brown fox', '["that","with","have"]', 'm3', 'm3')`)
 	if err != nil {
 		t.Fatalf("insert memory: %v", err)
 	}

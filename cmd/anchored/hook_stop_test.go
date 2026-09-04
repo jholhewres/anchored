@@ -37,8 +37,8 @@ func newStopTestDB(t *testing.T) *sql.DB {
 func insertStopMem(t *testing.T, db *sql.DB, id, content string) {
 	t.Helper()
 	_, err := db.Exec(
-		`INSERT INTO memories (id, category, content, content_hash, created_at, updated_at)
-		 VALUES (?, 'decision', ?, ?, datetime('now'), datetime('now'))`,
+		`INSERT INTO memories (id, category, content, content_hash, created_at, updated_at, logical_id, current_revision_id)
+		 VALUES (?, 'decision', ?, ?, datetime('now'), datetime('now'), ?1, ?1)`,
 		id, content, contentHashStop(content),
 	)
 	if err != nil {
@@ -506,7 +506,10 @@ func TestSaveLightweight_LockedDB_FailsFastWithinCap(t *testing.T) {
 		content TEXT NOT NULL, content_hash TEXT, keywords TEXT DEFAULT '[]',
 		embedding BLOB, source TEXT, created_at DATETIME, updated_at DATETIME,
 		access_count INTEGER DEFAULT 0, metadata TEXT, sync_dirty INTEGER DEFAULT 0,
-		deleted_at DATETIME)`); err != nil {
+		deleted_at DATETIME,
+		logical_id TEXT,
+		current_revision_id TEXT
+	)`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -520,7 +523,7 @@ func TestSaveLightweight_LockedDB_FailsFastWithinCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO memories (id, category, content) VALUES ('lock-holder', 'fact', 'holding the write lock')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO memories (id, category, content, logical_id, current_revision_id) VALUES ('lock-holder', 'fact', 'holding the write lock', 'lock-holder', 'lock-holder')`); err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
@@ -564,8 +567,8 @@ func newUsedTestDB(t *testing.T) *sql.DB {
 		"mem-postgres": "we settled on postgres for durable team storage on the server side",
 	} {
 		if _, err := db.Exec(
-			`INSERT INTO memories (id, project_id, category, content, content_hash, created_at, updated_at, metadata)
-			 VALUES (?, 'proj1', 'decision', ?, '', datetime('now'), datetime('now'), '{}')`,
+			`INSERT INTO memories (id, project_id, category, content, content_hash, created_at, updated_at, metadata, logical_id, current_revision_id)
+			 VALUES (?, 'proj1', 'decision', ?, '', datetime('now'), datetime('now'), '{}', ?1, ?1)`,
 			id, content); err != nil {
 			t.Fatal(err)
 		}

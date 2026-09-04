@@ -29,7 +29,9 @@ func TestAnalyzeToleratesNullContentHash(t *testing.T) {
 		keywords TEXT,
 		embedding BLOB,
 		created_at DATETIME,
-		deleted_at DATETIME
+		deleted_at DATETIME,
+		logical_id TEXT,
+		current_revision_id TEXT
 	)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
@@ -45,7 +47,7 @@ func TestAnalyzeToleratesNullContentHash(t *testing.T) {
 	}
 	for _, r := range rows {
 		if _, err := db.Exec(
-			`INSERT INTO memories (id, content, content_hash, created_at) VALUES (?, ?, ?, '2026-01-01 00:00:00')`,
+			`INSERT INTO memories (id, content, content_hash, created_at, logical_id, current_revision_id) VALUES (?, ?, ?, '2026-01-01 00:00:00', ?1, ?1)`,
 			r.id, r.content, r.hash,
 		); err != nil {
 			t.Fatalf("insert %s: %v", r.id, err)

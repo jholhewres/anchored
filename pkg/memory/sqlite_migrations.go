@@ -508,6 +508,24 @@ func Migrate(db *sql.DB) error {
 				ON memories(normalized_hash, project_id);
 		`},
 		{Name: "021_backfill_ledger_orphans", Up: migrationBackfillLedgerOrphans},
+		// The backfill above adopts the rows earlier write paths orphaned; this
+		// trigger stops new ones from ever being created. Curation resolves a
+		// memory through current_revision_id and the embedding queue joins on
+		// it, so a row without one is invisible to both — a silent half-write
+		// that only surfaces as a nightly error and a missing embedding.
+		//
+		// NOT NULL on the column cannot do this job: both columns arrived via
+		// ALTER TABLE as nullable, and tightening them would mean rebuilding a
+		// table that carries FTS triggers and tens of thousands of rows.
+		{Name: "022_require_ledger_identity", Up: `
+			CREATE TRIGGER IF NOT EXISTS memories_require_ledger_identity
+			BEFORE INSERT ON memories
+			WHEN NEW.logical_id IS NULL OR NEW.logical_id = ''
+				OR NEW.current_revision_id IS NULL OR NEW.current_revision_id = ''
+			BEGIN
+				SELECT RAISE(ABORT, 'memory insert requires logical_id and current_revision_id');
+			END;
+		`},
 	}
 
 	for _, m := range migrations {

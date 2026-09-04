@@ -71,7 +71,9 @@ func TestMigration008_ExistingDB(t *testing.T) {
 	schema := `CREATE TABLE IF NOT EXISTS memories (
 		id TEXT PRIMARY KEY,
 		content TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		logical_id TEXT,
+		current_revision_id TEXT
 	);
 	CREATE TABLE IF NOT EXISTS migrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

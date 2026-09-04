@@ -58,7 +58,7 @@ func TestAnalyze_ExactDuplicates(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		_, err := db.ExecContext(context.Background(),
-			"INSERT INTO memories (id, content, category, content_hash, created_at) VALUES (?, ?, 'fact', ?, ?)",
+			"INSERT INTO memories (id, content, category, content_hash, created_at, logical_id, current_revision_id) VALUES (?, ?, 'fact', ?, ?, ?1, ?1)",
 			fmt.Sprintf("mem-%d", i), "test content duplicate", "hash123", time.Now().Add(time.Duration(i)*time.Minute))
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +92,7 @@ func TestAnalyze_NoDuplicates(t *testing.T) {
 	contents := []string{"first unique content", "second unique content", "third unique content"}
 	for i, c := range contents {
 		_, err := db.ExecContext(context.Background(),
-			"INSERT INTO memories (id, content, category, content_hash, created_at) VALUES (?, ?, 'fact', ?, ?)",
+			"INSERT INTO memories (id, content, category, content_hash, created_at, logical_id, current_revision_id) VALUES (?, ?, 'fact', ?, ?, ?1, ?1)",
 			fmt.Sprintf("mem-%d", i), c, fmt.Sprintf("hash-%d", i), time.Now())
 		if err != nil {
 			t.Fatal(err)
@@ -144,7 +144,7 @@ func TestAnalyze_NearDuplicates_CacheFromDB(t *testing.T) {
 
 	for i, vec := range vecs {
 		_, err := db.ExecContext(context.Background(),
-			"INSERT INTO memories (id, content, category, content_hash, embedding, created_at) VALUES (?, ?, 'fact', ?, ?, ?)",
+			"INSERT INTO memories (id, content, category, content_hash, embedding, created_at, logical_id, current_revision_id) VALUES (?, ?, 'fact', ?, ?, ?, ?1, ?1)",
 			fmt.Sprintf("mem-%d", i), fmt.Sprintf("unique content %d", i), fmt.Sprintf("hash-%d", i),
 			float32sToBytes(vec), time.Now().Add(time.Duration(i)*time.Minute))
 		if err != nil {
@@ -181,7 +181,7 @@ func TestAnalyze_NearDuplicates(t *testing.T) {
 	// Insert 3 memories with different content (no exact duplicates)
 	for i := 0; i < 3; i++ {
 		_, err := db.ExecContext(context.Background(),
-			"INSERT INTO memories (id, content, category, content_hash, created_at) VALUES (?, ?, 'fact', ?, ?)",
+			"INSERT INTO memories (id, content, category, content_hash, created_at, logical_id, current_revision_id) VALUES (?, ?, 'fact', ?, ?, ?1, ?1)",
 			fmt.Sprintf("mem-%d", i), fmt.Sprintf("unique content %d", i), fmt.Sprintf("hash-%d", i), time.Now().Add(time.Duration(i)*time.Minute))
 		if err != nil {
 			t.Fatal(err)
@@ -259,7 +259,7 @@ func TestAnalyze_LargeDataset_NearDuplicatesFound(t *testing.T) {
 
 	for i := 0; i < total; i++ {
 		_, err := db.ExecContext(context.Background(),
-			"INSERT INTO memories (id, content, category, content_hash, created_at) VALUES (?, ?, 'fact', ?, ?)",
+			"INSERT INTO memories (id, content, category, content_hash, created_at, logical_id, current_revision_id) VALUES (?, ?, 'fact', ?, ?, ?1, ?1)",
 			fmt.Sprintf("mem-%04d", i), fmt.Sprintf("content %d", i), fmt.Sprintf("hash-%d", i),
 			time.Now().Add(time.Duration(i)*time.Minute))
 		if err != nil {
