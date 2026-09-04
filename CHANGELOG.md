@@ -24,6 +24,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Memories orphaned from the temporal ledger** — the stop hook's lightweight
+  insert wrote straight into `memories` without `logical_id` or
+  `current_revision_id`, and the dream consolidator's synthesis did the same.
+  Curation resolves a memory through `current_revision_id` and the embedding
+  queue joins on it, so those rows were reachable by neither: nightly curation
+  failed on each of them with `explicit temporal write requires logical
+  identity` while the run still reported `failed=0`, and they never received an
+  embedding, leaving them searchable by BM25 only. Both paths now record a base
+  revision in the same transaction as the row, and migration
+  `021_backfill_ledger_orphans` adopts the rows earlier versions left behind
+  (base revision for active rows, tombstone for soft-deleted ones).
 - **The nightly `maintenance run` burned hours of CPU** — on this machine the
   import step grew from 31 minutes to **6h57m of CPU time** over a week, and the
   cause was one line on the save path. Every save that misses the exact content

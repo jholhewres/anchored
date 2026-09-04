@@ -407,3 +407,63 @@ func TestApplyAction_Synthesize_CreatesSummaryAndDemotes(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyAction_Synthesize_RecordsBaseRevision covers the synthesis row's
+// membership in the temporal ledger: curation resolves a memory through
+// memories.current_revision_id and the embedding queue joins on it, so a
+// synthesis without a base revision would be scored by neither.
+func TestApplyAction_Synthesize_RecordsBaseRevision(t *testing.T) {
+	ctx := context.Background()
+	db := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, nil)
+
+	insertTestMemory(t, ctx, db, "mem-a", "the deploy pipeline requires TAG_NAME and DEPLOY_REASON")
+	insertTestMemory(t, ctx, db, "mem-b", "deploy pipeline validation needs TAG_NAME plus a reason")
+	insertTestMemory(t, ctx, db, "mem-c", "pipeline deploys are tag-driven with mandatory reason")
+	insertTestDreamAction(t, ctx, db, "act-rev", "mem-a", "mem-b,mem-c", "synthesize", 0.9, "proposed")
+
+	result, err := c.ApplyAction(ctx, "act-rev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "applied" {
+		t.Fatalf("want applied, got %q (%s)", result.Status, result.Message)
+	}
+
+	var id, logicalID, revisionID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(logical_id, ''), COALESCE(current_revision_id, '')
+		FROM memories WHERE source = 'dream_consolidation' AND deleted_at IS NULL`,
+	).Scan(&id, &logicalID, &revisionID); err != nil {
+		t.Fatalf("synthesis memory not found: %v", err)
+	}
+	if logicalID != id {
+		t.Errorf("logical_id = %q, want %q", logicalID, id)
+	}
+	if revisionID == "" {
+		t.Fatal("current_revision_id is empty: the synthesis is orphaned from the ledger")
+	}
+
+	var mode, category string
+	var tombstone bool
+	var validTo, systemTo sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT temporal_mode, category, is_tombstone, valid_to, system_to
+		FROM memory_revisions WHERE revision_id = ? AND memory_id = ? AND logical_id = ?`,
+		revisionID, id, id,
+	).Scan(&mode, &category, &tombstone, &validTo, &systemTo); err != nil {
+		t.Fatalf("query revision: %v", err)
+	}
+	if mode != "supersede" {
+		t.Errorf("temporal_mode = %q, want supersede", mode)
+	}
+	if category != "summary" {
+		t.Errorf("revision category = %q, want summary", category)
+	}
+	if tombstone {
+		t.Error("base revision must not be a tombstone")
+	}
+	if validTo.Valid || systemTo.Valid {
+		t.Error("base revision must stay open on both time axes")
+	}
+}

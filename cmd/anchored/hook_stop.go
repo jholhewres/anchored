@@ -367,7 +367,8 @@ func openHookContextWrite(configPath string) (*HookContext, error) {
 }
 
 // saveMemoryLightweight performs a raw INSERT into memories with embedding=NULL.
-// The curation worker will compute the embedding asynchronously.
+// The curation worker will compute the embedding asynchronously, which it can
+// only do once the row carries a base revision, so both land in one tx.
 func saveMemoryLightweight(ctx context.Context, hc *HookContext, id, projectID, category, content, sessionID string) error {
 	hash := contentHashStop(content)
 	now := time.Now().UTC()
@@ -397,15 +398,52 @@ func saveMemoryLightweight(ctx context.Context, hc *HookContext, id, projectID, 
 		projID = &projectID
 	}
 
-	_, err = hc.db.ExecContext(ctx,
+	tx, err := hc.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin lightweight save: %w", err)
+	}
+	defer tx.Rollback()
+
+	revisionID := newHookID()
+	res, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO memories
 		 (id, project_id, category, content, content_hash, keywords, embedding,
-		  source, created_at, updated_at, access_count, metadata, sync_dirty)
-		 VALUES (?, ?, ?, ?, ?, '[]', NULL, 'stop_hook', ?, ?, 0, ?, 0)`,
+		  source, created_at, updated_at, access_count, metadata, sync_dirty,
+		  logical_id, current_revision_id)
+		 VALUES (?, ?, ?, ?, ?, '[]', NULL, 'stop_hook', ?, ?, 0, ?, 0, ?, ?)`,
 		id, projID, category, content, hash,
-		now, now, string(metaJSON),
+		now, now, string(metaJSON), id, revisionID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted == 0 {
+		// OR IGNORE swallowed a duplicate id: the existing row keeps its own
+		// revision, so recording another one would fork the ledger.
+		return tx.Commit()
+	}
+
+	// The base revision is not bookkeeping: curation resolves a memory through
+	// memories.current_revision_id, and the embedding queue joins on it. A row
+	// without one is invisible to both.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO memory_revisions
+		 (revision_id, memory_id, logical_id, project_id, category,
+		  content, content_hash, keywords, source, metadata,
+		  memory_created_at, memory_updated_at,
+		  temporal_mode, is_tombstone, valid_from, valid_to, system_from, system_to)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '[]', 'stop_hook', ?, ?, ?, 'supersede', FALSE, ?, NULL, ?, NULL)`,
+		revisionID, id, id, projID, category, content, hash, string(metaJSON),
+		now, now, now.UnixNano(), now.UnixNano(),
+	); err != nil {
+		return fmt.Errorf("insert base revision: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // contentHashStop computes SHA-256 of content (same as sqlite_store.go).

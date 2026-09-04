@@ -12,6 +12,91 @@ type migration struct {
 	Up   string
 }
 
+// migrationBackfillLedgerOrphans re-runs 018's ledger backfill for rows that
+// were created after 018 applied. Migration 018 only reached the corpus that
+// existed when it ran, so any later write path that skipped the ledger left
+// rows with no revision — unreachable to curation and to the embedding queue.
+const migrationBackfillLedgerOrphans = `
+			UPDATE memories
+			SET logical_id = id
+			WHERE logical_id IS NULL OR logical_id = '';
+
+			INSERT OR IGNORE INTO memory_revisions (
+				revision_id, memory_id, logical_id, project_id, category,
+				content, content_hash, keywords, source, source_id, metadata,
+				memory_created_at, memory_updated_at, author, remote_project_key,
+				temporal_mode, is_tombstone, valid_from, valid_to,
+				system_from, system_to, created_at
+			)
+			SELECT
+				'legacy:' || id || ':base',
+				id,
+				id,
+				project_id,
+				category,
+				content,
+				content_hash,
+				keywords,
+				source,
+				source_id,
+				metadata,
+				COALESCE(created_at, CURRENT_TIMESTAMP),
+				COALESCE(updated_at, created_at, CURRENT_TIMESTAMP),
+				author,
+				remote_project_key,
+				'supersede',
+				FALSE,
+				CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER) * 1000000000,
+				NULL,
+				CAST(strftime('%s', COALESCE(created_at, CURRENT_TIMESTAMP)) AS INTEGER) * 1000000000,
+				NULL,
+				COALESCE(created_at, CURRENT_TIMESTAMP)
+			FROM memories
+			WHERE deleted_at IS NULL
+				AND (current_revision_id IS NULL OR current_revision_id = '');
+
+			INSERT OR IGNORE INTO memory_revisions (
+				revision_id, memory_id, logical_id, project_id, category,
+				content, content_hash, keywords, source, source_id, metadata,
+				memory_created_at, memory_updated_at, author, remote_project_key,
+				temporal_mode, is_tombstone, valid_from, valid_to,
+				system_from, system_to, created_at
+			)
+			SELECT
+				'legacy:' || id || ':tombstone',
+				id,
+				id,
+				project_id,
+				category,
+				content,
+				content_hash,
+				keywords,
+				source,
+				source_id,
+				metadata,
+				COALESCE(created_at, CURRENT_TIMESTAMP),
+				COALESCE(updated_at, deleted_at, created_at, CURRENT_TIMESTAMP),
+				author,
+				remote_project_key,
+				'tombstone',
+				TRUE,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				NULL,
+				CAST(strftime('%s', deleted_at) AS INTEGER) * 1000000000,
+				NULL,
+				deleted_at
+			FROM memories
+			WHERE deleted_at IS NOT NULL
+				AND (current_revision_id IS NULL OR current_revision_id = '');
+
+			UPDATE memories
+			SET current_revision_id = CASE
+				WHEN deleted_at IS NULL THEN 'legacy:' || id || ':base'
+				ELSE 'legacy:' || id || ':tombstone'
+			END
+			WHERE current_revision_id IS NULL OR current_revision_id = '';
+		`
+
 func Migrate(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -422,6 +507,7 @@ func Migrate(db *sql.DB) error {
 			CREATE INDEX IF NOT EXISTS idx_memories_normalized_hash
 				ON memories(normalized_hash, project_id);
 		`},
+		{Name: "021_backfill_ledger_orphans", Up: migrationBackfillLedgerOrphans},
 	}
 
 	for _, m := range migrations {
