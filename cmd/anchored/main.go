@@ -81,6 +81,8 @@ func main() {
 		runMaintenance(os.Args[2:])
 	case "migrate":
 		runMigrate(os.Args[2:])
+	case "project":
+		runProject(os.Args[2:])
 	case "--version", "-v":
 		fmt.Printf("anchored %s\n", Version)
 	case "--help", "-h":
@@ -129,6 +131,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored dashboard install  Install dashboard as a systemd --user service\n")
 	fmt.Fprintf(os.Stderr, "  anchored maintenance run    Periodic upkeep: import + dream + curation reconcile\n")
 	fmt.Fprintf(os.Stderr, "  anchored maintenance install  Install upkeep as a systemd --user daily timer\n")
+	fmt.Fprintf(os.Stderr, "  anchored project consolidate  Fold worktree projects into their repository (dry run by default)\n")
 	fmt.Fprintf(os.Stderr, "  anchored --version          Print version\n")
 	fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")
 	fmt.Fprintf(os.Stderr, "\nFlags:\n")
