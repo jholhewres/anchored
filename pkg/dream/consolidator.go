@@ -320,13 +320,31 @@ func (c *DreamConsolidator) applySynthesize(ctx context.Context, action *DreamAc
 	defer tx.Rollback()
 
 	newID := newDreamID()
+	revisionID := newDreamID()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO memories (id, project_id, category, content, content_hash, keywords, embedding,
-		                      source, created_at, updated_at, access_count, metadata, sync_dirty)
+		                      source, created_at, updated_at, access_count, metadata, sync_dirty,
+		                      logical_id, current_revision_id)
 		VALUES (?, NULLIF(?, ''), 'summary', ?, '', '[]', NULL, 'dream_consolidation',
-		        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, ?, 0)`,
-		newID, members[0].projectID, content, string(metaJSON)); err != nil {
+		        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, ?, 0, ?, ?)`,
+		newID, members[0].projectID, content, string(metaJSON), newID, revisionID); err != nil {
 		return nil, fmt.Errorf("insert synthesis memory: %w", err)
+	}
+
+	// Curation resolves a memory through memories.current_revision_id and the
+	// embedding queue joins on it, so a synthesis without a base revision would
+	// never be scored nor embedded.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO memory_revisions (
+			revision_id, memory_id, logical_id, project_id, category,
+			content, content_hash, keywords, source, metadata,
+			memory_created_at, memory_updated_at,
+			temporal_mode, is_tombstone, valid_from, valid_to, system_from, system_to)
+		VALUES (?, ?, ?, NULLIF(?, ''), 'summary', ?, '', '[]', 'dream_consolidation', ?,
+		        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'supersede', FALSE, ?, NULL, ?, NULL)`,
+		revisionID, newID, newID, members[0].projectID, content, string(metaJSON),
+		time.Now().UTC().UnixNano(), time.Now().UTC().UnixNano()); err != nil {
+		return nil, fmt.Errorf("insert synthesis base revision: %w", err)
 	}
 
 	// Demote (never delete) the raw members. curation_rule=consolidated is
