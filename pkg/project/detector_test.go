@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -392,4 +394,94 @@ func openTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("create schema: %v", err)
 	}
 	return db
+}
+
+// TestDetect_WorktreeSharesMainProject covers the case a linked worktree used
+// to break: --show-toplevel returns the worktree's own path, so the worktree
+// got a project row of its own and started with no memory of the repository.
+func TestDetect_WorktreeSharesMainProject(t *testing.T) {
+	db := openTestDB(t)
+	d := NewDetector(db)
+
+	main := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "init", "-q")
+	runGit(t, main, "config", "user.email", "t@example.com")
+	runGit(t, main, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(main, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "add", "f.txt")
+	runGit(t, main, "commit", "-qm", "init")
+
+	mainProject, err := d.Detect(main)
+	if err != nil || mainProject == nil {
+		t.Fatalf("detect main: %v (project=%v)", err, mainProject)
+	}
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, main, "worktree", "add", "-q", "--detach", wt)
+
+	wtProject, err := d.Detect(wt)
+	if err != nil || wtProject == nil {
+		t.Fatalf("detect worktree: %v (project=%v)", err, wtProject)
+	}
+
+	if wtProject.ID != mainProject.ID {
+		t.Errorf("worktree resolved to project %s, want the main repository's %s",
+			wtProject.ID, mainProject.ID)
+	}
+	if wtProject.Path != mainProject.Path {
+		t.Errorf("worktree path = %q, want %q", wtProject.Path, mainProject.Path)
+	}
+
+	// A subdirectory of the worktree must resolve the same way.
+	sub := filepath.Join(wt, "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subProject, err := d.Detect(sub)
+	if err != nil || subProject == nil {
+		t.Fatalf("detect worktree subdir: %v", err)
+	}
+	if subProject.ID != mainProject.ID {
+		t.Errorf("worktree subdir resolved to %s, want %s", subProject.ID, mainProject.ID)
+	}
+
+	// Exactly one project row for the repository.
+	var rows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM projects").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("projects rows = %d, want 1", rows)
+	}
+}
+
+// TestDetect_SeparateClonesStaySeparate guards the other side of the fix: two
+// independent clones are not worktrees and must keep their own projects, so a
+// repository checked out for different operational contexts does not get its
+// memory merged.
+func TestDetect_SeparateClonesStaySeparate(t *testing.T) {
+	db := openTestDB(t)
+	d := NewDetector(db)
+
+	var ids []string
+	for _, name := range []string{"clone-a", "clone-b"} {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, dir, "init", "-q")
+		p, err := d.Detect(dir)
+		if err != nil || p == nil {
+			t.Fatalf("detect %s: %v", name, err)
+		}
+		ids = append(ids, p.ID)
+	}
+	if ids[0] == ids[1] {
+		t.Error("independent clones collapsed into one project")
+	}
 }

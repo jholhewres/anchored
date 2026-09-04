@@ -24,6 +24,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Worktrees started with no memory of their repository** — project identity
+  came from `git rev-parse --show-toplevel`, which in a linked worktree returns
+  the worktree's own path. Since projects are looked up by exact path, every
+  worktree got a project row of its own and therefore an empty memory, while
+  the repository's history stayed under the main checkout. Detection now
+  resolves the shared repository through `--git-common-dir`, so a worktree and
+  its main checkout are one project. Independent clones of the same remote stay
+  separate, which keeps a repository checked out for different operational
+  contexts from having its memory merged.
+
 - **Memories orphaned from the temporal ledger** — the stop hook's lightweight
   insert wrote straight into `memories` without `logical_id` or
   `current_revision_id`, and the dream consolidator's synthesis did the same.

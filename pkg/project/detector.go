@@ -90,12 +90,54 @@ func (d *Detector) Resolve(id string) (*Project, error) {
 	return &p, nil
 }
 
+// gitRoot returns the path that identifies the project. A linked worktree has
+// its own working tree but shares the repository, and the shared repository is
+// what carries the project's identity: --show-toplevel would return the
+// worktree, giving it a project row of its own and therefore an empty memory.
+// --git-common-dir resolves to the main repository in both cases.
 func gitRoot(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	if root := gitCommonRoot(dir); root != "" {
+		return root, nil
+	}
+	out, err := gitOutput(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", nil
+	}
+	return out, nil
+}
+
+// gitCommonRoot resolves the working tree of the shared repository, or "" when
+// dir is not inside a git repository.
+func gitCommonRoot(dir string) string {
+	// --path-format=absolute needs git >= 2.31; without it the common dir comes
+	// back relative to the process working directory in the main repository
+	// (plain ".git"), so the fallback resolves it against dir.
+	common, err := gitOutput(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil || common == "" {
+		common, err = gitOutput(dir, "rev-parse", "--git-common-dir")
+		if err != nil || common == "" {
+			return ""
+		}
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(dir, common)
+		}
+	}
+	common = filepath.Clean(common)
+
+	// A bare repository's common dir is the repository itself, with no working
+	// tree above it to step up into.
+	if filepath.Base(common) != ".git" {
+		return common
+	}
+	return filepath.Dir(common)
+}
+
+func gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
