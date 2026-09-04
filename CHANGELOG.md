@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-04
+
 ### Added
 
 - **Contextual remote skills** — when a repo has an active remote, procedural
@@ -21,6 +23,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the import would cost; writing takes an explicit `--apply`. It only ever reads
   the local database — switching the local client off stays a separate, manual
   decision.
+
+- **`anchored project consolidate`** — folds the project rows that worktree
+  detection used to create before it was fixed. The detection fix only helps
+  from now on; a worktree that already accumulated its own row keeps holding
+  memory the main checkout cannot see. Proving which path is a worktree of which
+  repository needs git and the filesystem, so this cannot be a migration — it is
+  an explicit command, and like `anchored migrate` the first run is a **dry run**
+  that reports what would move. Only linked worktrees are folded: independent
+  clones and submodules stay apart. A project whose directory is gone is
+  reported with how many memories are stranded there and left alone, because
+  `remote_key` cannot settle it — independent clones of the same remote share
+  that key, so folding on it would merge exactly what must stay separate.
+
+### Changed
+
+- **A memory can no longer be written outside the temporal ledger.** Migration
+  `021` adopts the rows earlier write paths orphaned; migration `022` adds a
+  `BEFORE INSERT` trigger so new ones cannot appear. Curation resolves a memory
+  through `current_revision_id` and the embedding queue joins on it, so a row
+  without ledger identity is invisible to both — a half-write that only surfaces
+  later as a nightly error and a missing embedding. `NOT NULL` could not serve
+  here: both columns arrived via `ALTER TABLE` as nullable, and tightening them
+  would mean rebuilding a table carrying FTS triggers and tens of thousands of
+  rows.
 
 ### Fixed
 
