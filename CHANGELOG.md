@@ -30,9 +30,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worktree got a project row of its own and therefore an empty memory, while
   the repository's history stayed under the main checkout. Detection now
   resolves the shared repository through `--git-common-dir`, so a worktree and
-  its main checkout are one project. Independent clones of the same remote stay
-  separate, which keeps a repository checked out for different operational
-  contexts from having its memory merged.
+  its main checkout are one project. Only a linked worktree is redirected:
+  independent clones of the same remote stay separate, which keeps a repository
+  checked out for different operational contexts from having its memory merged,
+  and a submodule keeps the identity of its own working tree rather than of the
+  `.git/modules` directory that backs it.
 
 - **Memories orphaned from the temporal ledger** — the stop hook's lightweight
   insert wrote straight into `memories` without `logical_id` or
@@ -45,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   revision in the same transaction as the row, and migration
   `021_backfill_ledger_orphans` adopts the rows earlier versions left behind
   (base revision for active rows, tombstone for soft-deleted ones).
+
 - **The nightly `maintenance run` burned hours of CPU** — on this machine the
   import step grew from 31 minutes to **6h57m of CPU time** over a week, and the
   cause was one line on the save path. Every save that misses the exact content

@@ -94,42 +94,64 @@ func (d *Detector) Resolve(id string) (*Project, error) {
 // its own working tree but shares the repository, and the shared repository is
 // what carries the project's identity: --show-toplevel would return the
 // worktree, giving it a project row of its own and therefore an empty memory.
-// --git-common-dir resolves to the main repository in both cases.
+// Only a linked worktree is redirected; every other checkout — a submodule
+// included — is identified by the working tree it is checked out into.
 func gitRoot(dir string) (string, error) {
-	if root := gitCommonRoot(dir); root != "" {
+	if root := linkedWorktreeRoot(dir); root != "" {
 		return root, nil
 	}
-	out, err := gitOutput(dir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", nil
+	if out, err := gitOutput(dir, "rev-parse", "--show-toplevel"); err == nil && out != "" {
+		return out, nil
 	}
-	return out, nil
+	// A bare repository has no working tree to be identified by, so the
+	// repository itself carries the identity.
+	return gitCommonDir(dir), nil
 }
 
-// gitCommonRoot resolves the working tree of the shared repository, or "" when
-// dir is not inside a git repository.
-func gitCommonRoot(dir string) string {
-	// --path-format=absolute needs git >= 2.31; without it the common dir comes
-	// back relative to the process working directory in the main repository
-	// (plain ".git"), so the fallback resolves it against dir.
-	common, err := gitOutput(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil || common == "" {
-		common, err = gitOutput(dir, "rev-parse", "--git-common-dir")
-		if err != nil || common == "" {
-			return ""
-		}
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(dir, common)
-		}
+// linkedWorktreeRoot returns the main working tree of the repository dir is a
+// linked worktree of, or "" when dir is anything else.
+//
+// Only a linked worktree has a git dir distinct from its common dir. A
+// submodule's git dir lives under the superproject's .git/modules but is its
+// own common dir, so it keeps the identity of its own working tree instead of
+// being named after a metadata directory nobody works in.
+func linkedWorktreeRoot(dir string) string {
+	common := gitCommonDir(dir)
+	if common == "" {
+		return ""
 	}
-	common = filepath.Clean(common)
-
-	// A bare repository's common dir is the repository itself, with no working
-	// tree above it to step up into.
+	if gitDir := gitAbsPath(dir, "--git-dir"); gitDir == "" || gitDir == common {
+		return ""
+	}
+	// <repo>/.git steps up to <repo>. A linked worktree of a submodule has
+	// .git/modules/<name> as its common dir, with no working tree above it to
+	// step up into, so it keeps its own path rather than a metadata one.
 	if filepath.Base(common) != ".git" {
-		return common
+		return ""
 	}
 	return filepath.Dir(common)
+}
+
+func gitCommonDir(dir string) string {
+	return gitAbsPath(dir, "--git-common-dir")
+}
+
+// gitAbsPath resolves a rev-parse path option to an absolute, cleaned path.
+func gitAbsPath(dir, opt string) string {
+	// --path-format=absolute needs git >= 2.31; without it the path comes back
+	// relative to the process working directory in the main repository
+	// (plain ".git"), so the fallback resolves it against dir.
+	out, err := gitOutput(dir, "rev-parse", "--path-format=absolute", opt)
+	if err != nil || out == "" {
+		out, err = gitOutput(dir, "rev-parse", opt)
+		if err != nil || out == "" {
+			return ""
+		}
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(dir, out)
+	}
+	return filepath.Clean(out)
 }
 
 func gitOutput(dir string, args ...string) (string, error) {

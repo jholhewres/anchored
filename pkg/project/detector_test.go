@@ -485,3 +485,51 @@ func TestDetect_SeparateClonesStaySeparate(t *testing.T) {
 		t.Error("independent clones collapsed into one project")
 	}
 }
+
+// TestDetect_SubmoduleKeepsItsWorkingTree guards the boundary of the worktree
+// fix. A submodule's --git-common-dir is <super>/.git/modules/<name>, a
+// metadata directory nobody works in; identifying the submodule by it would
+// re-bucket every submodule project and lose the memory already under its
+// working-tree path — the same failure the worktree fix removes.
+func TestDetect_SubmoduleKeepsItsWorkingTree(t *testing.T) {
+	db := openTestDB(t)
+	d := NewDetector(db)
+
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	super := filepath.Join(base, "super")
+	for _, dir := range []string{sub, super} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, dir, "init", "-q")
+		runGit(t, dir, "config", "user.email", "t@example.com")
+		runGit(t, dir, "config", "user.name", "t")
+		if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, dir, "add", "f.txt")
+		runGit(t, dir, "commit", "-qm", "init")
+	}
+
+	runGit(t, super, "-c", "protocol.file.allow=always",
+		"submodule", "add", "-q", sub, "vendor/sub")
+	runGit(t, super, "commit", "-qm", "add submodule")
+
+	nested := filepath.Join(super, "vendor", "sub")
+	p, err := d.Detect(nested)
+	if err != nil || p == nil {
+		t.Fatalf("detect submodule: %v (project=%v)", err, p)
+	}
+	if p.Path != nested {
+		t.Errorf("submodule path = %q, want its working tree %q", p.Path, nested)
+	}
+
+	superProject, err := d.Detect(super)
+	if err != nil || superProject == nil {
+		t.Fatalf("detect superproject: %v", err)
+	}
+	if p.ID == superProject.ID {
+		t.Error("submodule collapsed into the superproject")
+	}
+}
