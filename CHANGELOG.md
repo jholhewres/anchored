@@ -24,6 +24,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Worktrees started with no memory of their repository** — project identity
+  came from `git rev-parse --show-toplevel`, which in a linked worktree returns
+  the worktree's own path. Since projects are looked up by exact path, every
+  worktree got a project row of its own and therefore an empty memory, while
+  the repository's history stayed under the main checkout. Detection now
+  resolves the shared repository through `--git-common-dir`, so a worktree and
+  its main checkout are one project. Independent clones of the same remote stay
+  separate, which keeps a repository checked out for different operational
+  contexts from having its memory merged.
+
+- **Memories orphaned from the temporal ledger** — the stop hook's lightweight
+  insert wrote straight into `memories` without `logical_id` or
+  `current_revision_id`, and the dream consolidator's synthesis did the same.
+  Curation resolves a memory through `current_revision_id` and the embedding
+  queue joins on it, so those rows were reachable by neither: nightly curation
+  failed on each of them with `explicit temporal write requires logical
+  identity` while the run still reported `failed=0`, and they never received an
+  embedding, leaving them searchable by BM25 only. Both paths now record a base
+  revision in the same transaction as the row, and migration
+  `021_backfill_ledger_orphans` adopts the rows earlier versions left behind
+  (base revision for active rows, tombstone for soft-deleted ones).
 - **The nightly `maintenance run` burned hours of CPU** — on this machine the
   import step grew from 31 minutes to **6h57m of CPU time** over a week, and the
   cause was one line on the save path. Every save that misses the exact content
