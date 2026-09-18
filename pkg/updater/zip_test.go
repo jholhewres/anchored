@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -151,12 +152,21 @@ func TestResolveChecksum_FallsBackToTheSidecar(t *testing.T) {
 	}
 }
 
+// When checksums.txt legitimately does not cover the asset and the sidecar is
+// missing too, the error has to name both attempts — otherwise a darwin user
+// is told "checksum not found" with no hint that a second file was consulted.
 func TestResolveChecksum_ReportsBothFailures(t *testing.T) {
 	localSeam(t)
 	asset := "anchored_1.0.0_darwin_arm64.tar.gz"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		// Served fine, just does not list this asset.
+		if _, err := fmt.Fprintf(w, "%s  anchored_1.0.0_linux_amd64.tar.gz\n", strings.Repeat("b", 64)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	})
+	// The sidecar route is absent, so it 404s.
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	_, err := resolveChecksum(context.Background(), srv.URL+"/checksums.txt", srv.URL+"/"+asset, asset)
@@ -165,6 +175,42 @@ func TestResolveChecksum_ReportsBothFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sidecar") {
 		t.Errorf("error should mention the sidecar attempt, got %v", err)
+	}
+}
+
+// SECURITY: the sidecar fallback exists because GoReleaser does not digest the
+// darwin archives it did not build — a gap in coverage, not a recovery path.
+// A checksums.txt that fails to load says nothing about where the digest
+// lives, and consulting a second file anyway hands the choice of expected
+// digest to whoever can make the first one fail. On linux the asset IS listed,
+// so this is the whole attack: break checksums.txt, serve your own sidecar.
+func TestResolveChecksum_TransportFailureDoesNotReachTheSidecar(t *testing.T) {
+	localSeam(t)
+	asset := "anchored_1.0.0_linux_amd64.tar.gz"
+
+	var sidecarHits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/"+asset+".sha256", func(w http.ResponseWriter, r *http.Request) {
+		sidecarHits.Add(1)
+		if _, err := fmt.Fprintf(w, "%s  %s\n", strings.Repeat("c", 64), asset); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := resolveChecksum(context.Background(), srv.URL+"/checksums.txt", srv.URL+"/"+asset, asset)
+	if err == nil {
+		t.Fatal("a checksums.txt that returned 500 must not resolve to a digest")
+	}
+	if n := sidecarHits.Load(); n != 0 {
+		t.Errorf("the sidecar was requested %d time(s) after a transport failure", n)
+	}
+	if strings.Contains(err.Error(), "sidecar") {
+		t.Errorf("a transport failure should not be reported as a sidecar miss, got %v", err)
 	}
 }
 

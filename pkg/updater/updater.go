@@ -253,6 +253,12 @@ func fetchRelease(ctx context.Context, repo, tag string) (version string, assetU
 	return version, assetURL, assetName, checksumsURL, nil
 }
 
+// errDigestNotListed marks the one checksums.txt outcome that legitimately
+// has a second place to look: the file was fetched and parsed, and the asset
+// simply is not in it. Every other failure — transport, HTTP status, a
+// truncated body — says nothing about where the digest lives.
+var errDigestNotListed = errors.New("asset not listed in checksums.txt")
+
 // resolveChecksum finds the expected digest for assetName.
 //
 // checksums.txt is produced by GoReleaser and therefore covers only the
@@ -261,10 +267,20 @@ func fetchRelease(ctx context.Context, repo, tag string) (version string, assetU
 // carry a `<asset>.sha256` sidecar instead. Without the fallback, every
 // update on a Mac resolved an asset and then refused to install it for want
 // of a digest.
+//
+// SECURITY INVARIANT: the fallback fires only on errDigestNotListed. Falling
+// back on any error — which is what this did first — hands the choice of
+// expected digest to whoever can make checksums.txt fail while still serving
+// <asset>.sha256. On linux the asset IS in checksums.txt, so a 500 or a
+// truncated body there is a reason to stop, not a reason to go ask a second
+// file what the payload should hash to.
 func resolveChecksum(ctx context.Context, checksumsURL, assetURL, assetName string) (string, error) {
 	sum, err := fetchChecksum(ctx, checksumsURL, assetName)
 	if err == nil {
 		return sum, nil
+	}
+	if !errors.Is(err, errDigestNotListed) {
+		return "", err
 	}
 
 	sidecarURL := assetURL + ".sha256"
@@ -319,7 +335,10 @@ func fetchChecksum(ctx context.Context, url, assetName string) (string, error) {
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read checksums: %w", err)
 	}
-	return "", fmt.Errorf("checksum not found for %s", assetName)
+	// Wrapped, not formatted away: resolveChecksum tells "the file does not
+	// cover this asset" apart from "the file could not be read", and only the
+	// first one justifies consulting the sidecar.
+	return "", fmt.Errorf("%w: %s", errDigestNotListed, assetName)
 }
 
 // downloadAndReplace streams the tarball, validates its SHA-256 against

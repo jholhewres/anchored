@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -120,8 +121,11 @@ func TestFetchChecksum_AssetMissing(t *testing.T) {
 	defer srv.Close()
 
 	_, err := fetchChecksum(context.Background(), srv.URL, "anchored_x.tar.gz")
-	if err == nil || !strings.Contains(err.Error(), "checksum not found") {
-		t.Fatalf("expected 'checksum not found', got %v", err)
+	// The sentinel, not the wording: resolveChecksum branches on it to decide
+	// whether the sidecar may be consulted, so this is the contract that
+	// matters and a reworded message must not silently change it.
+	if !errors.Is(err, errDigestNotListed) {
+		t.Fatalf("expected errDigestNotListed, got %v", err)
 	}
 }
 
