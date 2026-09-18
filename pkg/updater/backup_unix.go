@@ -24,5 +24,5 @@ func backupCurrent(dst, prevPath string) error {
 	if err := osLink(dst, prevPath); err == nil {
 		return nil
 	}
-	return os.Rename(dst, prevPath)
+	return backupByRename(dst, prevPath)
 }

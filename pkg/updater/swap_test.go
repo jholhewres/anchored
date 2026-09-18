@@ -9,11 +9,6 @@ import (
 	"testing"
 )
 
-// renameBackup is the windows strategy, spelled out here rather than imported
-// so a Linux test run can exercise it. backup_windows.go is the production
-// copy; keeping the two in sync is the point of this test existing at all.
-func renameBackup(dst, prevPath string) error { return os.Rename(dst, prevPath) }
-
 func stageFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
@@ -32,7 +27,7 @@ func TestSwapUsing_RenameBackupVacatesDstFirst(t *testing.T) {
 	dst := stageFile(t, dir, "anchored", "OLD")
 	tmpPath := stageFile(t, dir, ".anchored-new-x", "NEW")
 
-	if err := swapUsing(tmpPath, dst, renameBackup); err != nil {
+	if err := swapUsing(tmpPath, dst, backupByRename); err != nil {
 		t.Fatalf("swapUsing: %v", err)
 	}
 
@@ -58,7 +53,7 @@ func TestSwapUsing_RenameBackupRollsBackOnFailure(t *testing.T) {
 	// ENOENT after the backup has already moved dst away.
 	tmpPath := filepath.Join(dir, ".anchored-new-missing")
 
-	err := swapUsing(tmpPath, dst, renameBackup)
+	err := swapUsing(tmpPath, dst, backupByRename)
 	if err == nil {
 		t.Fatal("expected the swap to fail")
 	}
