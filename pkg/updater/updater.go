@@ -26,7 +26,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -447,12 +446,24 @@ func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, ma
 	return swapInPlace(tmpPath, dst)
 }
 
-// swapInPlace backs up dst and moves the staged binary over it.
+// swapInPlace backs up dst and moves the staged binary over it, using the
+// platform's backup strategy.
 func swapInPlace(tmpPath, dst string) error {
-	// The backup is a hardlink, not a rename: dst keeps existing for the
-	// whole operation, so a client spawning `anchored serve` mid-update never
-	// finds the path missing. That also makes the single rename below a true
-	// atomic swap — dst goes straight from the old inode to the new one.
+	return swapUsing(tmpPath, dst, backupCurrent)
+}
+
+// swapUsing is swapInPlace with the backup step injected, which is what lets
+// a Linux test drive the windows-shaped sequence. The two strategies differ
+// in one property that decides everything downstream: whether dst still
+// exists when the final rename runs.
+//
+//   - unix backs up by hardlink, so dst survives the whole operation (a
+//     client spawning `anchored serve` mid-update never finds the path
+//     missing) and the rename below is a true atomic swap, dst going straight
+//     from the old inode to the new one.
+//   - windows backs up by rename, vacating dst first, because the image
+//     loader refuses to let a running .exe be deleted or replaced.
+func swapUsing(tmpPath, dst string, backup func(dst, prevPath string) error) error {
 	prevPath := dst + ".prev"
 	backedUp := false
 	if _, statErr := os.Stat(dst); statErr == nil {
@@ -462,7 +473,7 @@ func swapInPlace(tmpPath, dst string) error {
 			}
 			return fmt.Errorf("clear stale backup %s: %w", prevPath, err)
 		}
-		if err := backupCurrent(dst, prevPath); err != nil {
+		if err := backup(dst, prevPath); err != nil {
 			if rmErr := os.Remove(tmpPath); rmErr != nil {
 				return fmt.Errorf("backup current: %w (and %s could not be cleaned up: %v)", err, tmpPath, rmErr)
 			}
@@ -493,25 +504,6 @@ func swapInPlace(tmpPath, dst string) error {
 func isAnchoredBinary(name string) bool {
 	base := filepath.Base(name)
 	return base == "anchored" || base == "anchored.exe"
-}
-
-// backupCurrent links dst to prevPath so dst keeps existing for the whole
-// swap — a client spawning `anchored serve` mid-update never finds the path
-// missing, and the following rename is a true atomic replacement.
-//
-// Filesystems without hardlinks (FAT, exFAT, some fuse and overlay mounts)
-// fall back to a rename, which reopens the brief window where dst is absent.
-// A degraded backup beats refusing to update at all, which is what an
-// unconditional Link did.
-func backupCurrent(dst, prevPath string) error {
-	err := os.Link(dst, prevPath)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, errors.ErrUnsupported) && !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EPERM) {
-		return err
-	}
-	return os.Rename(dst, prevPath)
 }
 
 // assertTrustedDownloadURL rejects a release document that points the download
