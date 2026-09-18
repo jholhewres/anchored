@@ -97,14 +97,6 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 		os.Exit(selfUpdateExitCode(res))
 	}
 
-	if *jsonOut && *force && !*assumeYes {
-		// The confirmation prompt writes to stdout, which would corrupt the
-		// document. --json is a machine-readable contract, so consent has to
-		// be given up front.
-		fmt.Fprintln(os.Stderr, "anchored self-update: --json with --force needs --yes (the confirmation prompt cannot share stdout)")
-		os.Exit(1)
-	}
-
 	// Apply mode. A refusal is generally a failure here — the user asked for
 	// an install and did not get one — with one exception: being already on
 	// the requested version is the outcome they wanted, so it exits 0. `anchored
@@ -140,6 +132,13 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 		// the dev-build guard — so ANCHORED_NO_AUTOUPDATE=1, which is exactly
 		// what someone working from a checkout sets, used to skip the prompt
 		// and overwrite the dev build without asking.
+		if needsUpfrontConsent(*jsonOut, *force, *assumeYes, updater.IsDevBuild(res.Current)) {
+			// The confirmation prompt writes to stdout, which would corrupt the
+			// document. --json is a machine-readable contract, so consent has to
+			// be given up front — but only when that prompt would actually fire.
+			fmt.Fprintln(os.Stderr, "anchored self-update: --json with --force needs --yes (the confirmation prompt cannot share stdout)")
+			os.Exit(1)
+		}
 		if updater.IsDevBuild(res.Current) {
 			ok, err := confirmDevBuildOverwrite(res, os.Stdin, os.Stdout, *assumeYes, stdinIsTTY())
 			if err != nil {
@@ -650,4 +649,14 @@ compare against. It was built without ldflags — use ` + "`make build`" + `.
 `
 	}
 	return fmt.Sprintf("Refused: %s\n", res.Blocked)
+}
+
+// needsUpfrontConsent reports whether --json must refuse without --force's
+// confirmation prompt ever being attempted. The prompt only fires when a dev
+// build is about to be overwritten (see the IsDevBuild branch below); a
+// release binary running --force --json has nothing to confirm, so gating on
+// jsonOut/force/assumeYes alone rejected a request the prompt would never
+// have interrupted.
+func needsUpfrontConsent(jsonOut, force, assumeYes, isDevBuild bool) bool {
+	return jsonOut && force && !assumeYes && isDevBuild
 }

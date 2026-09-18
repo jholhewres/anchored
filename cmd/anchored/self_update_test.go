@@ -677,6 +677,30 @@ func TestOverrideCommand_PreservesConfigAndNoPlugin(t *testing.T) {
 	}
 }
 
+// The prompt only fires for a dev build under --force; a release binary has
+// nothing to confirm, so --force --json on a release must not be rejected
+// over a prompt that would never appear.
+func TestNeedsUpfrontConsent(t *testing.T) {
+	cases := []struct {
+		name                                        string
+		jsonOut, force, assumeYes, isDevBuild, want bool
+	}{
+		{"release build, force+json, no yes", true, true, false, false, false},
+		{"dev build, force+json, no yes", true, true, false, true, true},
+		{"dev build, force+json, with yes", true, true, true, true, false},
+		{"dev build, force, no json", false, true, false, true, false},
+		{"dev build, json, no force", true, false, false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsUpfrontConsent(tc.jsonOut, tc.force, tc.assumeYes, tc.isDevBuild); got != tc.want {
+				t.Errorf("needsUpfrontConsent(%v,%v,%v,%v) = %v, want %v",
+					tc.jsonOut, tc.force, tc.assumeYes, tc.isDevBuild, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseCheckResult_UsesAStatusDoctorCanRender(t *testing.T) {
 	status, _, _ := releaseCheckResult(updater.Result{
 		Current: "0.17.0", Latest: "0.18.0", Newer: true,
