@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/updater"
 )
 
@@ -259,7 +258,7 @@ func syncPluginAfterUpdate(configPath string, res updater.Result, noPlugin, forc
 		return pluginSyncOutcome{Skipped: true}
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return pluginSyncOutcome{ConfigError: err.Error()}
 	}

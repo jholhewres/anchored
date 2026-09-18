@@ -526,6 +526,38 @@ func TestSyncPluginAfterUpdate_MissingMarketplaceIsReportedNotSwallowed(t *testi
 	}
 }
 
+// config.Load("") reads os.ReadFile(""), which always fails with ENOENT and
+// so — through the os.IsNotExist branch — silently returns config.Defaults().
+// That made `anchored self-update` with no --config flag NEVER read
+// ~/.anchored/config.yaml (the file install.sh writes), syncing the plugin
+// against default paths and ignoring plugin.marketplace_dir/cache_dir. This
+// pins syncPluginAfterUpdate("") to loadConfig, which resolves the empty
+// path against $HOME first. Reverting to config.Load(configPath) must fail
+// this test: it would resolve MarketplaceDir to the compiled-in default
+// instead of the custom directory below.
+func TestSyncPluginAfterUpdate_EmptyConfigPathReadsHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	custom := filepath.Join(home, "custom-marketplace")
+	if err := os.MkdirAll(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Join(home, ".anchored")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "plugin:\n  marketplace_dir: " + custom + "\n  cache_dir: " + filepath.Join(home, "cache") + "\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := syncPluginAfterUpdate("", updater.Result{Latest: "0.18.0"}, false, true)
+	if out.MarketplaceDir != custom {
+		t.Fatalf("MarketplaceDir = %q, want the ~/.anchored/config.yaml value %q", out.MarketplaceDir, custom)
+	}
+}
+
 func TestSyncPluginAfterUpdate_NoPluginSkipsEverything(t *testing.T) {
 	out := syncPluginAfterUpdate("", updater.Result{Latest: "0.18.0"}, true, true)
 	if !out.Skipped {
