@@ -2,10 +2,14 @@ package updater
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,10 +128,12 @@ func TestRun_RefusalsAreLoggedAndStayOffline(t *testing.T) {
 // The guard that motivated inverting the switch to an allowlist: a reason the
 // code does not recognize must still stop the unattended path.
 func TestRun_UnknownBlockReasonStillRefuses(t *testing.T) {
-	// Driven through Run itself: BlockOutsideCanonical is reported for a path
-	// outside the canonical dir, and swapping in an unrecognized reason via
-	// the same code path is what the allowlist has to stop. logBlockedUpdate
-	// alone would only prove the log arm exists.
+	// Scoped to the log arm on purpose: Check only ever produces the reasons
+	// it defines, so an unrecognized one cannot be reached through Run without
+	// inventing a guard. What is testable here is that the default arm treats
+	// it as a refusal and says so at WARN. That Run stops on every reason it
+	// CAN produce is covered by TestRun_NoKnownRefusalReachesTheDownload,
+	// which counts requests against a real server.
 	h := &capturingHandler{}
 	logBlockedUpdate(slog.New(h), Result{Blocked: BlockReason("some-future-guard")})
 	msgs := h.messages()
@@ -152,21 +158,121 @@ func TestRun_AlreadyOnLatestIsLoggedAfterResolving(t *testing.T) {
 	}
 }
 
-// The allowlist itself: only BlockNone may reach the install. Asserted by
-// counting requests — an unrecognized reason that fell through would resolve
-// a release and hit the server.
-func TestRun_OnlyBlockNoneProceeds(t *testing.T) {
-	for _, reason := range []BlockReason{
-		BlockDevBuild, BlockOutsideCanonical, BlockEnvDisabled,
-		BlockNoVersion, BlockNotNewer, BlockReason("some-future-guard"),
+// Every reason logBlockedUpdate knows about produces a line, except the two
+// that are silent by design. This covers the log arm only; whether Run stops
+// is asserted separately, against a server that counts what it was asked for.
+func TestLogBlockedUpdate_EveryReasonIsAccountedFor(t *testing.T) {
+	for _, tc := range []struct {
+		reason     BlockReason
+		wantSilent bool
+	}{
+		{BlockDevBuild, false},
+		{BlockOutsideCanonical, false},
+		{BlockNotNewer, false},
+		{BlockReason("some-future-guard"), false},
+		// The user asked for no updates; saying so on every startup is noise.
+		{BlockEnvDisabled, true},
+		{BlockNoVersion, true},
 	} {
-		if reason == BlockNone {
-			t.Fatal("BlockNone is not a refusal")
-		}
 		h := &capturingHandler{}
-		logBlockedUpdate(slog.New(h), Result{Blocked: reason, Current: "0.17.0", Latest: "0.18.0"})
-		if len(h.records) == 0 && reason != BlockEnvDisabled && reason != BlockNoVersion {
-			t.Errorf("%q produced no log line", reason)
+		logBlockedUpdate(slog.New(h), Result{Blocked: tc.reason, Current: "0.17.0", Latest: "0.18.0"})
+		if got := len(h.records) == 0; got != tc.wantSilent {
+			t.Errorf("%q: silent=%v, want %v (%s)", tc.reason, got, tc.wantSilent, h.messages())
 		}
 	}
+}
+
+// The allowlist itself, driven through Run and asserted by counting requests:
+// no reason Check can produce may reach the download. Deleting the
+// `if res.Blocked != BlockNone { logBlockedUpdate; return }` block in Run
+// makes this fail — BlockNotNewer would fall through and fetch the asset.
+func TestRun_NoKnownRefusalReachesTheDownload(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		canon   bool
+		env     map[string]string
+		// wantReleaseLookup is true only where the refusal is decided after
+		// the release is resolved; a local guard must not touch the network.
+		wantReleaseLookup bool
+	}{
+		{name: "dev build", version: "0.17.0-dev+gabc", canon: true},
+		{name: "no version", version: "", canon: true},
+		{name: "env kill switch", version: "0.17.0", canon: true, env: map[string]string{"ANCHORED_NO_AUTOUPDATE": "1"}},
+		{name: "outside canonical dir", version: "0.17.0", canon: false},
+		{name: "not newer", version: "0.18.0", canon: true, wantReleaseLookup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var releaseHits, assetHits atomic.Int32
+			countingRelease(t, "0.18.0", &releaseHits, &assetHits)
+
+			binPath := filepath.Join(t.TempDir(), "anchored")
+			if tc.canon {
+				binPath = canonicalBin(t)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			h := &capturingHandler{}
+			Run(context.Background(), Options{
+				CurrentVersion: tc.version,
+				BinPath:        binPath,
+				Logger:         slog.New(h),
+			})
+
+			if n := assetHits.Load(); n != 0 {
+				t.Errorf("a refused update downloaded the asset %d time(s):\n%s", n, h.messages())
+			}
+			if got := releaseHits.Load() > 0; got != tc.wantReleaseLookup {
+				t.Errorf("release lookup happened=%v, want %v:\n%s", got, tc.wantReleaseLookup, h.messages())
+			}
+			if _, err := os.Stat(binPath + ".prev"); err == nil {
+				t.Error("a refused update wrote a backup, so it reached the swap")
+			}
+		})
+	}
+}
+
+// countingRelease is fakeRelease with counters on the two routes that matter:
+// the release lookup and the asset download. It serves a real tarball so a
+// fall-through would get all the way to the swap rather than erroring early
+// and looking like the refusal held.
+func countingRelease(t *testing.T, version string, releaseHits, assetHits *atomic.Int32) {
+	t.Helper()
+	assetName := fmt.Sprintf("anchored_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+	body, sum := makeTarGz(t, []byte("REPLACEMENT-BINARY"))
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/"+assetName, func(w http.ResponseWriter, r *http.Request) {
+		assetHits.Add(1)
+		if _, err := w.Write(body); err != nil {
+			t.Errorf("write asset: %v", err)
+		}
+	})
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fmt.Fprintf(w, "%s  %s\n", sum, assetName); err != nil {
+			t.Errorf("write checksums: %v", err)
+		}
+	})
+	mux.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {
+		releaseHits.Add(1)
+		payload := map[string]any{
+			"tag_name": "v" + version,
+			"assets": []map[string]string{
+				{"name": assetName, "browser_download_url": srv.URL + "/" + assetName},
+				{"name": "checksums.txt", "browser_download_url": srv.URL + "/checksums.txt"},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Errorf("encode release: %v", err)
+		}
+	})
+
+	orig := releaseAPIURL
+	releaseAPIURL = srv.URL + "/release?repo=%s"
+	t.Cleanup(func() { releaseAPIURL = orig })
 }
