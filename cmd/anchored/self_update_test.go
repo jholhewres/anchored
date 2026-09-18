@@ -702,6 +702,31 @@ func renderSelfUpdateCheckT(res updater.Result) string {
 	return renderSelfUpdateCheck(res, "", selfUpdateOpts{})
 }
 
+// Reinstalling the exact version you already have is not a downgrade: there
+// is no fix "released in between" to revert, because nothing was released.
+func TestSelfUpdateVerdict_ReinstallingThePinnedCurrentVersionIsNotADowngrade(t *testing.T) {
+	out := selfUpdateVerdict(updater.Result{
+		Current: "0.18.0",
+		Latest:  "0.18.0",
+		Blocked: updater.BlockNotNewer,
+	}, "v0.18.0", selfUpdateOpts{})
+	if strings.Contains(out, "revert any fix") {
+		t.Errorf("reinstalling the current version must not be framed as a downgrade\n---\n%s", out)
+	}
+}
+
+// A genuinely older pin must still be refused as a downgrade.
+func TestSelfUpdateVerdict_OlderPinIsStillADowngrade(t *testing.T) {
+	out := selfUpdateVerdict(updater.Result{
+		Current: "0.18.0",
+		Latest:  "0.17.0",
+		Blocked: updater.BlockNotNewer,
+	}, "v0.17.0", selfUpdateOpts{})
+	if !strings.Contains(out, "revert any fix") {
+		t.Errorf("a pin older than current must still read as a downgrade\n---\n%s", out)
+	}
+}
+
 // Blocked must be BlockNotNewer here: check.go always sets it when the
 // resolved release is not newer, so a downgrade with BlockNone is a state the
 // code cannot produce — asserting on it hid the bug this now covers.

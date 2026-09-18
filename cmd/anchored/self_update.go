@@ -99,10 +99,13 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 	// Apply mode. A refusal is generally a failure here — the user asked for
 	// an install and did not get one — with one exception: being already on
 	// the requested version is the outcome they wanted, so it exits 0. `anchored
-	// self-update && ...` has to survive being run twice.
-	if res.Blocked == updater.BlockNotNewer && !*force && *target == "" {
+	// self-update && ...` has to survive being run twice. That exception also
+	// covers a pinned --version matching what is already installed:
+	// reinstalling the version you are on is not a downgrade, so it must not
+	// fall through to renderDowngradeRefusal below.
+	if res.Blocked == updater.BlockNotNewer && !*force && (*target == "" || res.Latest == res.Current) {
 		if *jsonOut {
-			fmt.Println(renderApplyJSON(applyOutcome{Action: "already_current", Current: res.Current}))
+			fmt.Println(renderApplyJSON(applyOutcome{Action: "already_current", Current: res.Current, Latest: res.Latest}))
 		} else {
 			fmt.Printf("Already on the latest release (%s).\n", formatV(res.Latest))
 		}
@@ -608,8 +611,10 @@ func renderSelfUpdateCheck(res updater.Result, target string, opts selfUpdateOpt
 
 func selfUpdateVerdict(res updater.Result, target string, opts selfUpdateOpts) string {
 	// A pinned older version is a downgrade, not "up to date" — the generic
-	// not-newer wording names a version that is not installed.
-	if res.Blocked == updater.BlockNotNewer && target != "" {
+	// not-newer wording names a version that is not installed. Latest ==
+	// Current means the pin matches what is already installed, which is a
+	// reinstall, not a downgrade — nothing was "released in between".
+	if res.Blocked == updater.BlockNotNewer && target != "" && res.Latest != res.Current {
 		return renderDowngradeRefusal(res, opts)
 	}
 	switch res.Blocked {
