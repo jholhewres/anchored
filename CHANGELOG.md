@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`anchored self-update`** — update the binary from the latest official
+  release, from the binary itself. The download is verified against the release
+  checksums before the swap and the previous binary is kept at `<bin>.prev`.
+  `--check` reports without writing (exit 10 when an update is available,
+  `--json` for scripts), `--version <tag>` pins or rolls back to a specific
+  release, and the Claude Code plugin is synchronized alongside the binary
+  (`--no-plugin` opts out).
+- **`anchored self-update --force`** — install past a refusal you have decided
+  against. Automatic updates skip dev builds and binaries outside
+  `~/.anchored/bin` on purpose, but until now that refusal was a debug log
+  inside a background goroutine, so such an install could sit releases behind
+  with no signal at all. `--force` overrides it, asks before replacing a dev
+  build (`--yes` to confirm up front), and reaches the plugin too — both halves
+  were frozen by the same guard.
+- **Release check in `anchored doctor`** — reports when a newer release is
+  available and hands over the command. Best-effort: with no network it degrades
+  to "not checked" and never fails the run.
+
+
 ## [0.18.0] - 2026-09-04
 
 ### Added

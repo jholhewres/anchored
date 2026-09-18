@@ -74,15 +74,22 @@ type PluginDrift struct {
 // behind the binary counts as drift. The hook is best-effort: any IO or
 // parse failure is silently treated as "no signal" rather than propagated.
 func detectPluginDrift(cfg *config.Config, binaryVersion string) PluginDrift {
+	return detectPluginDriftWithForce(cfg, binaryVersion, false)
+}
+
+// detectPluginDriftWithForce is detectPluginDrift with the dev-build guard
+// made optional, for a user who asked for the update explicitly.
+func detectPluginDriftWithForce(cfg *config.Config, binaryVersion string, force bool) PluginDrift {
 	d := PluginDrift{
 		BinaryVersion:  binaryVersion,
 		MarketplaceDir: cfg.Plugin.MarketplaceDir,
 		CacheDir:       cfg.Plugin.CacheDir,
 	}
-	if binaryVersion == "" || updater.IsDevBuild(binaryVersion) {
+	if !force && (binaryVersion == "" || updater.IsDevBuild(binaryVersion)) {
 		// "dev" placeholder = local `go build` without ldflags; dev-stamped
 		// builds (make build) carry a git hash suffix. Drift comparison is
-		// meaningless for either.
+		// meaningless for either — which is why this guard froze the plugin
+		// alongside the binary until force gave the user a way past it.
 		return d
 	}
 
@@ -94,7 +101,10 @@ func detectPluginDrift(cfg *config.Config, binaryVersion string) PluginDrift {
 	// up any newer plugin upstream. It does NOT by itself mean the user must act
 	// — the plugin is versioned on its own track, so the mirror routinely trails
 	// the binary version even when fully up to date.
-	if d.MirrorVersion != "" && compareSemver(d.MirrorVersion, binaryVersion) < 0 {
+	// force always refreshes the mirror: on an explicit request the goal is to
+	// fetch the newest plugin, not to infer from a version stamp that may not
+	// be comparable at all.
+	if force || (d.MirrorVersion != "" && compareSemver(d.MirrorVersion, binaryVersion) < 0) {
 		d.MirrorBehind = true
 	}
 	// CacheBehind is the real, user-facing signal: the installed cache is older

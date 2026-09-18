@@ -79,6 +79,8 @@ func main() {
 		runHub(os.Args[2:])
 	case "maintenance":
 		runMaintenance(os.Args[2:])
+	case "self-update", "upgrade":
+		runSelfUpdate(os.Args[2:])
 	case "migrate":
 		runMigrate(os.Args[2:])
 	case "project":
@@ -117,6 +119,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored curation disable   Disable serve-time curation worker\n")
 	fmt.Fprintf(os.Stderr, "  anchored curation score     Score and mark low-signal memories\n")
 	fmt.Fprintf(os.Stderr, "  anchored curation reconcile Re-score entire corpus, repair stale flags\n")
+	fmt.Fprintf(os.Stderr, "  anchored self-update        Update the BINARY from the latest release (see: update)\n")
 	fmt.Fprintf(os.Stderr, "  anchored doctor             Diagnose installation, config, MCP registration\n")
 	fmt.Fprintf(os.Stderr, "  anchored purge              Wipe memories (--hard for full DB reset)\n")
 	fmt.Fprintf(os.Stderr, "  anchored inspect <id>      Show full memory details\n")

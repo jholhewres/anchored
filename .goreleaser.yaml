@@ -53,6 +53,12 @@ archives:
     format: zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
+# checksums.txt covers only what GoReleaser builds here: the linux tarballs
+# and the windows zip. The darwin archives are produced by the release-macos
+# job — CGO with FTS5 needs a real Mac — and ship a `<asset>.sha256` sidecar
+# instead. `anchored self-update` reads checksums.txt first and falls back to
+# that sidecar, so both mechanisms are load-bearing: removing the sidecar
+# breaks in-place updates on macOS.
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256

@@ -66,6 +66,37 @@ sudo cp bin/anchored /usr/local/bin/
 
 First run creates `~/.anchored/` and downloads the local embedding model when needed (~470 MB).
 
+### Updating
+
+```bash
+anchored self-update             # install the latest release; exits 0 if already current
+anchored self-update --check     # report only; exits 10 when an update is available
+anchored self-update --version v0.17.0   # pin to a release (a downgrade needs --force)
+anchored self-update --force --yes       # install past a refusal, no prompt
+anchored self-update --json      # machine-readable result; branch on .action
+anchored self-update --no-plugin # leave the Claude Code plugin alone
+```
+
+The download is verified against the release checksums before anything is
+replaced, and the previous binary is kept at `<bin>.prev`, so one rename undoes
+an update. Restart your MCP clients afterwards — a running server holds the old
+binary until it exits.
+
+Automatic background updates apply only to a release binary installed in
+`~/.anchored/bin`. A binary built from a checkout is deliberately left alone,
+since overwriting it would revert your own work to the release tag. When that
+is what you want, `--force` says so explicitly and asks before replacing it.
+`anchored doctor` reports when a release is available.
+
+Every published platform is covered: the linux and windows archives are
+digested in `checksums.txt`, and the darwin archives — built on a macOS runner,
+since CGO with FTS5 cannot cross-compile — carry a `.sha256` sidecar that the
+updater falls back to.
+
+Self-update trusts GitHub's release infrastructure. The checksum it verifies
+protects the download from corruption and tampering in transit; it does not
+prove who built the binary.
+
 ## Setup
 
 ### Claude Code plugin
@@ -296,6 +327,7 @@ anchored                         Start MCP server over STDIO
 anchored serve                   Start MCP server over STDIO
 anchored init [--tool]           Register Anchored with supported tools
 anchored doctor [--cwd]          Diagnose binary, model, DB, and MCP registration
+anchored self-update             Update the BINARY from the latest release
 anchored stats                   Show memory counts and import status
 anchored stats --tokens          Show context tokens injected vs. baseline (7d)
 anchored dashboard [--addr]      Serve the local dashboard UI
@@ -304,7 +336,7 @@ anchored save <content>          Save a memory
 anchored search <query>          Search memories
 anchored list                    List memories
 anchored inspect <id>            Show full JSON metadata
-anchored update <id>             Revise a memory in place
+anchored update <id>             Revise a MEMORY in place (not the binary — see self-update)
 anchored forget <id>             Soft-delete a memory; --hard for permanent delete
 anchored export                  Export memories as JSON/JSONL
 

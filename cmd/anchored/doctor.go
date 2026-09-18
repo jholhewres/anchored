@@ -20,6 +20,11 @@ import (
 // with a bare "v%s" produces "vv0.10.0"; this is the single normalization
 // point for every version string doctor prints.
 func formatV(v string) string {
+	if v == "" {
+		// A bare "v" is not a version. Callers reach this when a binary was
+		// built without ldflags, or when no plugin is installed.
+		return "unknown"
+	}
 	return "v" + strings.TrimPrefix(v, "v")
 }
 
@@ -59,6 +64,7 @@ func runDoctor(args []string) {
 	checkMaintenanceTimer(home)
 	checkDebugLog(cfg, home)
 	checkPluginDrift(cfg)
+	checkReleaseAvailable()
 	anyReachable := checkRemoteConnectivity(cfg)
 	checkRemoteConfigSanity(cfg)
 	checkProjectIdentity(cfg, *cwd, anyReachable)

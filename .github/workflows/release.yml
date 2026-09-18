@@ -87,6 +87,10 @@ jobs:
 
       - name: Create archive
         run: |
+          # The sidecar is how darwin gets a published digest at all: this job
+          # runs in parallel with GoReleaser, which owns checksums.txt and
+          # only digests what it builds. `anchored self-update` falls back to
+          # this file, so it is required, not decorative.
           ARCHIVE="anchored_${{ steps.version.outputs.VERSION }}_darwin_${{ matrix.goarch }}.tar.gz"
           tar czf "$ARCHIVE" anchored
           shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
