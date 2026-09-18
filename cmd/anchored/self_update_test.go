@@ -414,12 +414,55 @@ func TestDetectPluginDriftWithForce_IgnoresTheDevBuildGuard(t *testing.T) {
 	if f.MirrorVersion != "0.18.0" || f.CacheVersion != "0.17.0" {
 		t.Fatalf("forced detection did not read the versions: %+v", f)
 	}
-	// On an explicit request the mirror is always worth refreshing: the point
-	// is to fetch the newest plugin, not to infer it from a version stamp
-	// that cannot be compared. MirrorBehind is the field applyPluginAutoUpdate
-	// actually reads — it recomputes CacheBehind itself.
-	if !f.MirrorBehind {
-		t.Error("forced detection should always try to refresh the mirror")
+	// The mirror (0.18.0) is actually AHEAD of the dev build's base version
+	// (0.17.0) here, so a real comparison says it is not behind. force's job is
+	// only to unlock the comparison the dev-build guard would otherwise skip —
+	// not to pull regardless of what that comparison finds.
+	if f.MirrorBehind {
+		t.Error("a mirror that is ahead of the binary must not be marked behind, even when forced")
+	}
+}
+
+// force must not turn "not behind" into "behind": with a comparable
+// MirrorVersion that is already current (or ahead), force must not mark
+// MirrorBehind — otherwise every `self-update --force` re-pulls a mirror
+// that has nothing new, and any pull failure escalates into a destructive
+// git reset (see gitHardResetToUpstream) on a mirror that needed no touching.
+func TestDetectPluginDriftWithForce_DoesNotForceAPullWhenMirrorIsCurrent(t *testing.T) {
+	cacheDir := t.TempDir()
+	mirrorDir := t.TempDir()
+	seedPluginCache(t, cacheDir, "0.18.0")
+	seedMirrorManifest(t, mirrorDir, "0.18.0")
+
+	cfg := &config.Config{}
+	cfg.Plugin.CacheDir = cacheDir
+	cfg.Plugin.MarketplaceDir = mirrorDir
+
+	if d := detectPluginDriftWithForce(cfg, "0.18.0", true); d.MirrorBehind {
+		t.Errorf("mirror equal to binary must not be MirrorBehind under force, got %+v", d)
+	}
+	if d := detectPluginDriftWithForce(cfg, "0.17.0", true); d.MirrorBehind {
+		t.Errorf("mirror ahead of binary must not be MirrorBehind under force, got %+v", d)
+	}
+}
+
+// When the mirror carries no readable version at all, there is nothing to
+// compare — force is the only signal left, and it must still trigger a
+// refresh so an explicit request is not silently a no-op.
+func TestDetectPluginDriftWithForce_RefreshesWhenMirrorVersionIsUnreadable(t *testing.T) {
+	cacheDir := t.TempDir()
+	mirrorDir := t.TempDir() // no plugin.json inside: MirrorVersion resolves to ""
+
+	cfg := &config.Config{}
+	cfg.Plugin.CacheDir = cacheDir
+	cfg.Plugin.MarketplaceDir = mirrorDir
+
+	d := detectPluginDriftWithForce(cfg, "0.18.0", true)
+	if d.MirrorVersion != "" {
+		t.Fatalf("precondition: expected an unreadable mirror version, got %q", d.MirrorVersion)
+	}
+	if !d.MirrorBehind {
+		t.Error("an incomparable mirror version under force must still trigger a refresh")
 	}
 }
 
