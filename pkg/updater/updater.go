@@ -341,19 +341,21 @@ func fetchChecksum(ctx context.Context, url, assetName string) (string, error) {
 	return "", fmt.Errorf("%w: %s", errDigestNotListed, assetName)
 }
 
-// downloadAndReplace streams the tarball, validates its SHA-256 against
+// downloadAndReplace streams the archive, validates its SHA-256 against
 // wantSum, extracts the embedded `anchored` binary, and atomically swaps
 // it into dst while keeping the previous binary at dst+".prev" so a bad
-// update can be rolled back manually with one rename.
-// downloadAndReplace installs the release at url, bounded by maxBinaryBytes.
-func downloadAndReplace(ctx context.Context, url, dst, wantSum string) error {
-	return downloadAndReplaceLimited(ctx, url, dst, wantSum, maxBinaryBytes)
+// update can be rolled back manually with one rename. It is bounded by
+// maxBinaryBytes.
+//
+// assetName, not url, selects the extractor — see downloadAndReplaceLimited.
+func downloadAndReplace(ctx context.Context, url, assetName, dst, wantSum string) error {
+	return downloadAndReplaceLimited(ctx, url, assetName, dst, wantSum, maxBinaryBytes)
 }
 
 // downloadAndReplaceLimited takes the ceiling as an argument so a test can
 // exercise the bound without generating half a gigabyte, and so the limit is
 // not mutable package state on a security path.
-func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, maxBytes int64) error {
+func downloadAndReplaceLimited(ctx context.Context, url, assetName, dst, wantSum string, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -383,7 +385,13 @@ func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, ma
 	}
 	tmpPath := tmp.Name()
 
-	if strings.HasSuffix(url, ".zip") {
+	// SECURITY INVARIANT: the format is read off assetName, the same string
+	// fetchRelease matched to pick this asset, and never off the URL. Both
+	// come from the release document, which the file's other invariants treat
+	// as attacker-controlled — and the two fields are independent there, so a
+	// name ending in .zip can be paired with any URL at all. Branching on the
+	// URL let that pair disagree, routing a zip payload into the tar reader.
+	if strings.HasSuffix(assetName, ".zip") {
 		// A zip reader needs random access, so the archive is staged whole
 		// before extraction — bounded the same way as the tar path.
 		return installFromZip(tee, hasher, tmp, tmpPath, dst, wantSum, maxBytes)
