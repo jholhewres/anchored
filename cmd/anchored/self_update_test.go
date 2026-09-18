@@ -609,7 +609,7 @@ func TestRenderSelfUpdateInstalled_NamesADowngrade(t *testing.T) {
 }
 
 func TestRenderDowngradeRefusal_ExplainsItselfAndTheOverride(t *testing.T) {
-	out := renderDowngradeRefusal(updater.Result{Current: "0.18.0", Latest: "0.16.0"})
+	out := renderDowngradeRefusal(updater.Result{Current: "0.18.0", Latest: "0.16.0"}, selfUpdateOpts{})
 	for _, want := range []string{"0.16.0", "0.18.0", "--force"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("refusal missing %q\n---\n%s", want, out)
@@ -624,7 +624,7 @@ func TestRenderDowngradeRefusal_ExplainsItselfAndTheOverride(t *testing.T) {
 // renderSelfUpdateCheckT keeps the existing render assertions readable now
 // that the renderer needs to know whether a version was pinned.
 func renderSelfUpdateCheckT(res updater.Result) string {
-	return renderSelfUpdateCheck(res, "")
+	return renderSelfUpdateCheck(res, "", selfUpdateOpts{})
 }
 
 // Blocked must be BlockNotNewer here: check.go always sets it when the
@@ -636,7 +636,7 @@ func TestRenderSelfUpdateCheck_PinnedDowngradeIsNotReportedAsUpToDate(t *testing
 		Latest:  "0.16.0",
 		BinPath: "/b",
 		Blocked: updater.BlockNotNewer,
-	}, "v0.16.0")
+	}, "v0.16.0", selfUpdateOpts{})
 
 	if strings.Contains(out, "Up to date") {
 		t.Errorf("a requested downgrade is not 'up to date'\n---\n%s", out)
@@ -652,12 +652,28 @@ func TestRenderSelfUpdateCheck_PinnedDowngradeIsNotReportedAsUpToDate(t *testing
 // The override command must carry the flags the user gave. Telling someone who
 // asked for v0.16.0 to run plain --force sends them to the latest release.
 func TestOverrideCommand_PreservesThePinnedVersion(t *testing.T) {
-	got := overrideCommand("v0.16.0")
+	got := overrideCommand("v0.16.0", selfUpdateOpts{})
 	if !strings.Contains(got, "--version v0.16.0") {
 		t.Fatalf("override command dropped the pin: %q", got)
 	}
-	if plain := overrideCommand(""); strings.Contains(plain, "--version") {
+	if plain := overrideCommand("", selfUpdateOpts{}); strings.Contains(plain, "--version") {
 		t.Fatalf("no pin should mean no --version: %q", plain)
+	}
+}
+
+// A refusal must not hand back a command that quietly resets --config or
+// re-enables --no-plugin: pasting it would update against the wrong config,
+// or run a plugin sync the user explicitly opted out of.
+func TestOverrideCommand_PreservesConfigAndNoPlugin(t *testing.T) {
+	got := overrideCommand("v0.18.0", selfUpdateOpts{configPath: "/etc/anchored/config.yaml", noPlugin: true})
+	if !strings.Contains(got, "--config") || !strings.Contains(got, "/etc/anchored/config.yaml") {
+		t.Errorf("override command dropped --config: %q", got)
+	}
+	if !strings.Contains(got, "--no-plugin") {
+		t.Errorf("override command dropped --no-plugin: %q", got)
+	}
+	if !strings.Contains(got, "--version v0.18.0") {
+		t.Errorf("override command dropped the pin: %q", got)
 	}
 }
 
