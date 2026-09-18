@@ -71,7 +71,7 @@ First run creates `~/.anchored/` and downloads the local embedding model when ne
 ```bash
 anchored self-update             # install the latest release; exits 0 if already current
 anchored self-update --check     # report only; exits 10 when an update is available
-anchored self-update --version v0.17.0   # pin to a release (a downgrade needs --force)
+anchored self-update --version v0.17.0   # pin to a release (an older one needs --force)
 anchored self-update --force --yes       # install past a refusal, no prompt
 anchored self-update --json      # machine-readable result; branch on .action
 anchored self-update --no-plugin # leave the Claude Code plugin alone
@@ -82,16 +82,27 @@ replaced, and the previous binary is kept at `<bin>.prev`, so one rename undoes
 an update. Restart your MCP clients afterwards — a running server holds the old
 binary until it exits.
 
-Automatic background updates apply only to a release binary installed in
-`~/.anchored/bin`. A binary built from a checkout is deliberately left alone,
-since overwriting it would revert your own work to the release tag. When that
-is what you want, `--force` says so explicitly and asks before replacing it.
+Self-update targets `~/.anchored/bin`. Two installs are deliberately refused
+there, and both refusals name themselves and hand you the override:
+
+- **A binary built from a checkout**, because overwriting it would revert your
+  own work to the release tag. `--force` replaces it and asks first.
+- **A binary anywhere else**, including the `/usr/local/bin` copy the
+  install-from-source recipe above makes. Only the canonical install is managed
+  automatically, so updating that copy in place needs
+  `anchored self-update --force` (and, since the directory is root-owned,
+  likely `sudo` — the refusal prints the exact command).
+
 `anchored doctor` reports when a release is available.
 
-Every published platform is covered: the linux and windows archives are
-digested in `checksums.txt`, and the darwin archives — built on a macOS runner,
-since CGO with FTS5 cannot cross-compile — carry a `.sha256` sidecar that the
-updater falls back to.
+Every published archive resolves and verifies: the linux and windows archives
+are digested in `checksums.txt`, and the darwin archives — built on a macOS
+runner, since CGO with FTS5 cannot cross-compile — carry a `.sha256` sidecar
+the updater falls back to when checksums.txt does not list the asset. The swap
+itself is platform-specific: unix backs the old binary up by hardlink so the
+path never disappears, while windows renames it aside first, because the image
+loader will not let a running `.exe` be replaced in place. The windows path is
+covered by tests but has not been exercised on real hardware.
 
 Self-update trusts GitHub's release infrastructure. The checksum it verifies
 protects the download from corruption and tampering in transit; it does not

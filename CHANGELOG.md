@@ -26,6 +26,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available and hands over the command. Best-effort: with no network it degrades
   to "not checked" and never fails the run.
 
+### Fixed
+
+Follow-up on the self-update review, before any of it ships in a release.
+
+- **Self-update reads `~/.anchored/config.yaml` again.** The plugin half loaded
+  the config with a path that is empty unless `--config` is passed, which
+  silently resolved to the compiled-in defaults — so `plugin.marketplace_dir`
+  and `plugin.cache_dir` were ignored on every ordinary run.
+- **The binary swap works on Windows.** Backing the old binary up by hardlink
+  keeps it in place, and Windows will not let a running `.exe` be replaced,
+  so the final rename could only fail — as could the rollback. The backup
+  strategy is now chosen per platform: hardlink on unix, rename-aside on
+  windows.
+- **A hardlink that fails for an unlisted reason no longer fails the update.**
+  The degradation to rename was gated on three errnos; FAT, exFAT, fuse and
+  overlay mounts report it differently.
+- **`--force` no longer pulls a marketplace mirror that is already current.**
+  A failed pull escalates to `git reset --hard` plus `git clean -fd`, so an
+  unnecessary refresh put local work in the mirror at risk.
+- **The `.sha256` sidecar is consulted only when `checksums.txt` does not list
+  the asset**, which is the darwin case it was added for. Falling back on any
+  error let whoever could break `checksums.txt` choose the expected digest.
+- **The archive format is read from the asset name, not the download URL.**
+  Both come from the release document and are independent there, so the pair
+  could disagree and route a zip payload into the tar reader.
+- **Reinstalling the version you already run is no longer refused as a
+  downgrade** that would "revert any fix released in between".
+- **A refusal's suggested override keeps `--config` and `--no-plugin`** instead
+  of handing back a command that quietly drops them.
+- **`--json --force` only requires `--yes` when the confirmation prompt would
+  actually appear**, i.e. when a dev build is being replaced.
+
 
 ## [0.18.0] - 2026-09-04
 
