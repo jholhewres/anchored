@@ -11,6 +11,22 @@ import (
 // explicitly identified semantic space. It is safe to call repeatedly: the
 // manifest and its snapshot/delta jobs are idempotent.
 func (s *Service) ensureCurrentEmbeddingGeneration(ctx context.Context) error {
+	return s.ensureEmbeddingGeneration(ctx, false)
+}
+
+// warmEmbeddingGenerationAsync does the same binding, but publishes the vectors
+// on a background goroutine. Startup gets the cheap, failure-prone half —
+// identity resolution and the generation manifest — synchronously, so a
+// misconfigured provider still aborts NewService; the expensive half (decode
+// and quantize every vector in the corpus) no longer sits between process start
+// and the first request. Searches that arrive before the fill completes block
+// on the cache's warm gate, so results never silently degrade to an empty
+// vector space.
+func (s *Service) warmEmbeddingGenerationAsync(ctx context.Context) error {
+	return s.ensureEmbeddingGeneration(ctx, true)
+}
+
+func (s *Service) ensureEmbeddingGeneration(ctx context.Context, warmAsync bool) error {
 	if s.embedder == nil {
 		return nil
 	}
@@ -39,42 +55,91 @@ func (s *Service) ensureCurrentEmbeddingGeneration(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if active != nil && active.Identity.Compatible(identity) {
-		if err := s.enableEmbeddingGeneration(ctx, generations, active); err != nil {
+
+	publish := func(ctx context.Context) error {
+		if active != nil && active.Identity.Compatible(identity) {
+			if err := s.enableEmbeddingGeneration(ctx, generations, active); err != nil {
+				return err
+			}
+		} else {
+			// An active generation may belong to a different provider/model.
+			// Clear it before the current provider can issue a query.
+			if active != nil {
+				s.logger.Warn("embedding generation mismatch; semantic search disabled until backfill",
+					"active_generation", active.ID,
+					"active_model", active.Identity.Model,
+					"active_dimensions", active.Identity.Dimensions,
+					"building_generation", generation.ID,
+					"configured_model", identity.Model,
+					"configured_dimensions", identity.Dimensions,
+				)
+			} else {
+				s.logger.Info("embedding generation building; semantic search temporarily disabled",
+					"generation", generation.ID,
+					"model", identity.Model,
+					"dimensions", identity.Dimensions,
+				)
+			}
+			if cache := s.store.VectorCache(); cache != nil {
+				cache.Replace(nil)
+			}
+			if s.searcher != nil {
+				s.searcher.UseEmbeddingGeneration(nil)
+			}
+		}
+
+		if _, err := generations.EnsureEmbeddingGenerationJobs(ctx, generation.ID, 0); err != nil {
 			return err
 		}
-	} else {
-		// NewSQLiteStore may have loaded an active generation for a different
-		// provider/model. Clear it before the current provider can issue a query.
-		if active != nil {
-			s.logger.Warn("embedding generation mismatch; semantic search disabled until backfill",
-				"active_generation", active.ID,
-				"active_model", active.Identity.Model,
-				"active_dimensions", active.Identity.Dimensions,
-				"building_generation", generation.ID,
-				"configured_model", identity.Model,
-				"configured_dimensions", identity.Dimensions,
-			)
-		} else {
-			s.logger.Info("embedding generation building; semantic search temporarily disabled",
-				"generation", generation.ID,
-				"model", identity.Model,
-				"dimensions", identity.Dimensions,
-			)
-		}
-		if cache := s.store.VectorCache(); cache != nil {
-			cache.Replace(nil)
-		}
-		if s.searcher != nil {
-			s.searcher.UseEmbeddingGeneration(nil)
-		}
-	}
-
-	if _, err := generations.EnsureEmbeddingGenerationJobs(ctx, generation.ID, 0); err != nil {
+		_, err := s.tryActivateEmbeddingGeneration(ctx, generations, generation.ID)
 		return err
 	}
-	_, err = s.tryActivateEmbeddingGeneration(ctx, generations, generation.ID)
-	return err
+
+	if !warmAsync {
+		return publish(ctx)
+	}
+
+	// Open the warm gate BEFORE returning, so a search racing this call waits
+	// for the fill instead of observing the empty cache it started from.
+	var done func()
+	if cache := s.store.VectorCache(); cache != nil {
+		done = cache.BeginWarm()
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if done != nil {
+			defer done()
+		}
+		warmCtx, cancel := s.shutdownContext()
+		defer cancel()
+		started := time.Now()
+		if err := publish(warmCtx); err != nil {
+			s.logger.Warn("embedding generation warm failed; semantic search stays cold", "error", err)
+			return
+		}
+		if cache := s.store.VectorCache(); cache != nil {
+			s.logger.Info("vector cache warm", "count", cache.Len(), "took", time.Since(started).String())
+		}
+	}()
+	return nil
+}
+
+// shutdownContext derives a context cancelled when the service closes, so a
+// background warm does not outlive the process it belongs to.
+func (s *Service) shutdownContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if s.shutdown == nil {
+		return ctx, cancel
+	}
+	go func() {
+		select {
+		case <-s.shutdown:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (s *Service) currentEmbeddingGenerationID() string {

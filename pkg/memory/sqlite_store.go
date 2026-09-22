@@ -59,18 +59,37 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 
 	cache := NewVectorCache(logger)
 	store := &SQLiteStore{db: db, cache: cache, logger: logger, now: time.Now}
-	if active, activeErr := store.ActiveEmbeddingGeneration(context.Background()); activeErr != nil {
-		logger.Warn("active embedding generation lookup failed", "error", activeErr)
-	} else if active != nil {
-		if vectors, loadErr := store.LoadEmbeddingGeneration(context.Background(), active.ID); loadErr != nil {
-			logger.Warn("active embedding generation load failed", "generation", active.ID, "error", loadErr)
-		} else {
-			cache.Replace(vectors)
-			logger.Info("active embedding generation loaded", "generation", active.ID, "count", len(vectors))
-		}
-	}
+
+	// The active generation is deliberately NOT loaded here. NewService calls
+	// ensureCurrentEmbeddingGeneration immediately afterwards, which republishes
+	// the same generation into the same cache — so loading here decoded and
+	// quantized every vector in the corpus twice per process start, for nothing.
+	// Callers that own no Service (project detection, eval on a temp DB) never
+	// query vectors; the ones that do get a warm cache from the Service.
 
 	return store, nil
+}
+
+// WarmVectorCache fills the cache from the active generation. NewSQLiteStore
+// deliberately leaves it empty — a Service republishes the same generation
+// moments later, and doing both decoded every vector in the corpus twice — so
+// callers that hold a bare store and still want semantic search ask for it
+// here. It is a no-op when no generation is active.
+func (s *SQLiteStore) WarmVectorCache(ctx context.Context) error {
+	active, err := s.ActiveEmbeddingGeneration(ctx)
+	if err != nil {
+		return fmt.Errorf("active embedding generation lookup: %w", err)
+	}
+	if active == nil {
+		return nil
+	}
+	vectors, err := s.LoadEmbeddingGeneration(ctx, active.ID)
+	if err != nil {
+		return fmt.Errorf("active embedding generation load: %w", err)
+	}
+	s.cache.Replace(vectors)
+	s.logger.Info("active embedding generation loaded", "generation", active.ID, "count", len(vectors))
+	return nil
 }
 
 func (s *SQLiteStore) DB() *sql.DB               { return s.db }

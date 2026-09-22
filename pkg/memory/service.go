@@ -98,7 +98,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 
 	svc.searcher = NewHybridSearcher(store, embedder, svc.cache, store.VectorCache(), searchCfg, entityDetector, topicChangeDetector, logger)
 	if embedder != nil {
-		if err := svc.ensureCurrentEmbeddingGeneration(context.Background()); err != nil {
+		if err := svc.warmEmbeddingGenerationAsync(context.Background()); err != nil {
 			_ = embedder.Close()
 			_ = store.Close()
 			return nil, fmt.Errorf("initialize embedding generation: %w", err)

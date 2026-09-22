@@ -216,6 +216,17 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 	if h.embedder == nil {
 		return nil, nil
 	}
+	// The cache may still be filling: the server publishes the active
+	// generation in the background so startup does not block on decoding the
+	// whole corpus. Wait here, BEFORE taking generationMu — the fill publishes
+	// under that same lock's write side, so waiting while holding the read side
+	// would deadlock. A cancelled ctx falls through and scores whatever is
+	// loaded, which is the caller's own deadline talking.
+	if h.vectorCache != nil {
+		if !h.vectorCache.WaitWarm(ctx) {
+			h.logger.Warn("vector cache still warming; search may miss semantic matches")
+		}
+	}
 	h.generationMu.RLock()
 	generationAware := h.generationAware
 	var identity *EmbeddingIdentity

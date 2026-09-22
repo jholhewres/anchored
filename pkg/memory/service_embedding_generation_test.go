@@ -257,6 +257,9 @@ func TestGenerationVectorsFollowContentStableRevisionsAcrossRestart(t *testing.T
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	if err := reopened.WarmVectorCache(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if got, ok := reopened.VectorCache().Get(saved.ID); !ok || len(got) != 2 {
 		t.Fatalf("generation vector missing after restart: vector=%v ok=%v", got, ok)
 	}
