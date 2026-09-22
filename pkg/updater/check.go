@@ -130,7 +130,7 @@ func Apply(ctx context.Context, res Result) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrChecksumLookup, err)
 	}
-	return downloadAndReplace(ctx, res.AssetURL, res.BinPath, sum)
+	return downloadAndReplace(ctx, res.AssetURL, res.AssetName, res.BinPath, sum)
 }
 
 // osExecutable is a seam for tests: it lets a test drive the

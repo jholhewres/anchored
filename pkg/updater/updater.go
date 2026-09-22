@@ -26,7 +26,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -254,6 +253,12 @@ func fetchRelease(ctx context.Context, repo, tag string) (version string, assetU
 	return version, assetURL, assetName, checksumsURL, nil
 }
 
+// errDigestNotListed marks the one checksums.txt outcome that legitimately
+// has a second place to look: the file was fetched and parsed, and the asset
+// simply is not in it. Every other failure — transport, HTTP status, a
+// truncated body — says nothing about where the digest lives.
+var errDigestNotListed = errors.New("asset not listed in checksums.txt")
+
 // resolveChecksum finds the expected digest for assetName.
 //
 // checksums.txt is produced by GoReleaser and therefore covers only the
@@ -262,10 +267,20 @@ func fetchRelease(ctx context.Context, repo, tag string) (version string, assetU
 // carry a `<asset>.sha256` sidecar instead. Without the fallback, every
 // update on a Mac resolved an asset and then refused to install it for want
 // of a digest.
+//
+// SECURITY INVARIANT: the fallback fires only on errDigestNotListed. Falling
+// back on any error — which is what this did first — hands the choice of
+// expected digest to whoever can make checksums.txt fail while still serving
+// <asset>.sha256. On linux the asset IS in checksums.txt, so a 500 or a
+// truncated body there is a reason to stop, not a reason to go ask a second
+// file what the payload should hash to.
 func resolveChecksum(ctx context.Context, checksumsURL, assetURL, assetName string) (string, error) {
 	sum, err := fetchChecksum(ctx, checksumsURL, assetName)
 	if err == nil {
 		return sum, nil
+	}
+	if !errors.Is(err, errDigestNotListed) {
+		return "", err
 	}
 
 	sidecarURL := assetURL + ".sha256"
@@ -320,22 +335,27 @@ func fetchChecksum(ctx context.Context, url, assetName string) (string, error) {
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read checksums: %w", err)
 	}
-	return "", fmt.Errorf("checksum not found for %s", assetName)
+	// Wrapped, not formatted away: resolveChecksum tells "the file does not
+	// cover this asset" apart from "the file could not be read", and only the
+	// first one justifies consulting the sidecar.
+	return "", fmt.Errorf("%w: %s", errDigestNotListed, assetName)
 }
 
-// downloadAndReplace streams the tarball, validates its SHA-256 against
+// downloadAndReplace streams the archive, validates its SHA-256 against
 // wantSum, extracts the embedded `anchored` binary, and atomically swaps
 // it into dst while keeping the previous binary at dst+".prev" so a bad
-// update can be rolled back manually with one rename.
-// downloadAndReplace installs the release at url, bounded by maxBinaryBytes.
-func downloadAndReplace(ctx context.Context, url, dst, wantSum string) error {
-	return downloadAndReplaceLimited(ctx, url, dst, wantSum, maxBinaryBytes)
+// update can be rolled back manually with one rename. It is bounded by
+// maxBinaryBytes.
+//
+// assetName, not url, selects the extractor — see downloadAndReplaceLimited.
+func downloadAndReplace(ctx context.Context, url, assetName, dst, wantSum string) error {
+	return downloadAndReplaceLimited(ctx, url, assetName, dst, wantSum, maxBinaryBytes)
 }
 
 // downloadAndReplaceLimited takes the ceiling as an argument so a test can
 // exercise the bound without generating half a gigabyte, and so the limit is
 // not mutable package state on a security path.
-func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, maxBytes int64) error {
+func downloadAndReplaceLimited(ctx context.Context, url, assetName, dst, wantSum string, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -365,7 +385,13 @@ func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, ma
 	}
 	tmpPath := tmp.Name()
 
-	if strings.HasSuffix(url, ".zip") {
+	// SECURITY INVARIANT: the format is read off assetName, the same string
+	// fetchRelease matched to pick this asset, and never off the URL. Both
+	// come from the release document, which the file's other invariants treat
+	// as attacker-controlled — and the two fields are independent there, so a
+	// name ending in .zip can be paired with any URL at all. Branching on the
+	// URL let that pair disagree, routing a zip payload into the tar reader.
+	if strings.HasSuffix(assetName, ".zip") {
 		// A zip reader needs random access, so the archive is staged whole
 		// before extraction — bounded the same way as the tar path.
 		return installFromZip(tee, hasher, tmp, tmpPath, dst, wantSum, maxBytes)
@@ -447,12 +473,24 @@ func downloadAndReplaceLimited(ctx context.Context, url, dst, wantSum string, ma
 	return swapInPlace(tmpPath, dst)
 }
 
-// swapInPlace backs up dst and moves the staged binary over it.
+// swapInPlace backs up dst and moves the staged binary over it, using the
+// platform's backup strategy.
 func swapInPlace(tmpPath, dst string) error {
-	// The backup is a hardlink, not a rename: dst keeps existing for the
-	// whole operation, so a client spawning `anchored serve` mid-update never
-	// finds the path missing. That also makes the single rename below a true
-	// atomic swap — dst goes straight from the old inode to the new one.
+	return swapUsing(tmpPath, dst, backupCurrent)
+}
+
+// swapUsing is swapInPlace with the backup step injected, which is what lets
+// a Linux test drive the windows-shaped sequence. The two strategies differ
+// in one property that decides everything downstream: whether dst still
+// exists when the final rename runs.
+//
+//   - unix backs up by hardlink, so dst survives the whole operation (a
+//     client spawning `anchored serve` mid-update never finds the path
+//     missing) and the rename below is a true atomic swap, dst going straight
+//     from the old inode to the new one.
+//   - windows backs up by rename, vacating dst first, because the image
+//     loader refuses to let a running .exe be deleted or replaced.
+func swapUsing(tmpPath, dst string, backup func(dst, prevPath string) error) error {
 	prevPath := dst + ".prev"
 	backedUp := false
 	if _, statErr := os.Stat(dst); statErr == nil {
@@ -462,7 +500,7 @@ func swapInPlace(tmpPath, dst string) error {
 			}
 			return fmt.Errorf("clear stale backup %s: %w", prevPath, err)
 		}
-		if err := backupCurrent(dst, prevPath); err != nil {
+		if err := backup(dst, prevPath); err != nil {
 			if rmErr := os.Remove(tmpPath); rmErr != nil {
 				return fmt.Errorf("backup current: %w (and %s could not be cleaned up: %v)", err, tmpPath, rmErr)
 			}
@@ -493,25 +531,6 @@ func swapInPlace(tmpPath, dst string) error {
 func isAnchoredBinary(name string) bool {
 	base := filepath.Base(name)
 	return base == "anchored" || base == "anchored.exe"
-}
-
-// backupCurrent links dst to prevPath so dst keeps existing for the whole
-// swap — a client spawning `anchored serve` mid-update never finds the path
-// missing, and the following rename is a true atomic replacement.
-//
-// Filesystems without hardlinks (FAT, exFAT, some fuse and overlay mounts)
-// fall back to a rename, which reopens the brief window where dst is absent.
-// A degraded backup beats refusing to update at all, which is what an
-// unconditional Link did.
-func backupCurrent(dst, prevPath string) error {
-	err := os.Link(dst, prevPath)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, errors.ErrUnsupported) && !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EPERM) {
-		return err
-	}
-	return os.Rename(dst, prevPath)
 }
 
 // assertTrustedDownloadURL rejects a release document that points the download

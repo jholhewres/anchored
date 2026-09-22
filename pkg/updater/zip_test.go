@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -61,7 +62,7 @@ func TestDownloadAndReplace_InstallsFromAWindowsZip(t *testing.T) {
 	body, sum := makeZip(t, "anchored.exe", []byte("NEW-WINDOWS-BINARY"))
 	url := serveBytes(t, "anchored_1.0.0_windows_amd64.zip", body)
 
-	if err := downloadAndReplace(context.Background(), url, dst, sum); err != nil {
+	if err := downloadAndReplace(context.Background(), url, "anchored_1.0.0_windows_amd64.zip", dst, sum); err != nil {
 		t.Fatalf("downloadAndReplace: %v", err)
 	}
 	if got, _ := os.ReadFile(dst); string(got) != "NEW-WINDOWS-BINARY" {
@@ -82,7 +83,7 @@ func TestDownloadAndReplace_ZipWithBadChecksumLeavesTheBinary(t *testing.T) {
 	body, _ := makeZip(t, "anchored.exe", []byte("TAMPERED"))
 	url := serveBytes(t, "anchored_1.0.0_windows_amd64.zip", body)
 
-	err := downloadAndReplace(context.Background(), url, dst, strings.Repeat("0", 64))
+	err := downloadAndReplace(context.Background(), url, "anchored_1.0.0_windows_amd64.zip", dst, strings.Repeat("0", 64))
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected a checksum mismatch, got %v", err)
 	}
@@ -100,7 +101,7 @@ func TestDownloadAndReplace_ZipWithoutTheBinaryIsRejected(t *testing.T) {
 	body, sum := makeZip(t, "README.txt", []byte("nope"))
 	url := serveBytes(t, "anchored_1.0.0_windows_amd64.zip", body)
 
-	err := downloadAndReplace(context.Background(), url, dst, sum)
+	err := downloadAndReplace(context.Background(), url, "anchored_1.0.0_windows_amd64.zip", dst, sum)
 	if err == nil || !strings.Contains(err.Error(), "not found in zip") {
 		t.Fatalf("expected the binary to be reported missing, got %v", err)
 	}
@@ -151,12 +152,21 @@ func TestResolveChecksum_FallsBackToTheSidecar(t *testing.T) {
 	}
 }
 
+// When checksums.txt legitimately does not cover the asset and the sidecar is
+// missing too, the error has to name both attempts — otherwise a darwin user
+// is told "checksum not found" with no hint that a second file was consulted.
 func TestResolveChecksum_ReportsBothFailures(t *testing.T) {
 	localSeam(t)
 	asset := "anchored_1.0.0_darwin_arm64.tar.gz"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		// Served fine, just does not list this asset.
+		if _, err := fmt.Fprintf(w, "%s  anchored_1.0.0_linux_amd64.tar.gz\n", strings.Repeat("b", 64)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	})
+	// The sidecar route is absent, so it 404s.
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	_, err := resolveChecksum(context.Background(), srv.URL+"/checksums.txt", srv.URL+"/"+asset, asset)
@@ -165,6 +175,42 @@ func TestResolveChecksum_ReportsBothFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sidecar") {
 		t.Errorf("error should mention the sidecar attempt, got %v", err)
+	}
+}
+
+// SECURITY: the sidecar fallback exists because GoReleaser does not digest the
+// darwin archives it did not build — a gap in coverage, not a recovery path.
+// A checksums.txt that fails to load says nothing about where the digest
+// lives, and consulting a second file anyway hands the choice of expected
+// digest to whoever can make the first one fail. On linux the asset IS listed,
+// so this is the whole attack: break checksums.txt, serve your own sidecar.
+func TestResolveChecksum_TransportFailureDoesNotReachTheSidecar(t *testing.T) {
+	localSeam(t)
+	asset := "anchored_1.0.0_linux_amd64.tar.gz"
+
+	var sidecarHits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/"+asset+".sha256", func(w http.ResponseWriter, r *http.Request) {
+		sidecarHits.Add(1)
+		if _, err := fmt.Fprintf(w, "%s  %s\n", strings.Repeat("c", 64), asset); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := resolveChecksum(context.Background(), srv.URL+"/checksums.txt", srv.URL+"/"+asset, asset)
+	if err == nil {
+		t.Fatal("a checksums.txt that returned 500 must not resolve to a digest")
+	}
+	if n := sidecarHits.Load(); n != 0 {
+		t.Errorf("the sidecar was requested %d time(s) after a transport failure", n)
+	}
+	if strings.Contains(err.Error(), "sidecar") {
+		t.Errorf("a transport failure should not be reported as a sidecar miss, got %v", err)
 	}
 }
 
@@ -179,4 +225,39 @@ func TestIsAnchoredBinary(t *testing.T) {
 			t.Errorf("%q should not match", bad)
 		}
 	}
+}
+
+// SECURITY: the archive format is read off the asset name that fetchRelease
+// matched, never off the download URL. Both fields come from the release
+// document, and they are independent there — a name ending in .zip can be
+// paired with any URL at all — so branching on the URL let the two disagree
+// and routed a zip payload into the gzip reader.
+func TestDownloadAndReplace_FormatComesFromTheAssetNameNotTheURL(t *testing.T) {
+	t.Run("zip asset served from a url that does not say zip", func(t *testing.T) {
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "anchored")
+		body, sum := makeZip(t, "anchored.exe", []byte("NEW-WINDOWS-BINARY"))
+		url := serveBytes(t, "download", body)
+
+		if err := downloadAndReplace(context.Background(), url, "anchored_1.0.0_windows_amd64.zip", dst, sum); err != nil {
+			t.Fatalf("a .zip asset must be read as a zip whatever the url says: %v", err)
+		}
+		if got, _ := os.ReadFile(dst); string(got) != "NEW-WINDOWS-BINARY" {
+			t.Errorf("dst = %q", got)
+		}
+	})
+
+	t.Run("tarball asset served from a url ending in zip", func(t *testing.T) {
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "anchored")
+		body, sum := makeTarGz(t, []byte("NEW-UNIX-BINARY"))
+		url := serveBytes(t, "anchored_1.0.0_windows_amd64.zip", body)
+
+		if err := downloadAndReplace(context.Background(), url, tarAsset, dst, sum); err != nil {
+			t.Fatalf("a .tar.gz asset must be read as a tarball whatever the url says: %v", err)
+		}
+		if got, _ := os.ReadFile(dst); string(got) != "NEW-UNIX-BINARY" {
+			t.Errorf("dst = %q", got)
+		}
+	})
 }

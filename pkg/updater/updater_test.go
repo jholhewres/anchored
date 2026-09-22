@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,11 @@ import (
 	"strings"
 	"testing"
 )
+
+// tarAsset is the asset filename the unix releases publish. The extractor is
+// selected from this name rather than from the download URL, so tests that
+// serve a tarball have to say so.
+const tarAsset = "anchored_1.0.0_linux_amd64.tar.gz"
 
 func TestIsNewer(t *testing.T) {
 	cases := []struct {
@@ -120,8 +126,11 @@ func TestFetchChecksum_AssetMissing(t *testing.T) {
 	defer srv.Close()
 
 	_, err := fetchChecksum(context.Background(), srv.URL, "anchored_x.tar.gz")
-	if err == nil || !strings.Contains(err.Error(), "checksum not found") {
-		t.Fatalf("expected 'checksum not found', got %v", err)
+	// The sentinel, not the wording: resolveChecksum branches on it to decide
+	// whether the sidecar may be consulted, so this is the contract that
+	// matters and a reworded message must not silently change it.
+	if !errors.Is(err, errDigestNotListed) {
+		t.Fatalf("expected errDigestNotListed, got %v", err)
 	}
 }
 
@@ -140,7 +149,7 @@ func TestDownloadAndReplace_VerifiesChecksumAndBacksUp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := downloadAndReplace(context.Background(), srv.URL, dst, sum); err != nil {
+	if err := downloadAndReplace(context.Background(), srv.URL, tarAsset, dst, sum); err != nil {
 		t.Fatalf("downloadAndReplace: %v", err)
 	}
 
@@ -171,7 +180,7 @@ func TestDownloadAndReplace_RejectsBadChecksum(t *testing.T) {
 	defer srv.Close()
 
 	wrongSum := strings.Repeat("0", 64)
-	err := downloadAndReplace(context.Background(), srv.URL, dst, wrongSum)
+	err := downloadAndReplace(context.Background(), srv.URL, tarAsset, dst, wrongSum)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch, got %v", err)
 	}

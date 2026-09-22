@@ -414,12 +414,55 @@ func TestDetectPluginDriftWithForce_IgnoresTheDevBuildGuard(t *testing.T) {
 	if f.MirrorVersion != "0.18.0" || f.CacheVersion != "0.17.0" {
 		t.Fatalf("forced detection did not read the versions: %+v", f)
 	}
-	// On an explicit request the mirror is always worth refreshing: the point
-	// is to fetch the newest plugin, not to infer it from a version stamp
-	// that cannot be compared. MirrorBehind is the field applyPluginAutoUpdate
-	// actually reads — it recomputes CacheBehind itself.
-	if !f.MirrorBehind {
-		t.Error("forced detection should always try to refresh the mirror")
+	// The mirror (0.18.0) is actually AHEAD of the dev build's base version
+	// (0.17.0) here, so a real comparison says it is not behind. force's job is
+	// only to unlock the comparison the dev-build guard would otherwise skip —
+	// not to pull regardless of what that comparison finds.
+	if f.MirrorBehind {
+		t.Error("a mirror that is ahead of the binary must not be marked behind, even when forced")
+	}
+}
+
+// force must not turn "not behind" into "behind": with a comparable
+// MirrorVersion that is already current (or ahead), force must not mark
+// MirrorBehind — otherwise every `self-update --force` re-pulls a mirror
+// that has nothing new, and any pull failure escalates into a destructive
+// git reset (see gitHardResetToUpstream) on a mirror that needed no touching.
+func TestDetectPluginDriftWithForce_DoesNotForceAPullWhenMirrorIsCurrent(t *testing.T) {
+	cacheDir := t.TempDir()
+	mirrorDir := t.TempDir()
+	seedPluginCache(t, cacheDir, "0.18.0")
+	seedMirrorManifest(t, mirrorDir, "0.18.0")
+
+	cfg := &config.Config{}
+	cfg.Plugin.CacheDir = cacheDir
+	cfg.Plugin.MarketplaceDir = mirrorDir
+
+	if d := detectPluginDriftWithForce(cfg, "0.18.0", true); d.MirrorBehind {
+		t.Errorf("mirror equal to binary must not be MirrorBehind under force, got %+v", d)
+	}
+	if d := detectPluginDriftWithForce(cfg, "0.17.0", true); d.MirrorBehind {
+		t.Errorf("mirror ahead of binary must not be MirrorBehind under force, got %+v", d)
+	}
+}
+
+// When the mirror carries no readable version at all, there is nothing to
+// compare — force is the only signal left, and it must still trigger a
+// refresh so an explicit request is not silently a no-op.
+func TestDetectPluginDriftWithForce_RefreshesWhenMirrorVersionIsUnreadable(t *testing.T) {
+	cacheDir := t.TempDir()
+	mirrorDir := t.TempDir() // no plugin.json inside: MirrorVersion resolves to ""
+
+	cfg := &config.Config{}
+	cfg.Plugin.CacheDir = cacheDir
+	cfg.Plugin.MarketplaceDir = mirrorDir
+
+	d := detectPluginDriftWithForce(cfg, "0.18.0", true)
+	if d.MirrorVersion != "" {
+		t.Fatalf("precondition: expected an unreadable mirror version, got %q", d.MirrorVersion)
+	}
+	if !d.MirrorBehind {
+		t.Error("an incomparable mirror version under force must still trigger a refresh")
 	}
 }
 
@@ -526,6 +569,38 @@ func TestSyncPluginAfterUpdate_MissingMarketplaceIsReportedNotSwallowed(t *testi
 	}
 }
 
+// config.Load("") reads os.ReadFile(""), which always fails with ENOENT and
+// so — through the os.IsNotExist branch — silently returns config.Defaults().
+// That made `anchored self-update` with no --config flag NEVER read
+// ~/.anchored/config.yaml (the file install.sh writes), syncing the plugin
+// against default paths and ignoring plugin.marketplace_dir/cache_dir. This
+// pins syncPluginAfterUpdate("") to loadConfig, which resolves the empty
+// path against $HOME first. Reverting to config.Load(configPath) must fail
+// this test: it would resolve MarketplaceDir to the compiled-in default
+// instead of the custom directory below.
+func TestSyncPluginAfterUpdate_EmptyConfigPathReadsHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	custom := filepath.Join(home, "custom-marketplace")
+	if err := os.MkdirAll(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Join(home, ".anchored")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "plugin:\n  marketplace_dir: " + custom + "\n  cache_dir: " + filepath.Join(home, "cache") + "\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := syncPluginAfterUpdate("", updater.Result{Latest: "0.18.0"}, false, true)
+	if out.MarketplaceDir != custom {
+		t.Fatalf("MarketplaceDir = %q, want the ~/.anchored/config.yaml value %q", out.MarketplaceDir, custom)
+	}
+}
+
 func TestSyncPluginAfterUpdate_NoPluginSkipsEverything(t *testing.T) {
 	out := syncPluginAfterUpdate("", updater.Result{Latest: "0.18.0"}, true, true)
 	if !out.Skipped {
@@ -609,7 +684,7 @@ func TestRenderSelfUpdateInstalled_NamesADowngrade(t *testing.T) {
 }
 
 func TestRenderDowngradeRefusal_ExplainsItselfAndTheOverride(t *testing.T) {
-	out := renderDowngradeRefusal(updater.Result{Current: "0.18.0", Latest: "0.16.0"})
+	out := renderDowngradeRefusal(updater.Result{Current: "0.18.0", Latest: "0.16.0"}, selfUpdateOpts{})
 	for _, want := range []string{"0.16.0", "0.18.0", "--force"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("refusal missing %q\n---\n%s", want, out)
@@ -624,7 +699,32 @@ func TestRenderDowngradeRefusal_ExplainsItselfAndTheOverride(t *testing.T) {
 // renderSelfUpdateCheckT keeps the existing render assertions readable now
 // that the renderer needs to know whether a version was pinned.
 func renderSelfUpdateCheckT(res updater.Result) string {
-	return renderSelfUpdateCheck(res, "")
+	return renderSelfUpdateCheck(res, "", selfUpdateOpts{})
+}
+
+// Reinstalling the exact version you already have is not a downgrade: there
+// is no fix "released in between" to revert, because nothing was released.
+func TestSelfUpdateVerdict_ReinstallingThePinnedCurrentVersionIsNotADowngrade(t *testing.T) {
+	out := selfUpdateVerdict(updater.Result{
+		Current: "0.18.0",
+		Latest:  "0.18.0",
+		Blocked: updater.BlockNotNewer,
+	}, "v0.18.0", selfUpdateOpts{})
+	if strings.Contains(out, "revert any fix") {
+		t.Errorf("reinstalling the current version must not be framed as a downgrade\n---\n%s", out)
+	}
+}
+
+// A genuinely older pin must still be refused as a downgrade.
+func TestSelfUpdateVerdict_OlderPinIsStillADowngrade(t *testing.T) {
+	out := selfUpdateVerdict(updater.Result{
+		Current: "0.18.0",
+		Latest:  "0.17.0",
+		Blocked: updater.BlockNotNewer,
+	}, "v0.17.0", selfUpdateOpts{})
+	if !strings.Contains(out, "revert any fix") {
+		t.Errorf("a pin older than current must still read as a downgrade\n---\n%s", out)
+	}
 }
 
 // Blocked must be BlockNotNewer here: check.go always sets it when the
@@ -636,7 +736,7 @@ func TestRenderSelfUpdateCheck_PinnedDowngradeIsNotReportedAsUpToDate(t *testing
 		Latest:  "0.16.0",
 		BinPath: "/b",
 		Blocked: updater.BlockNotNewer,
-	}, "v0.16.0")
+	}, "v0.16.0", selfUpdateOpts{})
 
 	if strings.Contains(out, "Up to date") {
 		t.Errorf("a requested downgrade is not 'up to date'\n---\n%s", out)
@@ -652,12 +752,52 @@ func TestRenderSelfUpdateCheck_PinnedDowngradeIsNotReportedAsUpToDate(t *testing
 // The override command must carry the flags the user gave. Telling someone who
 // asked for v0.16.0 to run plain --force sends them to the latest release.
 func TestOverrideCommand_PreservesThePinnedVersion(t *testing.T) {
-	got := overrideCommand("v0.16.0")
+	got := overrideCommand("v0.16.0", selfUpdateOpts{})
 	if !strings.Contains(got, "--version v0.16.0") {
 		t.Fatalf("override command dropped the pin: %q", got)
 	}
-	if plain := overrideCommand(""); strings.Contains(plain, "--version") {
+	if plain := overrideCommand("", selfUpdateOpts{}); strings.Contains(plain, "--version") {
 		t.Fatalf("no pin should mean no --version: %q", plain)
+	}
+}
+
+// A refusal must not hand back a command that quietly resets --config or
+// re-enables --no-plugin: pasting it would update against the wrong config,
+// or run a plugin sync the user explicitly opted out of.
+func TestOverrideCommand_PreservesConfigAndNoPlugin(t *testing.T) {
+	got := overrideCommand("v0.18.0", selfUpdateOpts{configPath: "/etc/anchored/config.yaml", noPlugin: true})
+	if !strings.Contains(got, "--config") || !strings.Contains(got, "/etc/anchored/config.yaml") {
+		t.Errorf("override command dropped --config: %q", got)
+	}
+	if !strings.Contains(got, "--no-plugin") {
+		t.Errorf("override command dropped --no-plugin: %q", got)
+	}
+	if !strings.Contains(got, "--version v0.18.0") {
+		t.Errorf("override command dropped the pin: %q", got)
+	}
+}
+
+// The prompt only fires for a dev build under --force; a release binary has
+// nothing to confirm, so --force --json on a release must not be rejected
+// over a prompt that would never appear.
+func TestNeedsUpfrontConsent(t *testing.T) {
+	cases := []struct {
+		name                                        string
+		jsonOut, force, assumeYes, isDevBuild, want bool
+	}{
+		{"release build, force+json, no yes", true, true, false, false, false},
+		{"dev build, force+json, no yes", true, true, false, true, true},
+		{"dev build, force+json, with yes", true, true, true, true, false},
+		{"dev build, force, no json", false, true, false, true, false},
+		{"dev build, json, no force", true, false, false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsUpfrontConsent(tc.jsonOut, tc.force, tc.assumeYes, tc.isDevBuild); got != tc.want {
+				t.Errorf("needsUpfrontConsent(%v,%v,%v,%v) = %v, want %v",
+					tc.jsonOut, tc.force, tc.assumeYes, tc.isDevBuild, got, tc.want)
+			}
+		})
 	}
 }
 

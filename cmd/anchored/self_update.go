@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/updater"
 )
 
@@ -67,6 +66,10 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 		os.Exit(1)
 	}
 
+	// Carried into every suggested override command below, so a refusal never
+	// hands back a command that silently drops a flag the user chose.
+	opts := selfUpdateOpts{configPath: *configPath, noPlugin: *noPlugin}
+
 	ctx, cancel := context.WithTimeout(context.Background(), selfUpdateCheckTimeout)
 	defer cancel()
 
@@ -88,7 +91,7 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 		if *jsonOut {
 			fmt.Println(renderSelfUpdateJSON(res))
 		} else {
-			fmt.Print(renderSelfUpdateCheck(res, *target))
+			fmt.Print(renderSelfUpdateCheck(res, *target, opts))
 		}
 		os.Exit(selfUpdateExitCode(res))
 	}
@@ -96,18 +99,13 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 	// Apply mode. A refusal is generally a failure here — the user asked for
 	// an install and did not get one — with one exception: being already on
 	// the requested version is the outcome they wanted, so it exits 0. `anchored
-	// self-update && ...` has to survive being run twice.
-	if *jsonOut && *force && !*assumeYes {
-		// The confirmation prompt writes to stdout, which would corrupt the
-		// document. --json is a machine-readable contract, so consent has to
-		// be given up front.
-		fmt.Fprintln(os.Stderr, "anchored self-update: --json with --force needs --yes (the confirmation prompt cannot share stdout)")
-		os.Exit(1)
-	}
-
-	if res.Blocked == updater.BlockNotNewer && !*force && *target == "" {
+	// self-update && ...` has to survive being run twice. That exception also
+	// covers a pinned --version matching what is already installed:
+	// reinstalling the version you are on is not a downgrade, so it must not
+	// fall through to renderDowngradeRefusal below.
+	if res.Blocked == updater.BlockNotNewer && !*force && (*target == "" || res.Latest == res.Current) {
 		if *jsonOut {
-			fmt.Println(renderApplyJSON(applyOutcome{Action: "already_current", Current: res.Current}))
+			fmt.Println(renderApplyJSON(applyOutcome{Action: "already_current", Current: res.Current, Latest: res.Latest}))
 		} else {
 			fmt.Printf("Already on the latest release (%s).\n", formatV(res.Latest))
 		}
@@ -122,12 +120,12 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 					Current:  res.Current,
 					Latest:   res.Latest,
 					Blocked:  string(res.Blocked),
-					Override: overrideCommand(*target),
+					Override: overrideCommand(*target, opts),
 				}))
 			} else if res.Blocked == updater.BlockNotNewer && *target != "" {
-				fmt.Fprint(os.Stderr, renderDowngradeRefusal(res))
+				fmt.Fprint(os.Stderr, renderDowngradeRefusal(res, opts))
 			} else {
-				fmt.Fprint(os.Stderr, renderSelfUpdateCheck(res, *target))
+				fmt.Fprint(os.Stderr, renderSelfUpdateCheck(res, *target, opts))
 			}
 			os.Exit(1)
 		}
@@ -136,6 +134,13 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 		// the dev-build guard — so ANCHORED_NO_AUTOUPDATE=1, which is exactly
 		// what someone working from a checkout sets, used to skip the prompt
 		// and overwrite the dev build without asking.
+		if needsUpfrontConsent(*jsonOut, *force, *assumeYes, updater.IsDevBuild(res.Current)) {
+			// The confirmation prompt writes to stdout, which would corrupt the
+			// document. --json is a machine-readable contract, so consent has to
+			// be given up front — but only when that prompt would actually fire.
+			fmt.Fprintln(os.Stderr, "anchored self-update: --json with --force needs --yes (the confirmation prompt cannot share stdout)")
+			os.Exit(1)
+		}
 		if updater.IsDevBuild(res.Current) {
 			ok, err := confirmDevBuildOverwrite(res, os.Stdin, os.Stdout, *assumeYes, stdinIsTTY())
 			if err != nil {
@@ -256,7 +261,7 @@ func syncPluginAfterUpdate(configPath string, res updater.Result, noPlugin, forc
 		return pluginSyncOutcome{Skipped: true}
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return pluginSyncOutcome{ConfigError: err.Error()}
 	}
@@ -488,19 +493,30 @@ func selfUpdateFlags(force, assumeYes, noPlugin bool, configPath, target string)
 	return out
 }
 
+// selfUpdateOpts carries the flags an override command must preserve.
+// force/assumeYes/target vary with the refusal being overridden, so they stay
+// as direct parameters; configPath and noPlugin are what the user chose for
+// this run and must survive unchanged into any suggested retry.
+type selfUpdateOpts struct {
+	configPath string
+	noPlugin   bool
+}
+
 // overrideCommand renders the invocation that installs past a refusal,
-// preserving the version the user pinned.
-func overrideCommand(target string) string {
-	return "anchored self-update " + strings.Join(selfUpdateFlags(true, false, false, "", target), " ")
+// preserving the version the user pinned as well as --config/--no-plugin —
+// dropping either would hand back a command that updates against the wrong
+// config or re-enables a plugin sync the user opted out of.
+func overrideCommand(target string, opts selfUpdateOpts) string {
+	return "anchored self-update " + strings.Join(selfUpdateFlags(true, false, opts.noPlugin, opts.configPath, target), " ")
 }
 
 // renderDowngradeRefusal reports a pinned version that is older than the
 // installed one.
-func renderDowngradeRefusal(res updater.Result) string {
+func renderDowngradeRefusal(res updater.Result, opts selfUpdateOpts) string {
 	return fmt.Sprintf(`Refused: %s is not newer than the installed %s.
 Installing it would revert any fix released in between.
 Run `+"`%s`"+` to do it anyway.
-`, formatV(res.Latest), formatV(res.Current), overrideCommand(res.Latest))
+`, formatV(res.Latest), formatV(res.Current), overrideCommand(res.Latest, opts))
 }
 
 // renderSelfUpdateInstalled reports the swap, naming the direction: a
@@ -575,7 +591,7 @@ func renderSelfUpdateJSON(res updater.Result) string {
 
 // renderSelfUpdateCheck renders the human report: versions, the file that
 // would be replaced, and a verdict that always names its own cause.
-func renderSelfUpdateCheck(res updater.Result, target string) string {
+func renderSelfUpdateCheck(res updater.Result, target string, opts selfUpdateOpts) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "installed  %s\n", formatV(res.Current))
@@ -589,15 +605,17 @@ func renderSelfUpdateCheck(res updater.Result, target string) string {
 		fmt.Fprintf(&b, "latest     %s\n", formatV(res.Latest))
 	}
 	fmt.Fprintf(&b, "binary     %s\n\n", res.BinPath)
-	b.WriteString(selfUpdateVerdict(res, target))
+	b.WriteString(selfUpdateVerdict(res, target, opts))
 	return b.String()
 }
 
-func selfUpdateVerdict(res updater.Result, target string) string {
+func selfUpdateVerdict(res updater.Result, target string, opts selfUpdateOpts) string {
 	// A pinned older version is a downgrade, not "up to date" — the generic
-	// not-newer wording names a version that is not installed.
-	if res.Blocked == updater.BlockNotNewer && target != "" {
-		return renderDowngradeRefusal(res)
+	// not-newer wording names a version that is not installed. Latest ==
+	// Current means the pin matches what is already installed, which is a
+	// reinstall, not a downgrade — nothing was "released in between".
+	if res.Blocked == updater.BlockNotNewer && target != "" && res.Latest != res.Current {
+		return renderDowngradeRefusal(res, opts)
 	}
 	switch res.Blocked {
 	case updater.BlockNone:
@@ -615,19 +633,19 @@ func selfUpdateVerdict(res updater.Result, target string) string {
 A binary built from a checkout is never overwritten automatically — that
 would revert your own work to the release tag.
 Run `+"`%s`"+` to install %s over it.
-`, formatV(res.Current), overrideCommand(target), formatV(res.Latest))
+`, formatV(res.Current), overrideCommand(target, opts), formatV(res.Latest))
 
 	case updater.BlockOutsideCanonical:
 		return fmt.Sprintf(`Refused: the binary lives outside ~/.anchored/bin.
   %s
 Only the canonical install is updated automatically.
 Run `+"`%s`"+` to update this path anyway.
-`, res.BinPath, overrideCommand(target))
+`, res.BinPath, overrideCommand(target, opts))
 
 	case updater.BlockEnvDisabled:
 		return fmt.Sprintf(`Refused: ANCHORED_NO_AUTOUPDATE=1 disables automatic updates.
 Unset it, or run `+"`%s`"+` to override it once.
-`, overrideCommand(target))
+`, overrideCommand(target, opts))
 
 	case updater.BlockNoVersion:
 		return `Refused: this binary reports no version, so there is nothing to
@@ -635,4 +653,14 @@ compare against. It was built without ldflags — use ` + "`make build`" + `.
 `
 	}
 	return fmt.Sprintf("Refused: %s\n", res.Blocked)
+}
+
+// needsUpfrontConsent reports whether --json must refuse without --force's
+// confirmation prompt ever being attempted. The prompt only fires when a dev
+// build is about to be overwritten (see the IsDevBuild branch below); a
+// release binary running --force --json has nothing to confirm, so gating on
+// jsonOut/force/assumeYes alone rejected a request the prompt would never
+// have interrupted.
+func needsUpfrontConsent(jsonOut, force, assumeYes, isDevBuild bool) bool {
+	return jsonOut && force && !assumeYes && isDevBuild
 }

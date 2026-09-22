@@ -101,10 +101,13 @@ func detectPluginDriftWithForce(cfg *config.Config, binaryVersion string, force 
 	// up any newer plugin upstream. It does NOT by itself mean the user must act
 	// — the plugin is versioned on its own track, so the mirror routinely trails
 	// the binary version even when fully up to date.
-	// force always refreshes the mirror: on an explicit request the goal is to
-	// fetch the newest plugin, not to infer from a version stamp that may not
-	// be comparable at all.
-	if force || (d.MirrorVersion != "" && compareSemver(d.MirrorVersion, binaryVersion) < 0) {
+	// force does not mean "always refresh": it means the version stamp can be
+	// trusted whether or not it says the mirror is behind, OR, when there is no
+	// stamp at all to compare against, that the mirror is refreshed anyway
+	// because there is no other way to tell. A force run against a mirror that
+	// already carries the same (or a newer) version must not re-pull.
+	if (d.MirrorVersion != "" && compareSemver(d.MirrorVersion, binaryVersion) < 0) ||
+		(force && d.MirrorVersion == "") {
 		d.MirrorBehind = true
 	}
 	// CacheBehind is the real, user-facing signal: the installed cache is older

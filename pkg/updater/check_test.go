@@ -497,7 +497,7 @@ func TestDownloadAndReplace_RejectsAnOversizePayload(t *testing.T) {
 
 	// The ceiling is injected rather than mutated: it is a security bound, so
 	// production code holds it as a const.
-	err := downloadAndReplaceLimited(context.Background(), srv.URL, dst, sum, 64)
+	err := downloadAndReplaceLimited(context.Background(), srv.URL, tarAsset, dst, sum, 64)
 	if err == nil {
 		t.Fatal("an oversize payload must be rejected")
 	}
@@ -544,7 +544,7 @@ func TestDownloadAndReplace_ChargesSkippedEntriesToTheBudget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := downloadAndReplaceLimited(context.Background(), srv.URL, dst, hex.EncodeToString(sum[:]), 64)
+	err := downloadAndReplaceLimited(context.Background(), srv.URL, tarAsset, dst, hex.EncodeToString(sum[:]), 64)
 	if err == nil {
 		t.Fatal("a decoy entry over the budget must be rejected")
 	}
@@ -576,7 +576,7 @@ func TestDownloadAndReplace_BackupIsAHardlinkSoDstNeverDisappears(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	if err := downloadAndReplace(context.Background(), srv.URL, dst, sum); err != nil {
+	if err := downloadAndReplace(context.Background(), srv.URL, tarAsset, dst, sum); err != nil {
 		t.Fatal(err)
 	}
 
@@ -611,7 +611,7 @@ func TestDownloadAndReplace_StalePrevIsNotPromotedOnAFreshInstall(t *testing.T) 
 	defer srv.Close()
 
 	// Wrong digest, so the install fails before the swap.
-	err := downloadAndReplace(context.Background(), srv.URL, dst, strings.Repeat("0", 64))
+	err := downloadAndReplace(context.Background(), srv.URL, tarAsset, dst, strings.Repeat("0", 64))
 	if err == nil {
 		t.Fatal("expected the checksum to be rejected")
 	}
