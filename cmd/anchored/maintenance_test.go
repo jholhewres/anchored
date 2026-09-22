@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -55,12 +56,12 @@ func TestMaintenanceCmd_ThreadsConfig(t *testing.T) {
 }
 
 // TestRunMaintenanceRun_AllSkipped exercises the orchestration loop without
-// touching the DB or ONNX: every step is skipped, so no subprocess is spawned
-// and the run completes with zero steps. Validates that the dispatcher, flag
-// parsing, and completion logging hold together end-to-end. The success path
-// does not call os.Exit, so this is safe to invoke directly.
+// touching the DB or ONNX: every step is skipped, so the run completes with
+// zero steps. Validates that the dispatcher, flag parsing, and completion
+// logging hold together end-to-end. The success path does not call os.Exit, so
+// this is safe to invoke directly.
 func TestRunMaintenanceRun_AllSkipped(t *testing.T) {
-	// Discard the structured logs so the test output stays clean.
+	spawned := interceptMaintenanceSteps(t)
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("runMaintenanceRun panicked: %v", r)
@@ -68,5 +69,60 @@ func TestRunMaintenanceRun_AllSkipped(t *testing.T) {
 	}()
 	runMaintenanceRun([]string{
 		"--skip-import", "--skip-backfill", "--skip-dream", "--skip-curation",
+		"--skip-compact",
 	})
+	if len(*spawned) != 0 {
+		t.Fatalf("all steps skipped but %v ran", *spawned)
+	}
+}
+
+// Every step must have a --skip flag. A step without one turns this test into
+// unbounded recursion under `go test`, because the binary a step runs is the
+// test suite itself; the seam below keeps the failure a failing assertion.
+func TestRunMaintenanceRun_EveryStepIsSkippable(t *testing.T) {
+	spawned := interceptMaintenanceSteps(t)
+	runMaintenanceRun(allMaintenanceSkipFlags)
+	if len(*spawned) != 0 {
+		t.Fatalf("steps ran despite every skip flag: %v — a step is missing a --skip flag", *spawned)
+	}
+
+	// And with nothing skipped, every known step is attempted exactly once.
+	ran := interceptMaintenanceSteps(t)
+	runMaintenanceRun(nil)
+	if len(*ran) != len(allMaintenanceSkipFlags) {
+		t.Fatalf("steps run = %v, want one per skip flag (%d)", *ran, len(allMaintenanceSkipFlags))
+	}
+}
+
+var allMaintenanceSkipFlags = []string{
+	"--skip-import", "--skip-backfill", "--skip-dream", "--skip-curation",
+	"--skip-compact",
+}
+
+// interceptMaintenanceSteps swaps the subprocess seam for a recorder and
+// restores it when the test ends.
+func interceptMaintenanceSteps(t *testing.T) *[]string {
+	t.Helper()
+	original := runMaintenanceStep
+	var spawned []string
+	runMaintenanceStep = func(cmd *exec.Cmd) error {
+		spawned = append(spawned, strings.Join(cmd.Args[1:], " "))
+		return nil
+	}
+	t.Cleanup(func() { runMaintenanceStep = original })
+	return &spawned
+}
+
+func TestMaintenanceExeRefusesTestBinary(t *testing.T) {
+	if !isTestBinary("/tmp/go-build123/b001/anchored.test") {
+		t.Fatal("a .test binary must be recognised")
+	}
+	if !isTestBinary("/usr/local/bin/anchored") {
+		// Running under `go test`, os.Args carries -test.* flags, so even a
+		// clean path is refused. That is the behaviour that matters here.
+		t.Fatal("running under go test must be recognised")
+	}
+	if isTestBinaryPath("/usr/local/bin/anchored") {
+		t.Fatal("a release binary path must not look like a test binary")
+	}
 }
