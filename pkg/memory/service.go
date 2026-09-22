@@ -190,7 +190,26 @@ func (s *Service) saveWithOptions(
 			CreatedAt:   existing.CreatedAt,
 			Metadata:    metadata,
 		}
-		durable, err := s.persistSave(ctx, upd, opts, durableOpts)
+
+		// Re-saving a memory unchanged is the single most common write an agent
+		// makes: the same fact is recalled and stored again every session. The
+		// temporal store has no notion of a no-op, so each one appended a fresh
+		// revision AND a verbatim copy of the existing embedding vector. Left
+		// unguarded that turned 84k memories into 1M revisions and a multi-GB
+		// database whose vector cache took a quarter-minute to load.
+		//
+		// A write that carries a remote envelope still goes through: the outbox
+		// is delivery state, not content, and skipping it would strand the sync.
+		outbox, err := deriveOutbox(durableOpts, upd)
+		if err != nil {
+			return nil, fmt.Errorf("derive remote outbox: %w", err)
+		}
+		if len(outbox) == 0 && sameStoredMemory(*existing, upd) {
+			s.logger.Debug("save is a no-op; skipping revision", "id", upd.ID)
+			return &upd, nil
+		}
+
+		durable, err := s.persistSave(ctx, upd, opts, withDerivedOutbox(durableOpts, outbox))
 		if err != nil {
 			return nil, fmt.Errorf("save: %w", err)
 		}
