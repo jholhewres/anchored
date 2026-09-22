@@ -95,6 +95,19 @@ there, and both refusals name themselves and hand you the override:
 
 `anchored doctor` reports when a release is available.
 
+#### macOS and Windows: one manual reinstall first
+
+Self-update is new, and the binary that performs an update is the one already
+installed — so the fix for a platform cannot reach an install that predates it.
+Releases up to and including v0.18.0 shipped a background updater that resolves
+no digest on macOS (the darwin archives are absent from `checksums.txt`, and
+that build cannot read the `.sha256` sidecar) and no archive at all on Windows
+(it looks only for `.tar.gz`, and Windows publishes `.zip`).
+
+On Linux nothing is needed: an existing install picks up the next release on its
+own. On macOS and Windows, download the current release once and replace the
+binary in `~/.anchored/bin` by hand. Every update after that one is in-place.
+
 Every published archive resolves and verifies: the linux and windows archives
 are digested in `checksums.txt`, and the darwin archives — built on a macOS
 runner, since CGO with FTS5 cannot cross-compile — carry a `.sha256` sidecar

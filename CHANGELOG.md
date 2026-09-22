@@ -26,6 +26,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available and hands over the command. Best-effort: with no network it degrades
   to "not checked" and never fails the run.
 
+### Upgrade note — macOS and Windows need one manual reinstall
+
+Self-update is new in this release, and the binary that performs an update is
+the one already installed, so this release cannot repair the installs that
+precede it.
+
+Releases up to and including v0.18.0 shipped a background updater that, on
+macOS, resolves the archive but no digest — the darwin archives are absent from
+`checksums.txt` and that build cannot read the `.sha256` sidecar — and, on
+Windows, resolves no archive at all, because it matches only `.tar.gz` while
+Windows publishes `.zip`. Both were silent: the refusal was a debug log inside a
+background goroutine.
+
+Linux installs need nothing and pick this release up on their own. On macOS and
+Windows, download this release once and replace the binary in `~/.anchored/bin`
+by hand. Every update after that one is in-place.
+
 ### Fixed
 
 Follow-up on the self-update review, before any of it ships in a release.
