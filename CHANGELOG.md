@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-22
+
 ### Added
 
 - **`anchored self-update`** — update the binary from the latest official
@@ -45,7 +47,8 @@ by hand. Every update after that one is in-place.
 
 ### Fixed
 
-Follow-up on the self-update review, before any of it ships in a release.
+Found by reviewing the self-update work above and fixed before it shipped, so
+none of these ever reached a release.
 
 - **Self-update reads `~/.anchored/config.yaml` again.** The plugin half loaded
   the config with a path that is empty unless `--config` is passed, which
