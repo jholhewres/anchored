@@ -51,6 +51,8 @@ func main() {
 		runBootstrap(os.Args[2:])
 	case "retention":
 		runRetention(os.Args[2:])
+	case "compact":
+		runCompact(os.Args[2:])
 	case "hook":
 		runHook(os.Args[2:])
 	case "dream":
@@ -113,6 +115,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored handoff            Save a handoff snapshot for session continuity\n")
 	fmt.Fprintf(os.Stderr, "  anchored bootstrap          Bootstrap project memories from sources\n")
 	fmt.Fprintf(os.Stderr, "  anchored retention sweep    Sweep expired/episodic memories\n")
+	fmt.Fprintf(os.Stderr, "  anchored compact            Reclaim space from redundant revisions/vectors\n")
 	fmt.Fprintf(os.Stderr, "  anchored hook <subcommand>  Run session continuity hooks\n")
 	fmt.Fprintf(os.Stderr, "  anchored dream              Analyze and consolidate duplicate memories\n")
 	fmt.Fprintf(os.Stderr, "  anchored curation status    Show curation worker state\n")
