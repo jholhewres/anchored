@@ -159,11 +159,11 @@ func runMaintenanceRun(args []string) {
 	// 5. Compact — drop revisions that repeat a state already recorded, the
 	// embedding copies they dragged along, and completed job rows for revisions
 	// that are gone. Runs last: the steps above write revisions of their own,
-	// and this reclaims whatever they made redundant. --no-vacuum keeps the
-	// daily pass cheap; VACUUM rewrites the whole file and is left to an
-	// explicit `anchored compact`.
+	// and this reclaims whatever they made redundant. The file itself is left
+	// alone: rewriting it needs the database to itself, which an unattended
+	// timer cannot assume, so --shrink stays an explicit `anchored compact`.
 	runStep("compact", *skipCompact, func() *exec.Cmd {
-		return maintenanceCmd(exe, *configPath, "compact", "--no-vacuum")
+		return maintenanceCmd(exe, *configPath, "compact")
 	})
 
 	failed := 0

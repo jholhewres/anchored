@@ -15,11 +15,12 @@ type CompactOptions struct {
 	KeepHistory bool
 
 	// DryRun measures what would be removed without removing anything.
+	//
+	// Compact never rewrites the file: freed pages stay inside it, available for
+	// SQLite to reuse. Returning them to the filesystem replaces the file every
+	// other process holds open, so that belongs to Shrink, which takes the
+	// database to itself first.
 	DryRun bool
-
-	// Vacuum rewrites the database file afterwards so freed pages return to the
-	// filesystem. It needs free disk space roughly equal to the final size.
-	Vacuum bool
 }
 
 // CompactStats reports what a sweep removed (or would remove).
@@ -80,13 +81,6 @@ func Compact(ctx context.Context, db *sql.DB, opts CompactOptions) (CompactStats
 
 	if opts.DryRun {
 		return stats, nil
-	}
-
-	if opts.Vacuum {
-		// VACUUM cannot run inside a transaction and rewrites the whole file.
-		if _, err := db.ExecContext(ctx, `VACUUM`); err != nil {
-			return stats, fmt.Errorf("vacuum: %w", err)
-		}
 	}
 
 	after, err := databaseSize(ctx, db)
