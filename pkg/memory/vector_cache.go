@@ -1,10 +1,12 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"math"
+	"runtime"
 	"sort"
 	"sync"
 )
@@ -29,6 +31,15 @@ type VectorCache struct {
 	quant  map[string]quantEntry // memoized quantized form + norm for scoring
 	mu     sync.RWMutex
 	logger *slog.Logger
+
+	// warmMu guards warmCh, the handshake for an asynchronous fill. Serving a
+	// large corpus, the fill costs seconds (decode + quantize every vector), so
+	// the server hands it to a goroutine instead of blocking startup. warmCh is
+	// non-nil while a fill is in flight and is closed when it finishes, letting
+	// the first search wait for real vectors rather than silently scoring
+	// against an empty cache.
+	warmMu sync.Mutex
+	warmCh chan struct{}
 }
 
 func NewVectorCache(logger *slog.Logger) *VectorCache {
@@ -39,6 +50,49 @@ func NewVectorCache(logger *slog.Logger) *VectorCache {
 		byID:   make(map[string][]float32),
 		quant:  make(map[string]quantEntry),
 		logger: logger,
+	}
+}
+
+// BeginWarm marks an asynchronous fill as in flight and returns the function
+// that ends it. Calling it twice without finishing the first reuses the
+// existing handshake, so concurrent warms collapse into one wait.
+func (c *VectorCache) BeginWarm() func() {
+	c.warmMu.Lock()
+	if c.warmCh != nil {
+		ch := c.warmCh
+		c.warmMu.Unlock()
+		return func() { c.finishWarm(ch) }
+	}
+	ch := make(chan struct{})
+	c.warmCh = ch
+	c.warmMu.Unlock()
+	return func() { c.finishWarm(ch) }
+}
+
+func (c *VectorCache) finishWarm(ch chan struct{}) {
+	c.warmMu.Lock()
+	if c.warmCh == ch {
+		c.warmCh = nil
+		close(ch)
+	}
+	c.warmMu.Unlock()
+}
+
+// WaitWarm blocks until an in-flight fill finishes, ctx is done, or there is no
+// fill to wait for. It reports whether the cache is settled: false means the
+// caller gave up early and should treat the cache as incomplete.
+func (c *VectorCache) WaitWarm(ctx context.Context) bool {
+	c.warmMu.Lock()
+	ch := c.warmCh
+	c.warmMu.Unlock()
+	if ch == nil {
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -125,18 +179,77 @@ func (c *VectorCache) Remove(id string) {
 
 // Replace atomically swaps the cache contents. Generation activation uses it
 // so queries never observe a mixture of vectors from two semantic spaces.
+//
+// The copy+quantize pass is the expensive half of server startup on a large
+// corpus (one QuantizeFloat32 plus a norm per vector), and each entry is
+// independent, so it fans out across cores. The result is identical to the
+// sequential form: workers write to disjoint slice slots and the maps are built
+// once, in a single pass, afterwards.
 func (c *VectorCache) Replace(vectors map[string][]float32) {
-	byID := make(map[string][]float32, len(vectors))
-	quant := make(map[string]quantEntry, len(vectors))
+	n := len(vectors)
+	ids := make([]string, 0, n)
+	src := make([][]float32, 0, n)
 	for id, vector := range vectors {
-		cp := append([]float32(nil), vector...)
-		byID[id] = cp
-		quant[id] = makeQuantEntry(cp)
+		ids = append(ids, id)
+		src = append(src, vector)
 	}
+
+	copies := make([][]float32, n)
+	entries := make([]quantEntry, n)
+	parallelFor(n, func(i int) {
+		cp := append([]float32(nil), src[i]...)
+		copies[i] = cp
+		entries[i] = makeQuantEntry(cp)
+	})
+
+	byID := make(map[string][]float32, n)
+	quant := make(map[string]quantEntry, n)
+	for i, id := range ids {
+		byID[id] = copies[i]
+		quant[id] = entries[i]
+	}
+
 	c.mu.Lock()
 	c.byID = byID
 	c.quant = quant
 	c.mu.Unlock()
+}
+
+// parallelForMinBatch is the point below which goroutine setup costs more than
+// the work it distributes; smaller runs stay on the calling goroutine.
+const parallelForMinBatch = 512
+
+// parallelFor applies fn to every index in [0, n) across GOMAXPROCS workers.
+// fn must only touch index-local state.
+func parallelFor(n int, fn func(i int)) {
+	workers := runtime.GOMAXPROCS(0)
+	if n < parallelForMinBatch || workers < 2 {
+		for i := 0; i < n; i++ {
+			fn(i)
+		}
+		return
+	}
+	if workers > n {
+		workers = n
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	chunk := (n + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > n {
+			end = n
+		}
+		go func(start, end int) {
+			defer wg.Done()
+			for i := start; i < end; i++ {
+				fn(i)
+			}
+		}(start, end)
+	}
+	wg.Wait()
 }
 
 func (c *VectorCache) Get(id string) ([]float32, bool) {
