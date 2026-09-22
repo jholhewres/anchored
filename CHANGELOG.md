@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-22
+
+MCP clients were dropping the connection to `anchored serve` on a 30s handshake
+timeout. The handshake itself was never slow — startup was, and it had grown
+slow because the database had grown huge for a reason that turns out to be a
+bug in the save path.
+
+### Fixed
+
+- **Re-saving an unchanged memory no longer appends a revision.** Recalling a
+  fact and storing it again is the most common write an agent makes, and the
+  temporal store had no notion of a no-op: each one appended a fresh revision
+  *and* a verbatim copy of the memory's embedding vector. On the database that
+  surfaced this, 886k of 1.03M revisions (86%) were byte-identical repeats of a
+  state already recorded — one memory alone had 7,678 revisions and a single
+  distinct content hash. A save whose content, category, source, project,
+  keywords and metadata all match what is stored now returns the existing
+  memory untouched. Saves carrying a remote envelope still write, so a pending
+  sync is never stranded.
+- **The vector cache is no longer loaded twice per process start.**
+  `NewSQLiteStore` eagerly published the active generation, then the service
+  republished the same generation into the same cache moments later — decoding
+  and quantizing every vector in the corpus twice, for nothing. Callers holding
+  a bare store can warm it explicitly with `SQLiteStore.WarmVectorCache`.
+- **Startup no longer blocks on filling the vector cache.** The generation
+  manifest — the part that can genuinely fail on a misconfigured provider — is
+  still resolved synchronously, so a bad configuration still aborts startup. The
+  fill moved to a background goroutine, and a search arriving mid-fill waits on
+  the cache's warm gate rather than silently scoring against an empty vector
+  space.
+- **Quantizing the cache fans out across cores.** The copy-and-quantize pass is
+  the expensive half of a warm and every entry is independent; results are
+  identical to the sequential form.
+
+Measured against the 5.2 GB database that prompted this: **8.0s → 1.3s** to the
+first MCP response.
+
+### Added
+
+- **`anchored compact`** — reclaims the space already on disk: revisions that
+  repeat a state already recorded, the embedding copies they dragged along, and
+  completed job rows for revisions that are gone. The earliest entry of each
+  repeated state survives (it records when the state began) along with every
+  memory's current revision, so nothing readable is lost. `--dry-run` measures
+  without writing, `--keep-history` prunes only derived data, `--no-vacuum`
+  skips the file rewrite. It also runs as the last step of
+  `anchored maintenance run` (with `--no-vacuum`; `--skip-compact` opts out).
+
 ## [0.19.0] - 2026-09-22
 
 ### Added
