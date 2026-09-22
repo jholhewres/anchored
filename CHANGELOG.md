@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-09-22
+
+### Fixed
+
+- **`anchored compact` no longer needs twice the database in free space.** The
+  rewrite that returns freed pages to the filesystem used in-place `VACUUM`,
+  which builds its copy beside the original — so it demanded roughly double the
+  current size, on exactly the disk that a caller reaching for this command has
+  already run short of. It now uses `VACUUM INTO`, which writes only the live
+  pages, dropping the requirement to the *final* size.
+- **The rewrite refuses to run while another process holds the database.**
+  Replacing the file under a running editor or agent would send its writes to an
+  unlinked inode, where they vanish. The rewrite now takes the database
+  exclusively first and exits with an explanation instead, and the new file is
+  read back — integrity-checked and counted against the original — before it
+  replaces anything.
+
+### Changed
+
+- The rewrite moved behind `anchored compact --shrink` (replacing
+  `--no-vacuum`). The row sweep still runs by default and leaves freed pages
+  available for SQLite to reuse; only returning them to the filesystem needs the
+  database to itself. `anchored maintenance run` sweeps rows and never rewrites
+  the file, which an unattended timer cannot do safely.
+
 ## [0.19.1] - 2026-09-22
 
 MCP clients were dropping the connection to `anchored serve` on a 30s handshake
