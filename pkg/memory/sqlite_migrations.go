@@ -589,6 +589,21 @@ func schemaMigrations() []migration {
 				SELECT RAISE(ABORT, 'memory insert requires logical_id and current_revision_id');
 			END;
 		`},
+		// Long-lived processes (MCP servers, hub, dashboard, maintenance)
+		// register here so steps that cannot be undone can wait until no
+		// older binary still has the database open.
+		{Name: "023_process_registry", Up: `
+			CREATE TABLE IF NOT EXISTS processes (
+				host TEXT NOT NULL,
+				pid INTEGER NOT NULL,
+				version TEXT NOT NULL,
+				role TEXT NOT NULL,
+				capabilities TEXT NOT NULL DEFAULT '',
+				started_at INTEGER NOT NULL,
+				heartbeat_at INTEGER NOT NULL,
+				PRIMARY KEY (host, pid)
+			);
+		`},
 	}
 }
 

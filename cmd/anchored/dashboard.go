@@ -78,6 +78,9 @@ func runDashboard(args []string) {
 	}
 	defer svc.Close()
 
+	stopRegistration := registerProcess(svc, "dashboard")
+	defer stopRegistration()
+
 	api := &dashboardAPI{
 		svc:      svc,
 		db:       svc.StoreDB(),

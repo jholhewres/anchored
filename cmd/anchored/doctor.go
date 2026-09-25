@@ -33,7 +33,18 @@ func runDoctor(args []string) {
 	configPath := fs.String("config", "", "path to config file")
 	cwd := fs.String("cwd", "", "current working directory (for workspace-scoped probes)")
 	jsonOut := fs.Bool("json", false, "emit machine-readable JSON ({version, checks:[{name,status,detail,fix_command}]})")
+	processes := fs.Bool("processes", false, "list the anchored processes holding the database (pid, role, version, memory)")
 	fs.Parse(args)
+
+	if *processes {
+		cfg, err := loadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+			os.Exit(1)
+		}
+		runDoctorProcesses(cfg.Memory.DatabasePath)
+		return
+	}
 
 	if *cwd == "" {
 		*cwd = "."

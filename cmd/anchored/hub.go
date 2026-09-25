@@ -67,6 +67,9 @@ func hubServe(args []string) {
 	}
 	defer svc.Close()
 
+	stopRegistration := registerProcess(svc, "hub")
+	defer stopRegistration()
+
 	mgr := session.NewManager(svc.StoreDB(), logger)
 	api := &dashboardAPI{svc: svc, db: svc.StoreDB(), sessions: mgr, logger: logger}
 

@@ -66,6 +66,9 @@ func runServe(args []string) {
 	go watchParent(ctx, cancel, logger)
 	go forceExitAfterShutdown(ctx, logger)
 
+	stopRegistration := registerProcess(memSvc, "serve", "embedder", "outbox")
+	defer stopRegistration()
+
 	go updater.Run(ctx, updater.Options{
 		CurrentVersion: Version,
 		Logger:         logger,
