@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dream no longer deletes memories across projects.** Exact dedup grouped
+  memories by content hash alone, so the same text saved in two projects
+  counted as a duplicate and one project lost its copy. On the database that
+  surfaced this, 2,005 memories were deleted with no live copy left in their
+  project. Dedup now groups by project and hash and keeps the oldest copy.
+  Every delete goes through the temporal ledger, which leaves a restorable
+  tombstone and cancels the memory's pending sync. The per-run budget counts
+  only rows that actually changed.
+- **A stored proposal is re-checked when it is applied.** Before `dream
+  --apply` deletes anything, the keeper must still be live, in the same
+  project, and hold identical content. Proposals outlive the text they were
+  computed on, and 397k near-duplicate proposals came from a collapsed vector
+  space. Applied proposals are now marked `applied`.
+- **Concurrent processes no longer race to apply a migration.** Every anchored
+  process migrates on open. Each pending migration now runs under `BEGIN
+  IMMEDIATE` and is re-checked inside the lock. Before, two processes could
+  both apply it and the second failed to start.
+- **Opening an up-to-date database never waits for the write lock.** Before,
+  `serve`, the CLI and the dashboard could stall behind a long writer.
+- **The full-text index is only rewritten when content changes.** The index
+  used to be rewritten on every tombstone, restore and re-save of unchanged
+  text. Migration 024 replaces the trigger on existing databases.
+
+### Added
+
+- **`anchored restore --id <id>` and `anchored restore --dream-lost`.** `--id`
+  brings back a memory however it was deleted. `--dream-lost` finds memories
+  dream deleted as duplicates with no copy left in their project. It only
+  reports until `--yes` is passed.
+  - It recognises a dream delete by three traces together: a raw delete, a
+    dedup proposal naming the memory, and a delete time inside a completed
+    dream run. Anything purged, cleaned or forgotten on purpose stays deleted.
+  - Raw transcript imports are left out unless `--include-imported` is passed.
+- **Process registry and `anchored doctor --processes`.** `serve`, the hub
+  and the dashboard register and heartbeat in the database.
+  - `doctor --processes` lists every process holding the database, found by
+    its open files, so a binary renamed by self-update still shows up. It also
+    shows which of them would block one-way upgrade steps.
+  - Values of secret flags on command lines are redacted.
+- `anchored dream --semantic` runs the vector tiers (near-duplicate, synthesis,
+  contradiction), which are now off by default.
+
 ## [0.19.2] - 2026-09-22
 
 ### Fixed
