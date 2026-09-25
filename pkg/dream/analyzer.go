@@ -78,7 +78,8 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 		idx := len(memories)
 		memories = append(memories, m)
 		if m.contentHash != "" {
-			hashGroups[m.contentHash] = append(hashGroups[m.contentHash], idx)
+			key := dedupKey(m.projectID, m.contentHash)
+			hashGroups[key] = append(hashGroups[key], idx)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -90,27 +91,38 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 		return report, nil
 	}
 
-	// Tier 1: Exact dedup by content_hash
+	// Tier 1: Exact dedup by content_hash, within one project. The same text
+	// saved in two projects is two memories, not a duplicate: deleting one
+	// would take it away from the project it belongs to. Rows are read oldest
+	// first, so the oldest copy is kept and each newer copy is proposed for
+	// deletion (MemoryID = delete, RelatedMemoryID = keeper).
 	seen := make(map[string]bool)
-	for hash, indices := range hashGroups {
+	for _, indices := range hashGroups {
 		if len(indices) <= 1 {
 			continue
 		}
 		report.ExactDupes += len(indices) - 1
+		keeper := memories[indices[0]]
+		seen[keeper.id] = true
 		for i := 1; i < len(indices); i++ {
-			older := memories[indices[0]]
-			newer := memories[indices[i]]
-			actionID := fmt.Sprintf("dedup-exact-%s-%s", older.id, newer.id)
+			dup := memories[indices[i]]
 			report.Actions = append(report.Actions, DreamAction{
-				ID:              actionID,
-				MemoryID:        older.id,
-				RelatedMemoryID: newer.id,
+				ID:              fmt.Sprintf("dedup-exact-%s-%s", dup.id, keeper.id),
+				MemoryID:        dup.id,
+				RelatedMemoryID: keeper.id,
 				ActionType:      "dedup",
 				Confidence:      1.0,
-				Reason:          fmt.Sprintf("exact content_hash match: %s", truncate(hash, 16)),
+				Reason:          fmt.Sprintf("exact content_hash match: %s", truncate(dup.contentHash, 16)),
 			})
-			seen[older.id] = true
+			seen[dup.id] = true
 		}
+	}
+
+	if !a.config.SemanticTiers {
+		sort.Slice(report.Actions, func(i, j int) bool {
+			return report.Actions[i].Confidence > report.Actions[j].Confidence
+		})
+		return report, nil
 	}
 
 	// Tier 2: Semantic near-dup via vector cosine similarity. The pairs feed
@@ -278,6 +290,16 @@ func (a *DreamAnalyzer) Analyze(ctx context.Context) (*DreamReport, error) {
 	})
 
 	return report, nil
+}
+
+// dedupKey scopes exact dedup to a project; global memories (no project)
+// form their own scope.
+func dedupKey(projectID *string, contentHash string) string {
+	pid := ""
+	if projectID != nil {
+		pid = *projectID
+	}
+	return pid + "\x00" + contentHash
 }
 
 func cosineSimilarity(a, b []float32) float64 {

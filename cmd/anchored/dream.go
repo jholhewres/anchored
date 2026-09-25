@@ -17,6 +17,7 @@ func runDream(args []string) {
 	applyAction := fs.String("apply", "", "apply a single dream action by ID (skips analysis)")
 	aggressiveness := fs.String("aggressiveness", "moderate", "conservative, moderate, or aggressive")
 	maxDeletions := fs.Int("max-deletions", 50, "maximum soft-deletions per run")
+	semantic := fs.Bool("semantic", false, "also run the vector tiers (near-duplicate, synthesis, contradiction); off by default")
 	configPath := fs.String("config", "", "path to config file")
 	fs.Parse(args)
 
@@ -31,7 +32,7 @@ func runDream(args []string) {
 	ctx := context.Background()
 
 	if *applyAction != "" {
-		runDreamApply(ctx, db, logger, *applyAction)
+		runDreamApply(ctx, db, svc, logger, *applyAction)
 		return
 	}
 
@@ -40,6 +41,7 @@ func runDream(args []string) {
 
 	analyzeCfg := dream.DefaultDreamConfig()
 	analyzeCfg.DedupThreshold = dreamCfg.DedupThreshold
+	analyzeCfg.SemanticTiers = *semantic
 
 	analyzer := dream.NewAnalyzer(db, svc.VectorCache(), analyzeCfg, logger)
 
@@ -74,7 +76,7 @@ func runDream(args []string) {
 	}
 
 	if !*dryRun {
-		consolidator := dream.NewConsolidator(db, logger)
+		consolidator := dream.NewConsolidator(db, svc, logger)
 		result, err := consolidator.Consolidate(ctx, report, dreamCfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "consolidation failed: %v\n", err)
@@ -90,8 +92,8 @@ func runDream(args []string) {
 	}
 }
 
-func runDreamApply(ctx context.Context, db *sql.DB, logger *slog.Logger, actionID string) {
-	consolidator := dream.NewConsolidator(db, logger)
+func runDreamApply(ctx context.Context, db *sql.DB, ledger dream.Ledger, logger *slog.Logger, actionID string) {
+	consolidator := dream.NewConsolidator(db, ledger, logger)
 	result, err := consolidator.ApplyAction(ctx, actionID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "apply failed: %v\n", err)

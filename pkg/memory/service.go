@@ -466,6 +466,31 @@ func (s *Service) SoftForget(ctx context.Context, id string) error {
 	return nil
 }
 
+// SoftDeleteIfActive is SoftForget for callers that need to know whether the
+// delete happened: it reports false, and notifies nobody, when the memory is
+// missing or already deleted.
+func (s *Service) SoftDeleteIfActive(ctx context.Context, id string) (bool, error) {
+	deleter, ok := s.store.(interface {
+		SoftDeleteIfActive(ctx context.Context, id string) (bool, error)
+	})
+	if !ok {
+		return false, fmt.Errorf("store does not support conditional soft delete")
+	}
+	m, _ := s.store.Get(ctx, id)
+	changed, err := deleter.SoftDeleteIfActive(ctx, id)
+	if err != nil || !changed {
+		return false, err
+	}
+	var pid *string
+	if m != nil {
+		pid = m.ProjectID
+	}
+	s.notifyObservers(func(obs MemoryObserver) {
+		obs.OnMemoryDeleted(ctx, id, pid)
+	})
+	return true, nil
+}
+
 // Restore undoes a soft-delete so the memory re-enters search/list results.
 // It mirrors SoftForget in reverse: project id is read directly (Get filters
 // out deleted rows) so observers receive the same routing context they would

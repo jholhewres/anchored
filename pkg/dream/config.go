@@ -6,6 +6,11 @@ type DreamConfig struct {
 	MaxDeletionsPerRun  int     `json:"max_deletions_per_run" yaml:"max_deletions_per_run"`
 	ContradictionAction string  `json:"contradiction_action" yaml:"contradiction_action"`
 	MaxPairwiseCompare  int     `json:"max_pairwise_compare" yaml:"max_pairwise_compare"`
+	// SemanticTiers enables the vector-based tiers (near-duplicate, cluster
+	// synthesis, contradiction). Off by default: they are only as good as the
+	// embedding space, and a collapsed space makes unrelated memories look
+	// like duplicates. Exact dedup does not depend on it.
+	SemanticTiers bool `json:"semantic_tiers" yaml:"semantic_tiers"`
 }
 
 func DefaultDreamConfig() DreamConfig {

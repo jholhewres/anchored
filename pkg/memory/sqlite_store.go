@@ -673,10 +673,18 @@ func (s *SQLiteStore) UpdateMetadata(ctx context.Context, id string, metadata an
 }
 
 func (s *SQLiteStore) SoftDelete(ctx context.Context, id string) error {
-	_, err := s.UpdateTemporal(ctx, id, TemporalMutation{
+	_, err := s.SoftDeleteIfActive(ctx, id)
+	return err
+}
+
+// SoftDeleteIfActive tombstones the memory through the temporal ledger and
+// reports whether anything changed: false when the memory is missing or
+// already deleted. Callers that spend a deletion budget count only real ones.
+func (s *SQLiteStore) SoftDeleteIfActive(ctx context.Context, id string) (bool, error) {
+	revision, err := s.UpdateTemporal(ctx, id, TemporalMutation{
 		ExpectedState: TemporalStateActive,
 	}, TemporalWriteOptions{Mode: TemporalTombstone})
-	return err
+	return revision != nil, err
 }
 
 // Restore undoes a soft-delete (deleted_at -> NULL). It is the inverse of

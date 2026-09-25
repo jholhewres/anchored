@@ -161,6 +161,7 @@ func TestAnalyze_NearDuplicates_CacheFromDB(t *testing.T) {
 	}
 
 	cfg := DefaultDreamConfig()
+	cfg.SemanticTiers = true
 	a := NewAnalyzer(db, cache, cfg, nil)
 	report, err := a.Analyze(context.Background())
 	if err != nil {
@@ -197,6 +198,7 @@ func TestAnalyze_NearDuplicates(t *testing.T) {
 	cache.Put("mem-2", []float32{-0.5, 0.8, -0.3, 0.1})
 
 	cfg := DefaultDreamConfig()
+	cfg.SemanticTiers = true
 	a := NewAnalyzer(db, cache, cfg, nil)
 
 	report, err := a.Analyze(context.Background())
@@ -273,6 +275,7 @@ func TestAnalyze_LargeDataset_NearDuplicatesFound(t *testing.T) {
 	}
 
 	cfg := DefaultDreamConfig()
+	cfg.SemanticTiers = true
 	cfg.MaxPairwiseCompare = 50
 	a := NewAnalyzer(db, cache, cfg, nil)
 

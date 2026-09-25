@@ -11,30 +11,29 @@ import (
 	"strings"
 )
 
-func setupConsolidatorTestDB(t *testing.T) *sql.DB {
+// setupConsolidatorTestDB returns a real store so the consolidator's deletes
+// and metadata writes exercise the temporal ledger, plus its raw handle for
+// assertions.
+func setupConsolidatorTestDB(t *testing.T) (*sql.DB, *memory.SQLiteStore) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := memory.Migrate(db); err != nil {
-		t.Fatal(err)
-	}
-	return db
+	store := newLedgerStore(t)
+	return store.DB(), store
 }
 
 func TestConsolidate_ExactDuplicate_SoftDeletes(t *testing.T) {
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	ctx := context.Background()
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
+	insertTestMemory(t, ctx, store, "mem-0", "same content")
+	insertTestMemory(t, ctx, store, "mem-1", "same content")
 
 	report := &DreamReport{
 		Actions: []DreamAction{
-			{ID: "a1", MemoryID: "mem-1", ActionType: "dedup", Confidence: 1.0, Reason: "exact hash match"},
+			{ID: "a1", MemoryID: "mem-1", RelatedMemoryID: "mem-0", ActionType: "dedup", Confidence: 1.0, Reason: "exact hash match"},
 		},
 	}
 
-	result, err := c.Consolidate(context.Background(), report, DreamConfigForAggressiveness("moderate"))
+	result, err := c.Consolidate(ctx, report, DreamConfigForAggressiveness("moderate"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +43,8 @@ func TestConsolidate_ExactDuplicate_SoftDeletes(t *testing.T) {
 }
 
 func TestConsolidate_Contradiction_FlagsOnly(t *testing.T) {
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
 	report := &DreamReport{
 		Actions: []DreamAction{
@@ -66,16 +65,21 @@ func TestConsolidate_Contradiction_FlagsOnly(t *testing.T) {
 }
 
 func TestConsolidate_RespectsMaxDeletions(t *testing.T) {
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	ctx := context.Background()
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
+	insertTestMemory(t, ctx, store, "keeper", "same content")
 
 	actions := make([]DreamAction, 10)
 	for i := range actions {
+		id := fmt.Sprintf("mem-%d", i)
+		insertTestMemory(t, ctx, store, id, "same content")
 		actions[i] = DreamAction{
-			ID:         fmt.Sprintf("a%d", i),
-			MemoryID:   fmt.Sprintf("mem-%d", i),
-			ActionType: "dedup",
-			Confidence: 1.0,
+			ID:              fmt.Sprintf("a%d", i),
+			MemoryID:        id,
+			RelatedMemoryID: "keeper",
+			ActionType:      "dedup",
+			Confidence:      1.0,
 		}
 	}
 
@@ -83,7 +87,7 @@ func TestConsolidate_RespectsMaxDeletions(t *testing.T) {
 	cfg := DreamConfigForAggressiveness("moderate")
 	cfg.MaxDeletionsPerRun = 5
 
-	result, err := c.Consolidate(context.Background(), report, cfg)
+	result, err := c.Consolidate(ctx, report, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,21 +100,25 @@ func TestConsolidate_RespectsMaxDeletions(t *testing.T) {
 }
 
 func TestConsolidate_ConservativeSkipsAll(t *testing.T) {
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	ctx := context.Background()
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
+	// A pair any other level would delete: same project, same text.
+	insertTestMemory(t, ctx, store, "keeper", "same content")
+	insertTestMemory(t, ctx, store, "dup", "same content")
 
 	report := &DreamReport{
 		Actions: []DreamAction{
-			{ID: "a1", MemoryID: "mem-1", ActionType: "dedup", Confidence: 0.95, Reason: "near dup"},
+			{ID: "a1", MemoryID: "dup", RelatedMemoryID: "keeper", ActionType: "dedup", Confidence: 1.0, Reason: "exact"},
 		},
 	}
 
-	result, err := c.Consolidate(context.Background(), report, DreamConfigForAggressiveness("conservative"))
+	result, err := c.Consolidate(ctx, report, DreamConfigForAggressiveness("conservative"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SoftDeleted != 0 {
-		t.Errorf("conservative should not delete, got %d", result.SoftDeleted)
+	if result.SoftDeleted != 0 || isDeleted(t, db, "dup") {
+		t.Errorf("conservative should not delete, got %+v", result)
 	}
 }
 
@@ -127,18 +135,20 @@ func TestDreamConfig_Levels(t *testing.T) {
 	}
 }
 
-func insertTestMemory(t *testing.T, ctx context.Context, db *sql.DB, id, content string) {
+func insertTestMemory(t *testing.T, ctx context.Context, store *memory.SQLiteStore, id, content string) {
 	t.Helper()
-	_, err := db.ExecContext(ctx,
-		"INSERT INTO memories (id, category, content, content_hash, logical_id, current_revision_id) VALUES (?, 'fact', ?, 'hash1', ?1, ?1)",
-		id, content)
-	if err != nil {
+	if _, err := store.SaveTemporal(ctx, memory.Memory{ID: id, Category: "fact", Content: content}, memory.TemporalWriteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func insertTestDreamAction(t *testing.T, ctx context.Context, db *sql.DB, id, memoryID, relatedID, actionType string, confidence float64, status string) {
 	t.Helper()
+	// dream_actions.run_id references dream_runs, and the real store enforces
+	// foreign keys.
+	if _, err := db.ExecContext(ctx, "INSERT OR IGNORE INTO dream_runs (id, status) VALUES ('test-run', 'test')"); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.ExecContext(ctx,
 		"INSERT INTO dream_actions (id, run_id, memory_id, related_memory_id, action_type, confidence, reason, status) VALUES (?, 'test-run', ?, ?, ?, ?, 'test', ?)",
 		id, memoryID, relatedID, actionType, confidence, status)
@@ -149,11 +159,11 @@ func insertTestDreamAction(t *testing.T, ctx context.Context, db *sql.DB, id, me
 
 func TestApplyAction_Dedup_SoftDeletes(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-old", "duplicate content")
-	insertTestMemory(t, ctx, db, "mem-new", "duplicate content")
+	insertTestMemory(t, ctx, store, "mem-old", "duplicate content")
+	insertTestMemory(t, ctx, store, "mem-new", "duplicate content")
 	insertTestDreamAction(t, ctx, db, "act-1", "mem-old", "mem-new", "dedup", 1.0, "proposed")
 
 	result, err := c.ApplyAction(ctx, "act-1")
@@ -195,11 +205,11 @@ func TestApplyAction_Dedup_SoftDeletes(t *testing.T) {
 
 func TestApplyAction_Contradiction_ReturnsError(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-a", "go is great")
-	insertTestMemory(t, ctx, db, "mem-b", "go is terrible")
+	insertTestMemory(t, ctx, store, "mem-a", "go is great")
+	insertTestMemory(t, ctx, store, "mem-b", "go is terrible")
 	insertTestDreamAction(t, ctx, db, "act-cont", "mem-a", "mem-b", "contradiction", 0.6, "proposed")
 
 	_, err := c.ApplyAction(ctx, "act-cont")
@@ -210,8 +220,8 @@ func TestApplyAction_Contradiction_ReturnsError(t *testing.T) {
 
 func TestApplyAction_NonexistentID_ReturnsError(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
 	_, err := c.ApplyAction(ctx, "does-not-exist")
 	if err == nil {
@@ -221,10 +231,10 @@ func TestApplyAction_NonexistentID_ReturnsError(t *testing.T) {
 
 func TestApplyAction_AlreadyApplied_ReturnsError(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-x", "some content")
+	insertTestMemory(t, ctx, store, "mem-x", "some content")
 	insertTestDreamAction(t, ctx, db, "act-done", "mem-x", "", "dedup", 1.0, "applied")
 
 	_, err := c.ApplyAction(ctx, "act-done")
@@ -235,11 +245,11 @@ func TestApplyAction_AlreadyApplied_ReturnsError(t *testing.T) {
 
 func TestApplyAction_Supersede_UpdatesMetadata(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-new", "updated content")
-	insertTestMemory(t, ctx, db, "mem-old", "old content")
+	insertTestMemory(t, ctx, store, "mem-new", "updated content")
+	insertTestMemory(t, ctx, store, "mem-old", "old content")
 	insertTestDreamAction(t, ctx, db, "act-sup", "mem-new", "mem-old", "supersede", 0.9, "proposed")
 
 	result, err := c.ApplyAction(ctx, "act-sup")
@@ -268,10 +278,10 @@ func TestApplyAction_Supersede_UpdatesMetadata(t *testing.T) {
 
 func TestApplyAction_Supersede_NoRelatedID_Error(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-solo", "content")
+	insertTestMemory(t, ctx, store, "mem-solo", "content")
 	insertTestDreamAction(t, ctx, db, "act-no-rel", "mem-solo", "", "supersede", 0.9, "proposed")
 
 	_, err := c.ApplyAction(ctx, "act-no-rel")
@@ -282,11 +292,11 @@ func TestApplyAction_Supersede_NoRelatedID_Error(t *testing.T) {
 
 func TestApplyAction_Merge_ConsolidatesAndSoftDeletes(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-keeper", "combined content")
-	insertTestMemory(t, ctx, db, "mem-absorbed", "absorbed content")
+	insertTestMemory(t, ctx, store, "mem-keeper", "combined content")
+	insertTestMemory(t, ctx, store, "mem-absorbed", "absorbed content")
 	insertTestDreamAction(t, ctx, db, "act-merge", "mem-keeper", "mem-absorbed", "merge", 0.95, "proposed")
 
 	result, err := c.ApplyAction(ctx, "act-merge")
@@ -318,10 +328,10 @@ func TestApplyAction_Merge_ConsolidatesAndSoftDeletes(t *testing.T) {
 
 func TestApplyAction_Merge_NoRelatedID_Error(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-solo", "content")
+	insertTestMemory(t, ctx, store, "mem-solo", "content")
 	insertTestDreamAction(t, ctx, db, "act-no-rel", "mem-solo", "", "merge", 0.9, "proposed")
 
 	_, err := c.ApplyAction(ctx, "act-no-rel")
@@ -355,12 +365,12 @@ func TestClustersFromPairs_UnionFind(t *testing.T) {
 
 func TestApplyAction_Synthesize_CreatesSummaryAndDemotes(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-a", "the deploy pipeline requires TAG_NAME and DEPLOY_REASON")
-	insertTestMemory(t, ctx, db, "mem-b", "deploy pipeline validation needs TAG_NAME plus a reason")
-	insertTestMemory(t, ctx, db, "mem-c", "pipeline deploys are tag-driven with mandatory reason")
+	insertTestMemory(t, ctx, store, "mem-a", "the deploy pipeline requires TAG_NAME and DEPLOY_REASON")
+	insertTestMemory(t, ctx, store, "mem-b", "deploy pipeline validation needs TAG_NAME plus a reason")
+	insertTestMemory(t, ctx, store, "mem-c", "pipeline deploys are tag-driven with mandatory reason")
 	insertTestDreamAction(t, ctx, db, "act-syn", "mem-a", "mem-b,mem-c", "synthesize", 0.9, "proposed")
 
 	result, err := c.ApplyAction(ctx, "act-syn")
@@ -414,12 +424,12 @@ func TestApplyAction_Synthesize_CreatesSummaryAndDemotes(t *testing.T) {
 // synthesis without a base revision would be scored by neither.
 func TestApplyAction_Synthesize_RecordsBaseRevision(t *testing.T) {
 	ctx := context.Background()
-	db := setupConsolidatorTestDB(t)
-	c := NewConsolidator(db, nil)
+	db, store := setupConsolidatorTestDB(t)
+	c := NewConsolidator(db, store, nil)
 
-	insertTestMemory(t, ctx, db, "mem-a", "the deploy pipeline requires TAG_NAME and DEPLOY_REASON")
-	insertTestMemory(t, ctx, db, "mem-b", "deploy pipeline validation needs TAG_NAME plus a reason")
-	insertTestMemory(t, ctx, db, "mem-c", "pipeline deploys are tag-driven with mandatory reason")
+	insertTestMemory(t, ctx, store, "mem-a", "the deploy pipeline requires TAG_NAME and DEPLOY_REASON")
+	insertTestMemory(t, ctx, store, "mem-b", "deploy pipeline validation needs TAG_NAME plus a reason")
+	insertTestMemory(t, ctx, store, "mem-c", "pipeline deploys are tag-driven with mandatory reason")
 	insertTestDreamAction(t, ctx, db, "act-rev", "mem-a", "mem-b,mem-c", "synthesize", 0.9, "proposed")
 
 	result, err := c.ApplyAction(ctx, "act-rev")
