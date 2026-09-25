@@ -29,6 +29,8 @@ func main() {
 		runList(os.Args[2:])
 	case "forget":
 		runForget(os.Args[2:])
+	case "restore":
+		runRestore(os.Args[2:])
 	case "update":
 		runUpdate(os.Args[2:])
 	case "stats":
@@ -106,6 +108,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored save <content>     Save a memory\n")
 	fmt.Fprintf(os.Stderr, "  anchored list               List memories\n")
 	fmt.Fprintf(os.Stderr, "  anchored forget <id>        Remove a memory\n")
+	fmt.Fprintf(os.Stderr, "  anchored restore --id <id>  Bring back a deleted memory (--dream-lost: undo dream's lost dedups)\n")
 	fmt.Fprintf(os.Stderr, "  anchored update <id>        Update a memory\n")
 	fmt.Fprintf(os.Stderr, "  anchored stats              Show memory statistics\n")
 	fmt.Fprintf(os.Stderr, "  anchored identity [edit]    View or edit identity file\n")

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -528,6 +529,47 @@ func (s *Service) Restore(ctx context.Context, id string) error {
 		obs.OnMemoryRestored(ctx, id, pid)
 	})
 	return nil
+}
+
+// RestoreDeleted brings back a deleted memory whichever way it was deleted:
+// a raw UPDATE outside the ledger is undone in place (see
+// SQLiteStore.UndoUntrackedDelete), a ledger tombstone through Restore. It
+// reports false when the memory is missing or already live.
+func (s *Service) RestoreDeleted(ctx context.Context, id string) (bool, error) {
+	var deleted bool
+	err := s.store.DB().QueryRowContext(ctx,
+		"SELECT deleted_at IS NOT NULL FROM memories WHERE id = ?", id).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lookup memory %s: %w", id, err)
+	}
+	if !deleted {
+		return false, nil
+	}
+	if undoer, ok := s.store.(interface {
+		UndoUntrackedDelete(ctx context.Context, id string) (bool, error)
+	}); ok {
+		undone, err := undoer.UndoUntrackedDelete(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if undone {
+			var pid *string
+			if m, _ := s.store.Get(ctx, id); m != nil {
+				pid = m.ProjectID
+			}
+			s.notifyObservers(func(obs MemoryObserver) {
+				obs.OnMemoryRestored(ctx, id, pid)
+			})
+			return true, nil
+		}
+	}
+	if err := s.Restore(ctx, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ForgetScope removes every memory matching the scope; with DryRun it only

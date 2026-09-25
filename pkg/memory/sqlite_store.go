@@ -687,6 +687,34 @@ func (s *SQLiteStore) SoftDeleteIfActive(ctx context.Context, id string) (bool, 
 	return revision != nil, err
 }
 
+// UndoUntrackedDelete clears deleted_at on a row that was deleted by a raw
+// UPDATE outside the temporal ledger (dream before v0.20, purge, curation
+// clean). The ledger still records such a memory as active, so restoring it
+// only makes the current view agree again: no revision is written, and the
+// current revision's vector, which compact keeps, serves search as before.
+// A delete the ledger did record (a tombstone) is left for Restore.
+func (s *SQLiteStore) UndoUntrackedDelete(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE memories SET deleted_at = NULL
+		WHERE id = ? AND deleted_at IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM memory_revisions r
+			WHERE r.revision_id = memories.current_revision_id AND NOT r.is_tombstone
+		  )`, id)
+	if err != nil {
+		return false, fmt.Errorf("undo untracked delete %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("undo untracked delete %s: %w", id, err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	s.refreshVectorCache(ctx, id)
+	return true, nil
+}
+
 // Restore undoes a soft-delete (deleted_at -> NULL). It is the inverse of
 // SoftDelete: same cache invalidation and only touches rows that are currently
 // deleted, so re-restoring an active memory is a no-op.
