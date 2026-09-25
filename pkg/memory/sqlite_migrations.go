@@ -604,6 +604,17 @@ func schemaMigrations() []migration {
 				PRIMARY KEY (host, pid)
 			);
 		`},
+		// The current view is written by an upsert that always sets content,
+		// so the unconditional trigger rewrote the FTS index on every
+		// tombstone, restore and re-save of unchanged text.
+		{Name: "024_fts_update_only_on_change", Up: `
+			DROP TRIGGER IF EXISTS memories_fts_update;
+			CREATE TRIGGER memories_fts_update AFTER UPDATE OF content, keywords ON memories
+			WHEN old.content IS NOT new.content OR old.keywords IS NOT new.keywords BEGIN
+				INSERT INTO memories_fts(memories_fts, rowid, content, keywords) VALUES('delete', old.rowid, old.content, old.keywords);
+				INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.rowid, new.content, new.keywords);
+			END;
+		`},
 	}
 }
 
