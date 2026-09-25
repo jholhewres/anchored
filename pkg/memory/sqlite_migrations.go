@@ -1,7 +1,9 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 
 	ctxpkg "github.com/jholhewres/anchored/pkg/context"
@@ -98,16 +100,77 @@ const migrationBackfillLedgerOrphans = `
 		`
 
 func Migrate(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL UNIQUE,
-		applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
+	return migrate(db, schemaMigrations())
+}
+
+func migrate(db *sql.DB, migrations []migration) error {
+	pending, err := pendingMigrations(db, migrations)
 	if err != nil {
+		return err
+	}
+	// Every process migrates on open; an up-to-date database, the common
+	// case, is answered by reads alone so opening never waits behind a
+	// long writer.
+	if len(pending) == 0 {
+		return nil
+	}
+	if err := withImmediateTx(db, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS migrations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`)
+		return err
+	}); err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
+	for _, m := range pending {
+		if err := applyMigration(db, m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	migrations := []migration{
+// pendingMigrations returns, without taking the write lock, the migrations
+// not yet recorded; all of them when the migrations table does not exist.
+func pendingMigrations(db *sql.DB, migrations []migration) ([]migration, error) {
+	var tables int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'migrations'",
+	).Scan(&tables); err != nil {
+		return nil, fmt.Errorf("check migrations table: %w", err)
+	}
+	if tables == 0 {
+		return migrations, nil
+	}
+	rows, err := db.Query("SELECT name FROM migrations")
+	if err != nil {
+		return nil, fmt.Errorf("list applied migrations: %w", err)
+	}
+	defer rows.Close()
+	applied := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("list applied migrations: %w", err)
+		}
+		applied[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list applied migrations: %w", err)
+	}
+	var pending []migration
+	for _, m := range migrations {
+		if !applied[m.Name] {
+			pending = append(pending, m)
+		}
+	}
+	return pending, nil
+}
+
+func schemaMigrations() []migration {
+	return []migration{
 		{Name: "001_initial_schema", Up: initSchema()},
 		{Name: "002_indexed_files", Up: `CREATE TABLE IF NOT EXISTS indexed_files (
 			path TEXT PRIMARY KEY,
@@ -527,36 +590,64 @@ func Migrate(db *sql.DB) error {
 			END;
 		`},
 	}
+}
 
-	for _, m := range migrations {
+// applyMigration runs one migration under the database write lock and checks
+// again, inside it, whether another process got there first. Every anchored
+// process (one per editor session, plus hooks and the maintenance timer)
+// migrates on open, so a new binary starts that race on every machine; the
+// check outside the lock only spares the common already-applied case a write
+// lock.
+func applyMigration(db *sql.DB, m migration) error {
+	return withImmediateTx(db, func(conn *sql.Conn) error {
+		ctx := context.Background()
 		var count int
-		err := db.QueryRow("SELECT COUNT(*) FROM migrations WHERE name = ?", m.Name).Scan(&count)
-		if err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM migrations WHERE name = ?", m.Name).Scan(&count); err != nil {
 			return fmt.Errorf("check migration %s: %w", m.Name, err)
 		}
 		if count > 0 {
-			continue
+			return nil
 		}
-
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin tx for migration %s: %w", m.Name, err)
-		}
-
-		if _, err := tx.Exec(m.Up); err != nil {
-			tx.Rollback()
+		if _, err := conn.ExecContext(ctx, m.Up); err != nil {
 			return fmt.Errorf("apply migration %s: %w", m.Name, err)
 		}
-
-		if _, err := tx.Exec("INSERT INTO migrations (name) VALUES (?)", m.Name); err != nil {
-			tx.Rollback()
+		if _, err := conn.ExecContext(ctx, "INSERT INTO migrations (name) VALUES (?)", m.Name); err != nil {
 			return fmt.Errorf("record migration %s: %w", m.Name, err)
 		}
+		return nil
+	})
+}
 
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", m.Name, err)
-		}
+// withImmediateTx runs fn inside BEGIN IMMEDIATE on a dedicated connection,
+// so the write lock is taken up front, waiting out the busy timeout, whatever
+// _txlock the caller's DSN sets. A deferred transaction would instead read
+// first and fail with SQLITE_BUSY when it tries to upgrade to a write.
+func withImmediateTx(db *sql.DB, fn func(conn *sql.Conn) error) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open connection: %w", err)
 	}
+	defer conn.Close()
 
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate: %w", err)
+	}
+	if err := fn(conn); err != nil {
+		rollback(ctx, conn)
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		rollback(ctx, conn)
+		return fmt.Errorf("commit: %w", err)
+	}
 	return nil
+}
+
+// rollback ends the transaction on conn; if even that fails, the connection
+// is discarded instead of going back to the pool mid-transaction.
+func rollback(ctx context.Context, conn *sql.Conn) {
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
 }
