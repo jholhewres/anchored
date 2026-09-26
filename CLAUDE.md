@@ -17,6 +17,11 @@ make test
 ./bin/anchored serve --stdio
 ```
 
+## Conventions
+
+- Commit messages, tag annotations and CHANGELOG entries are written in English, following Conventional Commits (`type(scope): subject`), regardless of the language used in the conversation.
+- Build and test with the `sqlite_fts5` tag (`make build`, `make test`, or `go test -tags sqlite_fts5 ./...`).
+
 ## Project Structure
 
 See [docs-anchored/](../docs-anchored/) for design documents and architecture planning.
