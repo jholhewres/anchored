@@ -221,6 +221,7 @@ func (s *SQLiteStore) UpdateEmbeddingForRevision(
 	}
 	if changed == 1 {
 		s.cache.Put(memoryID, embedding)
+		s.refreshVectorScope(ctx, memoryID)
 		return true, nil
 	}
 	return false, nil

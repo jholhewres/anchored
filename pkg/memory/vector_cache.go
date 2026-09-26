@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"container/heap"
 	"context"
 	"database/sql"
 	"fmt"
@@ -27,8 +28,17 @@ type ScoredID struct {
 
 // VectorCache is a thread-safe in-memory cache of memory embeddings keyed by memory ID.
 type VectorCache struct {
-	byID   map[string][]float32  // exact vectors (Get/All contract preserved)
-	quant  map[string]quantEntry // memoized quantized form + norm for scoring
+	byID  map[string][]float32  // exact vectors (Get/All contract preserved)
+	quant map[string]quantEntry // memoized quantized form + norm for scoring
+	// scope is the project of each memory, "" for a global one, so a scoped
+	// search takes its top-k inside the scope. It follows memories, not
+	// vectors: Replace keeps it, the store refreshes it when it loads a
+	// generation and on every vector write. An id missing here is unknown and
+	// is scored in every scope, and the caller's per-memory filter has the
+	// final word. A stale entry (a memory another process moved since, or a
+	// bulk refresh racing a single write) can still keep a memory out of the
+	// top-k of its new project until the next refresh.
+	scope  map[string]string
 	mu     sync.RWMutex
 	logger *slog.Logger
 
@@ -49,6 +59,7 @@ func NewVectorCache(logger *slog.Logger) *VectorCache {
 	return &VectorCache{
 		byID:   make(map[string][]float32),
 		quant:  make(map[string]quantEntry),
+		scope:  make(map[string]string),
 		logger: logger,
 	}
 }
@@ -108,21 +119,82 @@ func makeQuantEntry(vec []float32) quantEntry {
 // per-query All() copy + re-quantize + re-norm with a single allocation-light
 // pass; scores are bit-identical to QuantizedEmbedding.CosineSimilarity.
 func (c *VectorCache) Score(query []float32, queryNorm, minScore float64, topK int) []ScoredID {
+	return c.ScoreInScope(query, queryNorm, minScore, topK, "")
+}
+
+// ScoreInScope returns the topK entries scoring above minScore, best first and
+// ties broken by id, so the same query over the same cache always ranks the
+// same way. With a project, only that project's memories, the global ones and
+// those of unknown scope compete; "" scores everything.
+func (c *VectorCache) ScoreInScope(query []float32, queryNorm, minScore float64, topK int, project string) []ScoredID {
+	var h scoredHeap
 	c.mu.RLock()
-	scored := make([]ScoredID, 0, len(c.quant))
 	for id, e := range c.quant {
+		if project != "" {
+			if sc, known := c.scope[id]; known && sc != "" && sc != project {
+				continue
+			}
+		}
 		s := e.q.CosineWithNorm(query, queryNorm, e.norm)
-		if s > minScore {
-			scored = append(scored, ScoredID{ID: id, Score: s})
+		if s <= minScore {
+			continue
+		}
+		item := ScoredID{ID: id, Score: s}
+		switch {
+		case topK <= 0 || h.Len() < topK:
+			heap.Push(&h, item)
+		case scoredBefore(item, h[0]):
+			h[0] = item
+			heap.Fix(&h, 0)
 		}
 	}
 	c.mu.RUnlock()
 
-	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
-	if topK > 0 && len(scored) > topK {
-		scored = scored[:topK]
+	out := []ScoredID(h)
+	sort.Slice(out, func(i, j int) bool { return scoredBefore(out[i], out[j]) })
+	return out
+}
+
+// scoredBefore orders by score, then id: the ranking of equal scores must not
+// depend on map iteration.
+func scoredBefore(a, b ScoredID) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
 	}
-	return scored
+	return a.ID < b.ID
+}
+
+// scoredHeap is a min-heap on scoredBefore: its root is the weakest of the
+// top-k kept so far.
+type scoredHeap []ScoredID
+
+func (h scoredHeap) Len() int           { return len(h) }
+func (h scoredHeap) Less(i, j int) bool { return scoredBefore(h[j], h[i]) }
+func (h scoredHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *scoredHeap) Push(x any)        { *h = append(*h, x.(ScoredID)) }
+func (h *scoredHeap) Pop() any {
+	old := *h
+	item := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return item
+}
+
+// SetScope records the project of memory id ("" for a global memory).
+func (c *VectorCache) SetScope(id, project string) {
+	c.mu.Lock()
+	c.scope[id] = project
+	c.mu.Unlock()
+}
+
+// SetScopes replaces every recorded scope.
+func (c *VectorCache) SetScopes(scopes map[string]string) {
+	next := make(map[string]string, len(scopes))
+	for id, p := range scopes {
+		next[id] = p
+	}
+	c.mu.Lock()
+	c.scope = next
+	c.mu.Unlock()
 }
 
 func (c *VectorCache) Load(db *sql.DB) error {
@@ -174,6 +246,7 @@ func (c *VectorCache) Remove(id string) {
 	c.mu.Lock()
 	delete(c.byID, id)
 	delete(c.quant, id)
+	delete(c.scope, id)
 	c.mu.Unlock()
 }
 

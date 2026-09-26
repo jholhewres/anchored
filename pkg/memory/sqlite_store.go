@@ -190,7 +190,18 @@ func safeFTSOr(query string) string {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 	quoted := make([]string, 0, len(fields))
+	seen := make(map[string]bool, len(fields))
 	for _, f := range fields {
+		// The input may be an expanded expression: its operators are syntax,
+		// not words to look for.
+		switch f {
+		case "OR", "AND", "NOT", "NEAR":
+			continue
+		}
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
 		quoted = append(quoted, `"`+f+`"`)
 	}
 	return strings.Join(quoted, " OR ")
@@ -216,11 +227,13 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, opts SearchOptio
 		args = append(args, opts.Category)
 	}
 	if opts.ProjectID != "" {
-		qb.WriteString(" AND m.project_id = ?")
+		// Global memories (no project) hold everywhere, so a scoped search
+		// returns them too.
+		qb.WriteString(" AND (m.project_id = ? OR m.project_id IS NULL OR m.project_id = '')")
 		args = append(args, opts.ProjectID)
 	}
 
-	qb.WriteString(" ORDER BY rank LIMIT ?")
+	qb.WriteString(" ORDER BY rank, m.id LIMIT ?")
 	args = append(args, maxResults)
 	sqlStr := qb.String()
 
@@ -262,11 +275,12 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, opts SearchOptio
 				json.Unmarshal([]byte(metadataStr.String), &m.Metadata)
 			}
 
-			// BM25 rank is negative (more negative = better match).
-			// Negate and normalize to positive [0,1] range for hybrid fusion.
+			// bm25() is more negative for a better match: -rank is the
+			// relevance, larger is better. The fusion normalizes each list by
+			// its own maximum, so no rescaling happens here.
 			score := 0.0
 			if rank < 0 {
-				score = 1.0 / (1.0 + -rank)
+				score = -rank
 			}
 			results = append(results, SearchResult{Memory: m, Score: score})
 		}
@@ -536,6 +550,7 @@ func (s *SQLiteStore) refreshVectorCache(ctx context.Context, id string) {
 		return
 	}
 	s.cache.Put(id, vector)
+	s.refreshVectorScope(ctx, id)
 }
 
 func scanMemory(row *sql.Row) (*Memory, error) {

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 var accentMap = map[rune]rune{
@@ -40,22 +41,22 @@ var synonyms = map[string][]string{
 	"api":         {"endpoint", "rest"},
 	"deploy":      {"deployment", "release", "implantacao", "publicar"},
 	"test":        {"testing", "spec", "testar", "verificacion"},
-	"config":      {"configuration", "setting", "configuracion", "parametre", "ajuste"},
+	"config":      {"configuration", "setting", "configuracion", "ajuste"},
 	"database":    {"db", "sqlite", "postgres", "datos", "donnees"},
 	"error":       {"exception", "failure", "bug", "falha", "excepcion", "fallo", "defaut"},
 	"function":    {"method", "procedure", "handler", "funcao"},
 	"performance": {"speed", "latency", "throughput"},
 	"refactor":    {"rewrite", "restructure"},
-	"component":   {"widget", "module", "part"},
+	"component":   {"widget", "module"},
 	"debug":       {"troubleshoot", "diagnose"},
 	"server":      {"backend", "service", "servidor", "servicio", "serveur"},
 	"client":      {"frontend", "app", "cliente", "aplicacion", "application"},
 	"security":    {"auth", "authorization", "seguranca"},
-	"cache":       {"memoize", "store"},
-	"dependency":  {"import", "library", "package"},
+	"cache":       {"caching", "memoize"},
+	"dependency":  {"library", "package"},
 	"framework":   {"library", "toolkit", "sdk"},
 	"migration":   {"upgrade", "migracao"},
-	"repository":  {"repo", "store", "repositorio", "armazenamento"},
+	"repository":  {"repo", "repositorio"},
 	"autenticar":  {"autenticacao", "login", "auth"},
 	"implantar":   {"implantacao", "publicar", "deploy"},
 	"teste":       {"testar", "spec", "verificacao"},
@@ -67,12 +68,25 @@ var synonyms = map[string][]string{
 	"prueba":      {"test", "verificacion"},
 	"serveur":     {"backend", "service"},
 	"erreur":      {"exception", "defaut"},
-	"base":        {"database", "db", "datos", "donnees"},
 }
+
+// Review notes (v0.20): dropped expansions that match unrelated memories more
+// often than related ones — "store" (cache, repository), "part" (component),
+// "import" (dependency; also an anchored feature), "armazenamento", the
+// misspelled "parametre", and the whole "base" entry, a common word in
+// Portuguese and Spanish that dragged every database memory into unrelated
+// queries.
 
 // nearRe matches FTS5 NEAR operator patterns like "word1 NEAR/5 word2".
 var nearRe = regexp.MustCompile(`(?i)(\S+)\s+NEAR/\d+\s+(\S+)`)
 var nearDistRe = regexp.MustCompile(`NEAR/\d+`)
+
+// minPrefixRunes is the shortest word expanded with a prefix term: a prefix on
+// a short stem ("api*", "log*") matches far more than the word.
+const minPrefixRunes = 5
+
+// maxQueryWords bounds the words a query is expanded from.
+const maxQueryWords = 32
 
 // ExpandQueryAdvanced takes a raw user query and produces an FTS5-compatible query string.
 // It handles:
@@ -125,13 +139,17 @@ func ExpandQueryAdvanced(query string) string {
 				parts = append(parts, expandStandaloneWords(before)...)
 			}
 
-			word1 := NormalizeAccents(strings.ToLower(nm[1]))
-			word2 := NormalizeAccents(strings.ToLower(nm[2]))
-			distance := nearDistRe.FindString(fullMatch)
-			if distance == "" {
-				distance = "NEAR/10"
+			word1 := sanitizeFTS5Keyword(NormalizeAccents(strings.ToLower(nm[1])))
+			word2 := sanitizeFTS5Keyword(NormalizeAccents(strings.ToLower(nm[2])))
+			distance := "10"
+			if d := nearDistRe.FindString(fullMatch); d != "" {
+				distance = strings.TrimPrefix(d, "NEAR/")
 			}
-			parts = append(parts, word1+" "+distance+" "+word2)
+			// FTS5 spells it NEAR(a b, n); the FTS4 "a NEAR/n b" form the
+			// user types is a syntax error there.
+			if word1 != "" && word2 != "" {
+				parts = append(parts, `NEAR("`+word1+`" "`+word2+`", `+distance+`)`)
+			}
 
 			nearLastEnd = globalIdx + len(fullMatch)
 		}
@@ -155,24 +173,42 @@ func ExpandQueryAdvanced(query string) string {
 }
 
 func expandStandaloneWords(text string) []string {
-	words := strings.Fields(strings.ToLower(text))
 	var parts []string
+	for _, group := range expandWordGroups(text) {
+		parts = append(parts, group...)
+	}
+	return parts
+}
+
+// expandWordGroups expands each topic word of text into its alternatives: the
+// word, a prefix term from minPrefixRunes runes, and its synonyms.
+func expandWordGroups(text string) [][]string {
+	words := strings.Fields(strings.ToLower(text))
+	var groups [][]string
+	if len(words) > maxQueryWords {
+		// A pasted log or prompt: its first words carry the topic, and an
+		// expression over hundreds of terms costs seconds per query.
+		words = words[:maxQueryWords]
+	}
 
 	for _, w := range words {
-		w = strings.Trim(w, ".,;:!?()[]{}*`~@#$%&_-+=<>/\\|")
+		w = strings.Trim(w, ".,;:!?¿¡()[]{}*`~@#$%&_-+=<>/\\|")
 		w = NormalizeAccents(w)
 
 		if w == "" || !isValidKeyword(w) {
 			continue
 		}
 
+		var parts []string
 		clean := sanitizeFTS5Keyword(w)
 		if clean != "" {
 			parts = append(parts, `"`+clean+`"`)
 		}
 
-		if len(w) >= 3 && clean != "" {
-			parts = append(parts, clean+"*")
+		if utf8.RuneCountInString(w) >= minPrefixRunes && clean != "" {
+			// Quoted: a bare prefix term with punctuation (node.js*,
+			// foo-bar*) is FTS5 syntax, not a word.
+			parts = append(parts, `"`+clean+`"*`)
 		}
 
 		if syns, ok := synonyms[w]; ok {
@@ -183,9 +219,40 @@ func expandStandaloneWords(text string) []string {
 				}
 			}
 		}
+		if len(parts) > 0 {
+			groups = append(groups, parts)
+		}
 	}
 
-	return parts
+	return groups
+}
+
+// ExpandQueryAND is the coverage-first form of ExpandQueryAdvanced: every
+// topic word (with its prefix and synonyms) must match, so a memory that
+// covers the whole query outranks one repeating variants of a single word.
+// Quoted phrases and NEAR expressions are left to the OR form. It returns ""
+// when the query has fewer than two words, where AND adds nothing.
+func ExpandQueryAND(query string) string {
+	if strings.Contains(query, `"`) || nearRe.MatchString(query) {
+		return ""
+	}
+	groups := expandWordGroups(query)
+	if len(groups) < 2 {
+		return ""
+	}
+	clauses := make([]string, 0, len(groups))
+	seen := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		clause := "(" + strings.Join(g, " OR ") + ")"
+		if !seen[clause] {
+			seen[clause] = true
+			clauses = append(clauses, clause)
+		}
+	}
+	if len(clauses) < 2 {
+		return ""
+	}
+	return strings.Join(clauses, " AND ")
 }
 
 func ExtractKeywords(query string) []string {
@@ -241,10 +308,10 @@ func ExpandQueryForFTS(keywords []string) string {
 		if s != "" {
 			parts = append(parts, s)
 		}
-		if len(kw) >= 3 {
+		if utf8.RuneCountInString(kw) >= minPrefixRunes {
 			clean := sanitizeFTS5Keyword(kw)
 			if clean != "" {
-				parts = append(parts, clean+"*")
+				parts = append(parts, `"`+clean+`"*`)
 			}
 		}
 	}
@@ -343,6 +410,11 @@ var stopWords = map[string]bool{
 	"portanto": true, "pois": true, "enquanto": true, "apenas": true,
 	"algum": true, "alguma": true, "nenhum": true, "nenhuma": true,
 	"pouco": true, "bem": true, "mal": true,
+	"os": true, "na": true, "um": true, "uns": true, "umas": true,
+	"ao": true, "aos": true, "dum": true, "duma": true, "pra": true,
+	"lhe": true, "lhes": true, "dele": true, "dela": true, "deles": true, "delas": true,
+	"nele": true, "nela": true, "isto": true, "aquilo": true,
+	"al": true, "es": true, "unos": true, "unas": true, "esto": true,
 	"los": true, "las": true, "del": true, "uno": true,
 	"con": true, "más": true, "pero": true,
 	"sin": true, "sus": true, "les": true, "fue": true, "son": true,
@@ -381,4 +453,14 @@ var stopWords = map[string]bool{
 	"tous": true, "toute": true, "toutes": true,
 	"rien": true, "jamais": true, "toujours": true, "déjà": true,
 	"pendant": true, "depuis": true,
+}
+
+// Keywords are checked after NormalizeAccents, so every accented stopword is
+// also listed without its accents ("além" → "alem").
+func init() {
+	for w := range stopWords {
+		if n := NormalizeAccents(w); n != w {
+			stopWords[n] = true
+		}
+	}
 }

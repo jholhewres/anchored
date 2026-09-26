@@ -114,7 +114,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 	}
 
 	vecResults, vecErr := h.searchVector(ctx, query, maxResults*4, queryEntities, searchOpts)
-	bm25Results, bm25Err := h.searchBM25(ctx, query, maxResults*4, queryEntities, searchOpts)
+	bm25Results, covering, bm25Err := h.searchBM25(ctx, query, maxResults*4, queryEntities, searchOpts)
 
 	if vecErr != nil {
 		h.logger.Warn("vector search failed, using BM25 only", "error", vecErr)
@@ -124,6 +124,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 	}
 
 	fused := h.fuse(vecResults, bm25Results, cfg.VectorWeight, cfg.BM25Weight)
+	applyCoverageBoost(fused, covering)
 
 	fused = applyLifecycleBoost(fused, time.Now())
 
@@ -147,6 +148,17 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 		annotateBaseSignals(fused, boostPID, time.Now())
 	}
 
+	// Everything from here on depends on order, and the fused list comes out
+	// of a map: rank it by score with ties broken by id first.
+	sortResults(fused)
+
+	// Diversify by origin over the whole candidate list, before anything cuts
+	// it to k, so capping a prolix session leaves room for the next-best
+	// results instead of returning fewer than k.
+	if cfg.DiversifyPerOrigin > 0 {
+		fused = diversifyByOrigin(fused, cfg.DiversifyPerOrigin)
+	}
+
 	if cfg.MMREnabled {
 		mmrLambda := cfg.MMRLambda
 		if h.topicChangeDetector != nil {
@@ -156,17 +168,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 			}
 		}
 		fused = h.applyMMR(fused, mmrLambda, maxResults)
-	}
-
-	sort.Slice(fused, func(i, j int) bool {
-		return fused[i].Score > fused[j].Score
-	})
-
-	// Diversify by origin before truncation so one prolix session can't fill
-	// the top-k. Runs on the score-sorted list, so the highest-scoring result
-	// from each origin is the one kept.
-	if cfg.DiversifyPerOrigin > 0 {
-		fused = diversifyByOrigin(fused, cfg.DiversifyPerOrigin)
+		sortResults(fused)
 	}
 
 	if len(fused) > maxResults {
@@ -174,6 +176,17 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 	}
 
 	return fused, nil
+}
+
+// sortResults orders by score, then id, so equal scores rank the same way on
+// every call.
+func sortResults(results []SearchResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return results[i].Memory.ID < results[j].Memory.ID
+	})
 }
 
 func (h *HybridSearcher) semanticSearchEnabled() bool {
@@ -279,7 +292,9 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 	if h.vectorCache != nil && h.vectorCache.Len() > 0 {
 		// Single allocation-light pass over the cache (no map copy, no
 		// re-quantization): the quantized form + norm are memoized per vector.
-		scored := h.vectorCache.Score(queryVec, queryNorm, 0.01, maxResults)
+		// Take the top-k inside the scope: a global top-k filtered afterwards
+		// loses a small project to a large one that sits closer to the query.
+		scored := h.vectorCache.ScoreInScope(queryVec, queryNorm, 0.01, maxResults, opts.ProjectID)
 
 		for _, s := range scored {
 			m, err := h.store.Get(ctx, s.ID)
@@ -336,7 +351,9 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 	return results, nil
 }
 
-func (h *HybridSearcher) searchBM25(ctx context.Context, query string, maxResults int, queryEntities []string, opts SearchOptions) ([]SearchResult, error) {
+// searchBM25 returns the lexical candidates and, among them, those matching
+// every word of the query.
+func (h *HybridSearcher) searchBM25(ctx context.Context, query string, maxResults int, queryEntities []string, opts SearchOptions) ([]SearchResult, map[string]bool, error) {
 	// Prefer the advanced expansion (synonyms, accent-folding, NEAR/phrase
 	// handling). Fall back to the simple keyword expansion when it yields
 	// nothing (e.g. query is only stopwords).
@@ -344,17 +361,36 @@ func (h *HybridSearcher) searchBM25(ctx context.Context, query string, maxResult
 	if ftsQuery == "" {
 		keywords := ExtractKeywords(query)
 		if len(keywords) == 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
 		ftsQuery = ExpandQueryForFTS(keywords)
 	}
 	if ftsQuery == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	results, err := h.store.Search(ctx, ftsQuery, SearchOptions{MaxResults: maxResults, Category: opts.Category, ProjectID: opts.ProjectID})
-	if err != nil {
-		return nil, err
+	storeOpts := SearchOptions{MaxResults: maxResults, Category: opts.Category, ProjectID: opts.ProjectID}
+	var covering map[string]bool
+	var results []SearchResult
+	if andQuery := ExpandQueryAND(query); andQuery != "" {
+		// Which memories match every word of the query. A failed AND query
+		// only loses the boost.
+		if res, err := h.store.Search(ctx, andQuery, storeOpts); err == nil && len(res) > 0 {
+			covering = make(map[string]bool, len(res))
+			for _, r := range res {
+				covering[r.Memory.ID] = true
+			}
+			if len(res) >= maxResults {
+				results = res
+			}
+		}
+	}
+	if results == nil {
+		any, err := h.store.Search(ctx, ftsQuery, storeOpts)
+		if err != nil {
+			return nil, nil, err
+		}
+		results = any
 	}
 
 	if len(queryEntities) > 0 {
@@ -365,17 +401,34 @@ func (h *HybridSearcher) searchBM25(ctx context.Context, query string, maxResult
 		}
 	}
 
-	return results, nil
+	return results, covering, nil
+}
+
+// coverageBoost multiplies the fused score of memories that match every word
+// of the query (the AND form of the expansion), so covering the query beats
+// repeating one of its words. It applies after the fusion: the BM25 list keeps
+// the scores FTS5 gave it, and the OR fill keeps the eligibility plain OR
+// gives it under the relevance cutoff.
+const coverageBoost = 2.0
+
+func applyCoverageBoost(results []SearchResult, covering map[string]bool) {
+	if len(covering) == 0 {
+		return
+	}
+	for i := range results {
+		if covering[results[i].Memory.ID] {
+			results[i].Score *= coverageBoost
+		}
+	}
 }
 
 func matchesSearchOptions(m Memory, opts SearchOptions) bool {
 	if opts.Category != "" && m.Category != opts.Category {
 		return false
 	}
-	if opts.ProjectID != "" {
-		if m.ProjectID == nil || *m.ProjectID != opts.ProjectID {
-			return false
-		}
+	if opts.ProjectID != "" && m.ProjectID != nil && *m.ProjectID != "" && *m.ProjectID != opts.ProjectID {
+		// Global memories (no project) belong to every scope.
+		return false
 	}
 	return true
 }
@@ -558,15 +611,9 @@ func annotateBaseSignals(results []SearchResult, boostProjectID string, now time
 	}
 }
 
-// Age-decay bands (Feature E). Generous on purpose: decay is a gentle nudge
-// for never-reinforced memories, not a hard demotion — low_signal handles
-// those.
-const (
-	decayAgingAge    = 90 * 24 * time.Hour
-	decayAgingFactor = 0.85
-	decayStaleAge    = 180 * 24 * time.Hour
-	decayStaleFactor = 0.7
-)
+// decayAgingAge is when explain mode starts calling a memory "decayed": 90
+// days without being created or used.
+const decayAgingAge = 90 * 24 * time.Hour
 
 func appendSignal(sigs []string, s string) []string {
 	for _, existing := range sigs {
@@ -593,39 +640,13 @@ func applyLifecycleBoost(results []SearchResult, now time.Time) []SearchResult {
 		// exclusive: low_signal is the explicit flag and wins; the
 		// quality-score band is a softer fallback for memories scored below
 		// threshold that were never flagged. Multiplying both stacked to
-		// ~0.0045 and effectively erased legitimate hits.
-		demoted := false
+		// ~0.0045 and effectively erased legitimate hits. Age decay is
+		// applyTemporalDecay's job.
 		switch {
 		case meta.CurationStatus == CurationStatusLowSignal:
 			results[i].Score *= 0.03
-			demoted = true
 		case meta.QualityScore > 0 && meta.QualityScore < RemoteQualityThreshold && !meta.Pinned:
 			results[i].Score *= 0.15
-			demoted = true
-		}
-
-		// Age decay (Feature E): memories that were never drawn on fade
-		// gently with age instead of competing forever at full strength.
-		// Computed at search time — nothing is written back, so the decay is
-		// trivially reversible and never violates the "importance is only
-		// initialized, never reduced" rule. Reinforcement (any recorded use)
-		// resets the clock; pinned memories never decay, and decay never
-		// stacks on an already-demoted memory (the 0.5.8 lesson: stacked
-		// multipliers erase legitimate hits).
-		// A zero CreatedAt means "unknown", not "ancient" — never decay on it.
-		if !meta.Pinned && !demoted && !results[i].Memory.CreatedAt.IsZero() {
-			last := results[i].Memory.CreatedAt
-			if meta.LastUsedAt != "" {
-				if t, err := time.Parse(time.RFC3339, meta.LastUsedAt); err == nil && t.After(last) {
-					last = t
-				}
-			}
-			switch age := now.Sub(last); {
-			case age > decayStaleAge:
-				results[i].Score *= decayStaleFactor
-			case age > decayAgingAge:
-				results[i].Score *= decayAgingFactor
-			}
 		}
 
 		switch meta.Kind {
@@ -692,6 +713,14 @@ func categoryDecayMultiplier(category string) float64 {
 	}
 }
 
+// applyTemporalDecay is the only age decay: exponential in the days since the
+// memory was created or last used, whichever is later, with a half-life that
+// grows for durable categories. Nothing is written back, so it is trivially
+// reversible. Pinned memories never decay. Demoted ones do: sparing them made
+// an old demoted memory outrank a legitimate one of the same age. (The 0.5.8
+// lesson about stacked multipliers was about a banded decay on top of the
+// demotion erasing legitimate hits; this one only orders memories by age.)
+// A zero CreatedAt means unknown, not ancient.
 func (h *HybridSearcher) applyTemporalDecay(results []SearchResult, cfg HybridSearchConfig) []SearchResult {
 	if !cfg.TemporalDecayEnabled || len(results) == 0 {
 		return results
@@ -704,13 +733,26 @@ func (h *HybridSearcher) applyTemporalDecay(results []SearchResult, cfg HybridSe
 	now := time.Now()
 
 	for i := range results {
-		halfLife := baseHalfLife * categoryDecayMultiplier(results[i].Memory.Category)
-		lambda := math.Log(2) / halfLife
-		ageDays := now.Sub(results[i].Memory.CreatedAt).Hours() / 24
+		m := results[i].Memory
+		if m.CreatedAt.IsZero() {
+			continue
+		}
+		meta := ParseMetadata(m.Metadata)
+		if meta.Pinned {
+			continue
+		}
+		last := m.CreatedAt
+		if meta.LastUsedAt != "" {
+			if t, err := time.Parse(time.RFC3339, meta.LastUsedAt); err == nil && t.After(last) {
+				last = t
+			}
+		}
+		halfLife := baseHalfLife * categoryDecayMultiplier(m.Category)
+		ageDays := now.Sub(last).Hours() / 24
 		if ageDays < 0 {
 			ageDays = 0
 		}
-		results[i].Score *= math.Exp(-lambda * ageDays)
+		results[i].Score *= math.Exp(-math.Ln2 / halfLife * ageDays)
 	}
 
 	return results

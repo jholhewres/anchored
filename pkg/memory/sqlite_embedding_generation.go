@@ -169,6 +169,7 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 	}
 	if projected {
 		s.cache.Put(record.MemoryID, record.Vector)
+		s.refreshVectorScope(ctx, record.MemoryID)
 	}
 	return nil
 }
@@ -478,7 +479,55 @@ func (s *SQLiteStore) loadEmbeddingGeneration(ctx context.Context, generationID 
 		}
 		vectors[id] = vector
 	}
-	return vectors, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.refreshVectorScopes(ctx); err != nil {
+		return nil, err
+	}
+	return vectors, nil
+}
+
+// refreshVectorScopes records every live memory's project in the vector
+// cache, so scoped vector search can take its top-k inside the scope. It runs
+// with every generation load, the only time the cache is filled in bulk.
+func (s *SQLiteStore) refreshVectorScopes(ctx context.Context) error {
+	if s.cache == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, COALESCE(project_id, '') FROM memories WHERE deleted_at IS NULL`)
+	if err != nil {
+		return fmt.Errorf("load vector scopes: %w", err)
+	}
+	defer rows.Close()
+	scopes := make(map[string]string)
+	for rows.Next() {
+		var id, project string
+		if err := rows.Scan(&id, &project); err != nil {
+			return fmt.Errorf("load vector scopes: %w", err)
+		}
+		scopes[id] = project
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("load vector scopes: %w", err)
+	}
+	s.cache.SetScopes(scopes)
+	return nil
+}
+
+// refreshVectorScope records one memory's project after its vector changed.
+// A failed lookup leaves the scope unknown, which only widens the candidates.
+func (s *SQLiteStore) refreshVectorScope(ctx context.Context, id string) {
+	if s.cache == nil {
+		return
+	}
+	var project string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(project_id, '') FROM memories WHERE id = ?`, id).Scan(&project); err != nil {
+		return
+	}
+	s.cache.SetScope(id, project)
 }
 
 func scanEmbeddingGeneration(scanner revisionScanner) (*EmbeddingGeneration, error) {
