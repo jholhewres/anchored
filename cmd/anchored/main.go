@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Version is overridden at build time via `-ldflags -X main.Version=$(cat VERSION)`
@@ -89,13 +90,27 @@ func main() {
 		runMigrate(os.Args[2:])
 	case "project":
 		runProject(os.Args[2:])
-	case "--version", "-v":
+	case "version", "--version", "-v":
 		fmt.Printf("anchored %s\n", Version)
-	case "--help", "-h":
+	case "--help", "-h", "help":
 		printUsage()
 	default:
+		if !unrecognisedArgIsServe(os.Args[1]) {
+			fmt.Fprintf(os.Stderr, "anchored: unknown command %q\n\n", os.Args[1])
+			printUsage()
+			os.Exit(2)
+		}
 		runServe(os.Args[1:])
 	}
+}
+
+// unrecognisedArgIsServe reports whether a first argument that matched no
+// subcommand still means the MCP server: clients register a bare `anchored`
+// and some pass flags first (`anchored --config x`). Any other word is a
+// mistyped or unknown command, which must not boot a server (ONNX, workers,
+// a writer on the database) in its place.
+func unrecognisedArgIsServe(arg string) bool {
+	return strings.HasPrefix(arg, "-")
 }
 
 func printUsage() {
@@ -141,7 +156,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  anchored maintenance run    Periodic upkeep: import + dream + curation reconcile\n")
 	fmt.Fprintf(os.Stderr, "  anchored maintenance install  Install upkeep as a systemd --user daily timer\n")
 	fmt.Fprintf(os.Stderr, "  anchored project consolidate  Fold worktree projects into their repository (dry run by default)\n")
-	fmt.Fprintf(os.Stderr, "  anchored --version          Print version\n")
+	fmt.Fprintf(os.Stderr, "  anchored version            Print version\n")
 	fmt.Fprintf(os.Stderr, "\nImport sources: claude-code devclaw opencode cursor all\n")
 	fmt.Fprintf(os.Stderr, "\nFlags:\n")
 	fmt.Fprintf(os.Stderr, "  --config <path>   Use specific config file\n")
