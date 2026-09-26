@@ -295,6 +295,14 @@ type EmbeddingConfig struct {
 	ModelDir   string `yaml:"model_dir"`
 	Quantize   bool   `yaml:"quantize"`
 	Dimensions int    `yaml:"dimensions"`
+	// HoldUpgrade keeps a rebuilt embedding generation from replacing the
+	// active one even after it passes every check; the new one keeps being
+	// built and kept current. Off by default.
+	HoldUpgrade bool `yaml:"hold_upgrade"`
+	// ConfirmUpgrade stands in for the "no binary older than v0.20 holds the
+	// database" check where it cannot run (no /proc: macOS, Windows): set it
+	// once every client is upgraded.
+	ConfirmUpgrade bool `yaml:"confirm_upgrade"`
 }
 
 type SearchConfig struct {

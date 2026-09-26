@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/mcp"
+	"github.com/jholhewres/anchored/pkg/memory"
 )
 
 // formatV renders a version string with exactly one leading "v", regardless
@@ -68,7 +71,7 @@ func runDoctor(args []string) {
 	checkBinary(home)
 	checkONNX(cfg.Embedding.ModelDir)
 	checkModelLabel(cfg.Embedding.Model, cfg.Embedding.ModelDir)
-	checkDatabase(cfg.Memory.DatabasePath, cfg.Embedding.Dimensions)
+	checkDatabase(cfg.Memory.DatabasePath, cfg.Embedding.Dimensions, cfg.Embedding)
 	checkMCPRegistration(home, *cwd)
 	checkConfig(home, cfg)
 	checkCursorActivation(home)
@@ -140,7 +143,7 @@ func checkONNX(modelDir string) {
 	}
 }
 
-func checkDatabase(dbPath string, expectedDims int) {
+func checkDatabase(dbPath string, expectedDims int, emb config.EmbeddingConfig) {
 	if _, err := os.Stat(dbPath); err != nil {
 		printCheck(false, "database file", err.Error(),
 			"run 'anchored serve' or any subcommand to initialize")
@@ -207,6 +210,59 @@ func checkDatabase(dbPath string, expectedDims int) {
 			recordCheck("warn", detail, "embedding coverage below 80% threshold", "anchored backfill", false)
 		}
 	}
+	// Counting a generation's vectors reads every vector row (the blob sits
+	// with the content hash it is checked against): ~6 s on an 84k-memory
+	// database with a cold cache, so it gets its own budget.
+	genCtx, genCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer genCancel()
+	checkEmbeddingGenerations(genCtx, db, emb)
+}
+
+// checkEmbeddingGenerations reports the active embedding generation and any
+// generation being built to replace it (the v0.20 pipeline upgrade).
+func checkEmbeddingGenerations(ctx context.Context, db *sql.DB, emb config.EmbeddingConfig) {
+	reports, err := memory.ReportEmbeddingGenerations(ctx, db, 200)
+	if err != nil {
+		recordCheck("warn", "embedding generations", err.Error(), "", false)
+		return
+	}
+	building := false
+	for _, g := range reports {
+		building = building || g.State == memory.EmbeddingGenerationBuilding
+	}
+	for _, g := range reports {
+		health := "not measured"
+		if !math.IsNaN(g.Health) {
+			health = fmt.Sprintf("mean cosine %.2f", g.Health)
+		}
+		detail := fmt.Sprintf("embedding generation %s %s: %d/%d vectors (%.0f%%), %s",
+			shortGenerationID(g.ID), g.State, g.Vectors, g.Live, g.Coverage(), health)
+		switch {
+		case g.State == memory.EmbeddingGenerationActive && !math.IsNaN(g.Health) && g.Health > memory.EmbeddingHealthMaxMean:
+			fix := "restart anchored v0.20+ to start rebuilding it"
+			if building {
+				fix = "a replacement is being built (see below); search keeps using this one until then"
+			}
+			recordCheck("warn", detail, fmt.Sprintf("vector space collapsed (> %.2f): semantic search ranks poorly", memory.EmbeddingHealthMaxMean), fix, false)
+		case g.State == memory.EmbeddingGenerationBuilding && g.Vectors >= g.Live:
+			printCheck(true, detail, "", "")
+			if emb.HoldUpgrade {
+				recordCheck("warn", "  ready, but held by embedding.hold_upgrade", "search keeps using the active generation", "set embedding.hold_upgrade: false to let it switch", false)
+				break
+			}
+			printCheck(true, fmt.Sprintf("  ready: it replaces the active one once no process older than %s holds the database (anchored doctor --processes) and its mean cosine is ≤ %.2f",
+				memory.IrreversibleStepsMinVersion, memory.EmbeddingHealthMaxMean), "", "")
+		default:
+			printCheck(true, detail, "", "")
+		}
+	}
+}
+
+func shortGenerationID(id string) string {
+	if len(id) > 12 {
+		return id[:12] + "…"
+	}
+	return id
 }
 
 type mcpProbe struct {

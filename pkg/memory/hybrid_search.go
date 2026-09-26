@@ -52,6 +52,10 @@ type HybridSearcher struct {
 	generationMu        sync.RWMutex
 	generationAware     bool
 	activeIdentity      *EmbeddingIdentity
+	// queryEmbedder embeds queries for the active generation. It is the
+	// legacy pipeline while a legacy generation serves, embedder otherwise;
+	// it changes together with activeIdentity, under generationMu.
+	queryEmbedder EmbeddingProvider
 }
 
 func NewHybridSearcher(store Store, embedder EmbeddingProvider, cache *EmbeddingCache, vectorCache *VectorCache, cfg HybridSearchConfig, entityDetector *EntityDetector, topicChangeDetector *TopicChangeDetector, logger *slog.Logger) *HybridSearcher {
@@ -65,9 +69,16 @@ func NewHybridSearcher(store Store, embedder EmbeddingProvider, cache *Embedding
 // contract. A nil identity intentionally disables vectors (BM25-only) while a
 // compatible generation is being built.
 func (h *HybridSearcher) UseEmbeddingGeneration(identity *EmbeddingIdentity) {
+	h.useEmbeddingGenerationWith(identity, nil)
+}
+
+// useEmbeddingGenerationWith is UseEmbeddingGeneration with the provider that
+// embeds queries for that generation (nil: the searcher's embedder).
+func (h *HybridSearcher) useEmbeddingGenerationWith(identity *EmbeddingIdentity, provider EmbeddingProvider) {
 	h.generationMu.Lock()
 	h.generationAware = true
 	h.activeIdentity = nil
+	h.queryEmbedder = provider
 	if identity != nil {
 		copy := *identity
 		h.activeIdentity = &copy
@@ -77,17 +88,19 @@ func (h *HybridSearcher) UseEmbeddingGeneration(identity *EmbeddingIdentity) {
 
 func (h *HybridSearcher) publishEmbeddingGeneration(
 	identity EmbeddingIdentity,
+	provider EmbeddingProvider,
 	publish func(func(map[string][]float32) error) error,
 ) error {
 	h.generationMu.Lock()
 	defer h.generationMu.Unlock()
 	err := publish(func(vectors map[string][]float32) error {
 		if h.vectorCache != nil {
-			h.vectorCache.Replace(vectors)
+			h.vectorCache.ReplaceSpace(identity.SemanticSpaceID(), vectors)
 		}
 		copy := identity
 		h.generationAware = true
 		h.activeIdentity = &copy
+		h.queryEmbedder = provider
 		return nil
 	})
 	return err
@@ -247,6 +260,10 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 		copy := *h.activeIdentity
 		identity = &copy
 	}
+	embedder := h.embedder
+	if h.queryEmbedder != nil {
+		embedder = h.queryEmbedder
+	}
 	if generationAware {
 		// Hold the semantic-space read lock through query embedding and cache
 		// scoring. Activation publishes cache + identity under the write lock,
@@ -266,9 +283,9 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query string, maxResu
 	var queryVecs [][]float32
 	var err error
 	if generationAware {
-		queryVecs, err = EmbedForPurpose(ctx, h.embedder, EmbeddingPurposeQuery, []string{query})
+		queryVecs, err = EmbedForPurpose(ctx, embedder, EmbeddingPurposeQuery, []string{query})
 	} else {
-		queryVecs, err = h.embedder.Embed(ctx, []string{query})
+		queryVecs, err = embedder.Embed(ctx, []string{query})
 	}
 	if err != nil {
 		return nil, err

@@ -37,6 +37,7 @@ type ImportRecord struct {
 type SQLiteStore struct {
 	db                    *sql.DB
 	cache                 *VectorCache
+	path                  string
 	logger                *slog.Logger
 	now                   func() time.Time
 	embeddingGenerationMu sync.Mutex
@@ -66,7 +67,7 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 	}
 
 	cache := NewVectorCache(logger)
-	store := &SQLiteStore{db: db, cache: cache, logger: logger, now: time.Now}
+	store := &SQLiteStore{db: db, cache: cache, logger: logger, now: time.Now, path: dbPath}
 
 	// The active generation is deliberately NOT loaded here. NewService calls
 	// ensureCurrentEmbeddingGeneration immediately afterwards, which republishes
@@ -77,6 +78,9 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 
 	return store, nil
 }
+
+// Path is the database file the store was opened on.
+func (s *SQLiteStore) Path() string { return s.path }
 
 // WarmVectorCache fills the cache from the active generation. NewSQLiteStore
 // deliberately leaves it empty — a Service republishes the same generation
@@ -95,7 +99,7 @@ func (s *SQLiteStore) WarmVectorCache(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("active embedding generation load: %w", err)
 	}
-	s.cache.Replace(vectors)
+	s.cache.ReplaceSpace(active.SemanticSpaceID, vectors)
 	s.logger.Info("active embedding generation loaded", "generation", active.ID, "count", len(vectors))
 	return nil
 }
@@ -517,6 +521,11 @@ func (s *SQLiteStore) refreshVectorCache(ctx context.Context, id string) {
 	active, err := s.ActiveEmbeddingGeneration(ctx)
 	if err != nil {
 		s.cache.Remove(id)
+		return
+	}
+	if active != nil && s.cache.Space() != "" && s.cache.Space() != active.SemanticSpaceID {
+		// This process still serves another generation until it rebinds; a
+		// vector from the active one would be scored in the wrong space.
 		return
 	}
 

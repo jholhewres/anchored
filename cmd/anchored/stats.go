@@ -54,6 +54,21 @@ func runStats(args []string) {
 		}
 	}
 
+	if up, err := svc.EmbeddingUpgrade(ctx); err == nil && up.BuildingGeneration != "" {
+		fmt.Println("\nEmbedding upgrade:")
+		served := "no generation active: semantic search is off until it completes"
+		if up.ActiveGeneration != "" {
+			served = "search keeps using " + up.ActiveGeneration
+			if up.ServedByLegacy {
+				served += " (legacy pipeline)"
+			}
+		}
+		fmt.Printf("  building %s: %d live memories still to embed; %s\n", up.BuildingGeneration, up.Missing, served)
+		if up.HeldBecause != "" && up.Missing == 0 {
+			fmt.Printf("  held: %s\n", up.HeldBecause)
+		}
+	}
+
 	derivedWork, err := svc.DerivedWorkHealth(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "derived work stats unavailable: %v\n", err)

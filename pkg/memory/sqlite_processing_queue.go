@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,19 @@ func (s *SQLiteStore) ClaimProcessingJob(
 	now time.Time,
 	lease time.Duration,
 ) (*ProcessingJob, error) {
+	return s.ClaimProcessingJobIn(ctx, kind, owner, nil, now, lease)
+}
+
+// ClaimProcessingJobIn is ClaimProcessingJob restricted to jobs of the given
+// generations (all of them when empty): a worker only takes the jobs it can
+// embed, and leaves the others pending for a process that can.
+func (s *SQLiteStore) ClaimProcessingJobIn(
+	ctx context.Context,
+	kind, owner string,
+	generations []string,
+	now time.Time,
+	lease time.Duration,
+) (*ProcessingJob, error) {
 	if owner == "" || lease <= 0 {
 		return nil, fmt.Errorf("processing claim requires owner and positive lease")
 	}
@@ -79,6 +93,12 @@ func (s *SQLiteStore) ClaimProcessingJob(
 	if kind != "" {
 		query += " AND kind = ?"
 		args = append(args, kind)
+	}
+	if len(generations) > 0 {
+		query += " AND generation IN (?" + strings.Repeat(", ?", len(generations)-1) + ")"
+		for _, g := range generations {
+			args = append(args, g)
+		}
 	}
 	query += " ORDER BY created_at ASC, id ASC LIMIT 1"
 	var id string

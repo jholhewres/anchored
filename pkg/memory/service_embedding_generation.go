@@ -55,10 +55,27 @@ func (s *Service) ensureEmbeddingGeneration(ctx context.Context, warmAsync bool)
 	if err != nil {
 		return err
 	}
+	var legacy EmbeddingProvider
+	if active != nil && !active.Identity.Compatible(identity) {
+		// Built by the legacy pipeline of the same model? Then it keeps
+		// answering queries while the current pipeline's generation builds.
+		legacy = s.legacyProviderFor(active)
+	}
 
 	publish := func(ctx context.Context) error {
 		if active != nil && active.Identity.Compatible(identity) {
 			if err := s.enableEmbeddingGeneration(ctx, generations, active); err != nil {
+				return err
+			}
+		} else if legacy != nil {
+			s.logger.Info("building a new embedding generation; the legacy one keeps serving search",
+				"active_generation", active.ID, "building_generation", generation.ID)
+			if err := s.enableEmbeddingGeneration(ctx, generations, active); err != nil {
+				return err
+			}
+			// Saves made while no v0.20 process ran still need their vectors in
+			// the generation that answers queries until the switch.
+			if _, err := s.ensureGenerationJobs(ctx, generations, active.ID); err != nil {
 				return err
 			}
 		} else {
@@ -81,14 +98,15 @@ func (s *Service) ensureEmbeddingGeneration(ctx context.Context, warmAsync bool)
 				)
 			}
 			if cache := s.store.VectorCache(); cache != nil {
-				cache.Replace(nil)
+				cache.ReplaceSpace("", nil)
 			}
+			s.setServedGeneration("")
 			if s.searcher != nil {
 				s.searcher.UseEmbeddingGeneration(nil)
 			}
 		}
 
-		if _, err := generations.EnsureEmbeddingGenerationJobs(ctx, generation.ID, 0); err != nil {
+		if _, err := s.ensureGenerationJobs(ctx, generations, generation.ID); err != nil {
 			return err
 		}
 		_, err := s.tryActivateEmbeddingGeneration(ctx, generations, generation.ID)
@@ -157,6 +175,17 @@ func (s *Service) currentEmbeddingIdentity() (EmbeddingIdentity, bool) {
 	return identity, generationID != ""
 }
 
+// ensureGenerationJobs reconciles the durable jobs that embed into
+// generationID, under the job kind its pipeline uses.
+func (s *Service) ensureGenerationJobs(ctx context.Context, generations EmbeddingGenerationStore, generationID string) (int, error) {
+	if kinded, ok := generations.(interface {
+		EnsureEmbeddingGenerationJobsOfKind(ctx context.Context, generationID, kind string, limit int) (int, error)
+	}); ok {
+		return kinded.EnsureEmbeddingGenerationJobsOfKind(ctx, generationID, s.jobKindFor(generationID), 0)
+	}
+	return generations.EnsureEmbeddingGenerationJobs(ctx, generationID, 0)
+}
+
 func (s *Service) enableEmbeddingGeneration(
 	ctx context.Context,
 	generations EmbeddingGenerationStore,
@@ -165,29 +194,43 @@ func (s *Service) enableEmbeddingGeneration(
 	if generation == nil {
 		return fmt.Errorf("active embedding generation is nil")
 	}
-	identity, ok := s.currentEmbeddingIdentity()
-	if !ok || !generation.Identity.Compatible(identity) {
+	provider := s.providerFor(generation.Identity)
+	if provider == nil {
 		return fmt.Errorf("active embedding generation is incompatible with configured provider")
 	}
 	if publisher, ok := s.store.(EmbeddingGenerationPublicationStore); ok && s.searcher != nil {
-		return s.searcher.publishEmbeddingGeneration(generation.Identity,
+		if err := s.searcher.publishEmbeddingGeneration(generation.Identity, provider,
 			func(publish func(map[string][]float32) error) error {
 				return publisher.PublishEmbeddingGeneration(
 					ctx, generation.ID, false, publish,
 				)
-			})
+			}); err != nil {
+			return err
+		}
+		s.servingGeneration(generation.ID)
+		return nil
 	}
 	vectors, err := generations.LoadEmbeddingGeneration(ctx, generation.ID)
 	if err != nil {
 		return err
 	}
 	if cache := s.store.VectorCache(); cache != nil {
-		cache.Replace(vectors)
+		cache.ReplaceSpace(generation.SemanticSpaceID, vectors)
 	}
 	if s.searcher != nil {
-		s.searcher.UseEmbeddingGeneration(&generation.Identity)
+		s.searcher.useEmbeddingGenerationWith(&generation.Identity, provider)
 	}
+	s.servingGeneration(generation.ID)
 	return nil
+}
+
+// servingGeneration records the generation this process now answers queries
+// from, and drops the legacy pipeline once that is no longer the legacy one.
+func (s *Service) servingGeneration(generationID string) {
+	s.setServedGeneration(generationID)
+	if legacy := s.legacyGenerationID(); legacy != "" && legacy != generationID {
+		s.retireLegacyPipeline()
+	}
 }
 
 func (s *Service) tryActivateEmbeddingGeneration(
@@ -205,11 +248,39 @@ func (s *Service) tryActivateEmbeddingGeneration(
 	if generation.State != EmbeddingGenerationBuilding {
 		return false, nil
 	}
-	if _, err := generations.EnsureEmbeddingGenerationJobs(ctx, generationID, 0); err != nil {
+	// Only the current pipeline's generation is ever activated here: a
+	// building generation of another space (a legacy one revived by an older
+	// binary, one of a newer release) is not this process's to switch to.
+	if generationID != s.currentEmbeddingGenerationID() {
+		return false, nil
+	}
+	provider := s.providerFor(generation.Identity)
+	if provider == nil {
+		return false, nil
+	}
+	if _, err := s.ensureGenerationJobs(ctx, generations, generationID); err != nil {
 		return false, err
 	}
+	// Replacing an active generation is a one-way step for every process that
+	// can only query the old space: it waits for the upgrade gates.
+	if active, err := generations.ActiveEmbeddingGeneration(ctx); err != nil {
+		return false, err
+	} else if active != nil && active.ID != generationID {
+		reason, health, err := s.upgradeGate(ctx, generations, generation)
+		if err != nil {
+			return false, err
+		}
+		if reason != "" {
+			if s.upgradeLog.changed(reason) {
+				s.logger.Info("embedding generation upgrade held", "generation", generationID, "reason", reason)
+			}
+			return false, nil
+		}
+		s.logger.Info("activating embedding generation", "generation", generationID,
+			"replaces", active.ID, "mean_cosine", health)
+	}
 	if publisher, ok := s.store.(EmbeddingGenerationPublicationStore); ok && s.searcher != nil {
-		err := s.searcher.publishEmbeddingGeneration(generation.Identity,
+		err := s.searcher.publishEmbeddingGeneration(generation.Identity, provider,
 			func(publish func(map[string][]float32) error) error {
 				return publisher.PublishEmbeddingGeneration(
 					ctx, generationID, true, publish,
@@ -221,6 +292,7 @@ func (s *Service) tryActivateEmbeddingGeneration(
 		if err != nil {
 			return false, err
 		}
+		s.servingGeneration(generationID)
 		return true, nil
 	}
 	if err := generations.ActivateEmbeddingGeneration(ctx, generationID); err != nil {
@@ -248,12 +320,12 @@ func (s *Service) embedRevisionForGeneration(
 	if generation == nil || revision == nil {
 		return fmt.Errorf("embedding generation and revision are required")
 	}
-	identity, ok := s.currentEmbeddingIdentity()
-	if !ok || !generation.Identity.Compatible(identity) {
+	provider := s.providerFor(generation.Identity)
+	if provider == nil {
 		return fmt.Errorf("embedding generation %q is incompatible with configured provider", generation.ID)
 	}
 	vectors, err := EmbedForPurpose(
-		ctx, s.embedder, EmbeddingPurposeDocument,
+		ctx, provider, EmbeddingPurposeDocument,
 		[]string{revision.Memory.Content},
 	)
 	if err != nil {

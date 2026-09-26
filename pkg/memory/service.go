@@ -38,6 +38,24 @@ type Service struct {
 	embeddingMu     sync.RWMutex
 	embeddingID     EmbeddingIdentity
 	embeddingGenID  string
+
+	// legacyEmbedder is the legacy pipeline of the embedder, loaded while the
+	// active generation is one it built: it answers queries against that
+	// generation and embeds new saves into it until the generation of the
+	// current pipeline replaces it (embedding_upgrade.go).
+	legacyEmbedder          EmbeddingProvider
+	legacyID                EmbeddingIdentity
+	legacyGenID             string
+	servedGenID             string // generation answering queries; under embeddingMu
+	holdEmbeddingUpgrade    bool
+	confirmEmbeddingUpgrade bool
+	upgradeLog              upgradeLog
+	healthMu                sync.Mutex
+	healthGen               string
+	healthAt                time.Time
+	healthVal               float64
+	healthSampled           int
+	lastActivationTry       time.Time // worker goroutine only
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -61,6 +79,9 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 		logger:    logger,
 		embedSem:  make(chan struct{}, 10),
 		shutdown:  make(chan struct{}),
+
+		holdEmbeddingUpgrade:    cfg.Embedding.HoldUpgrade,
+		confirmEmbeddingUpgrade: cfg.Embedding.ConfirmUpgrade,
 	}
 
 	// provider "none" disables embeddings entirely (BM25-only search). It
@@ -75,7 +96,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	if cfg.Embedding.Provider == "none" {
 		logger.Info("embeddings disabled (provider: none), search will be BM25-only")
 	} else {
-		e, err := NewONNXEmbedder(cfg.Embedding.ModelDir, logger)
+		e, err := NewONNXEmbedderV2(cfg.Embedding.ModelDir, logger)
 		if err != nil {
 			logger.Warn("ONNX embedder not available, search will be BM25-only", "error", err)
 		} else {
@@ -850,6 +871,7 @@ func (s *Service) Close() {
 			close(s.shutdown)
 		}
 		s.wg.Wait()
+		s.retireLegacyPipeline()
 		if s.embedder != nil {
 			s.embedder.Close()
 		}

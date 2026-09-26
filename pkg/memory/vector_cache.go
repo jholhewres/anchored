@@ -38,7 +38,10 @@ type VectorCache struct {
 	// final word. A stale entry (a memory another process moved since, or a
 	// bulk refresh racing a single write) can still keep a memory out of the
 	// top-k of its new project until the next refresh.
-	scope  map[string]string
+	scope map[string]string
+	// space is the semantic space of the vectors held ("" when unknown), so
+	// a write for another space is never mixed in.
+	space  string
 	mu     sync.RWMutex
 	logger *slog.Logger
 
@@ -258,6 +261,21 @@ func (c *VectorCache) Remove(id string) {
 // independent, so it fans out across cores. The result is identical to the
 // sequential form: workers write to disjoint slice slots and the maps are built
 // once, in a single pass, afterwards.
+// ReplaceSpace is Replace for the vectors of one semantic space.
+func (c *VectorCache) ReplaceSpace(space string, vectors map[string][]float32) {
+	c.Replace(vectors)
+	c.mu.Lock()
+	c.space = space
+	c.mu.Unlock()
+}
+
+// Space is the semantic space of the cached vectors, "" when unknown.
+func (c *VectorCache) Space() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.space
+}
+
 func (c *VectorCache) Replace(vectors map[string][]float32) {
 	n := len(vectors)
 	ids := make([]string, 0, n)

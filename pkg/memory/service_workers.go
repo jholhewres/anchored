@@ -43,8 +43,13 @@ func (s *Service) durableProcessingSpecs(skipEmbed bool) []ProcessingJobSpec {
 			generation = s.embedder.Model()
 		}
 		specs = append(specs, ProcessingJobSpec{
-			Kind: embeddingJobKind, Generation: generation,
+			Kind: s.jobKindFor(generation), Generation: generation,
 		})
+		// While a legacy generation answers queries, new memories also go
+		// into it, so search stays complete until the switch.
+		if legacy := s.legacyGenerationID(); legacy != "" && legacy != generation {
+			specs = append(specs, ProcessingJobSpec{Kind: embeddingJobKind, Generation: legacy})
+		}
 	}
 	return specs
 }
@@ -127,7 +132,14 @@ func (s *Service) runDurableWorkers() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(processingPollEvery)
 	defer ticker.Stop()
+	lastGenerationCheck := time.Now()
 	for {
+		if time.Since(lastGenerationCheck) >= generationCheckEvery {
+			lastGenerationCheck = time.Now()
+			ctx, cancel := s.shutdownContext()
+			s.checkActiveGeneration(ctx)
+			cancel()
+		}
 		busy := s.drainDurableWork()
 		if busy {
 			// Backlog remains: rest briefly so background processing never
@@ -152,8 +164,10 @@ func (s *Service) drainDurableWork() (busy bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), processingLease)
 	defer cancel()
 	if s.embedder != nil {
-		if s.drainProcessingKind(ctx, embeddingJobKind) {
-			busy = true
+		for _, kind := range []string{embeddingJobKind, embeddingJobKindV2} {
+			if s.drainProcessingKind(ctx, kind) {
+				busy = true
+			}
 		}
 	}
 	s.deliveryMu.RLock()
@@ -176,7 +190,13 @@ func (s *Service) drainProcessingKind(ctx context.Context, kind string) (hitBatc
 	}
 	for processed := 0; processed < processingMaxBatchPerWake && ctx.Err() == nil; processed++ {
 		now := time.Now().UTC()
-		job, err := queue.ClaimProcessingJob(ctx, kind, s.workerOwner, now, processingLease)
+		var job *ProcessingJob
+		var err error
+		if scoped, ok := queue.(generationScopedClaimer); ok && isEmbeddingJobKind(kind) {
+			job, err = scoped.ClaimProcessingJobIn(ctx, kind, s.workerOwner, s.servedJobGenerations(), now, processingLease)
+		} else {
+			job, err = queue.ClaimProcessingJob(ctx, kind, s.workerOwner, now, processingLease)
+		}
 		if err != nil {
 			s.logger.Warn("claim durable processing job failed", "kind", kind, "error", err)
 			return false
@@ -230,7 +250,7 @@ func (s *Service) processClaimedJob(
 		return nil
 	}
 	switch job.Kind {
-	case embeddingJobKind:
+	case embeddingJobKind, embeddingJobKindV2:
 		if s.embedder == nil {
 			return fmt.Errorf("embedding provider unavailable")
 		}
@@ -249,15 +269,14 @@ func (s *Service) processClaimedJob(
 					return err
 				}
 			}
-			if generation == nil {
+			if generation == nil || generation.State == EmbeddingGenerationRetired {
 				return nil
 			}
-			identity, current := s.currentEmbeddingIdentity()
-			if !current || !generation.Identity.Compatible(identity) ||
-				generation.State == EmbeddingGenerationRetired {
-				// Never ask the configured provider to produce vectors for an
-				// unrelated semantic space. Reconciliation can requeue this
-				// revision if that identity becomes current again.
+			if s.providerFor(generation.Identity) == nil {
+				// The claim only takes jobs of the generations this process
+				// serves, so this is a pipeline that changed since. Finishing
+				// is safe: reconciliation re-arms a finished job whose vector
+				// is missing when a process that embeds this space runs it.
 				return nil
 			}
 			if err := s.embedRevisionForGeneration(ctx, generations, generation, revision); err != nil {
@@ -383,4 +402,30 @@ func (s *Service) drainRemoteOutbox(ctx context.Context) {
 			s.logger.Warn("record remote outbox failure failed", "operation_id", item.OperationID, "error", err)
 		}
 	}
+}
+
+// generationScopedClaimer claims only jobs of the given generations.
+type generationScopedClaimer interface {
+	ClaimProcessingJobIn(ctx context.Context, kind, owner string, generations []string, now time.Time, lease time.Duration) (*ProcessingJob, error)
+}
+
+func isEmbeddingJobKind(kind string) bool {
+	return kind == embeddingJobKind || kind == embeddingJobKindV2
+}
+
+// servedJobGenerations lists the generations this process embeds into: the
+// current pipeline's, the legacy one it serves (if any), and the model name
+// jobs written before generations existed carry.
+func (s *Service) servedJobGenerations() []string {
+	out := []string{}
+	if g := s.currentEmbeddingGenerationID(); g != "" {
+		out = append(out, g)
+	}
+	if g := s.legacyGenerationID(); g != "" {
+		out = append(out, g)
+	}
+	if s.embedder != nil {
+		out = append(out, s.embedder.Model())
+	}
+	return out
 }

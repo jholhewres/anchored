@@ -167,7 +167,10 @@ func (s *SQLiteStore) PutEmbeddingVector(ctx context.Context, record EmbeddingVe
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit embedding vector: %w", err)
 	}
-	if projected {
+	// Project into the in-process cache only when it holds this space: a
+	// process still serving another generation (the legacy one, until it
+	// rebinds) must not score a vector from this one.
+	if projected && (s.cache.Space() == "" || s.cache.Space() == record.SemanticSpaceID) {
 		s.cache.Put(record.MemoryID, record.Vector)
 		s.refreshVectorScope(ctx, record.MemoryID)
 	}
@@ -229,6 +232,13 @@ func (s *SQLiteStore) CountMissingEmbeddingRevisions(ctx context.Context, genera
 // revision/generation uniqueness constraint makes it safe to call at startup,
 // after every write, and after a worker interruption.
 func (s *SQLiteStore) EnsureEmbeddingGenerationJobs(ctx context.Context, generationID string, limit int) (int, error) {
+	return s.EnsureEmbeddingGenerationJobsOfKind(ctx, generationID, embeddingJobKind, limit)
+}
+
+// EnsureEmbeddingGenerationJobsOfKind is EnsureEmbeddingGenerationJobs with
+// the job kind named: a generation built by the v2 pipeline uses its own kind
+// (embeddingJobKindV2) so binaries before v0.20 never claim its jobs.
+func (s *SQLiteStore) EnsureEmbeddingGenerationJobsOfKind(ctx context.Context, generationID, kind string, limit int) (int, error) {
 	generation, err := s.EmbeddingGeneration(ctx, generationID)
 	if err != nil {
 		return 0, err
@@ -239,7 +249,7 @@ func (s *SQLiteStore) EnsureEmbeddingGenerationJobs(ctx context.Context, generat
 	if generation.State != EmbeddingGenerationBuilding && generation.State != EmbeddingGenerationActive {
 		return 0, nil
 	}
-	revisions, err := s.listRevisionsNeedingEmbeddingJob(ctx, generationID, limit)
+	revisions, err := s.listRevisionsNeedingEmbeddingJob(ctx, generationID, kind, limit)
 	if err != nil || len(revisions) == 0 {
 		return 0, err
 	}
@@ -260,7 +270,7 @@ func (s *SQLiteStore) EnsureEmbeddingGenerationJobs(ctx context.Context, generat
 			next_attempt_at = NULL, last_error = NULL, completed_at = NULL,
 			updated_at = excluded.updated_at
 		WHERE memory_processing_jobs.state = 'done'`,
-			newUUID(), revision.RevisionID, revision.MemoryID, embeddingJobKind,
+			newUUID(), revision.RevisionID, revision.MemoryID, kind,
 			generationID, now.UnixNano(), now.UnixNano())
 		if err != nil {
 			return 0, fmt.Errorf("reconcile embedding job: %w", err)
@@ -278,7 +288,7 @@ func (s *SQLiteStore) EnsureEmbeddingGenerationJobs(ctx context.Context, generat
 
 func (s *SQLiteStore) listRevisionsNeedingEmbeddingJob(
 	ctx context.Context,
-	generationID string,
+	generationID, kind string,
 	limit int,
 ) ([]MemoryRevision, error) {
 	if limit <= 0 {
@@ -303,7 +313,7 @@ func (s *SQLiteStore) listRevisionsNeedingEmbeddingJob(
 			  AND j.state IN ('pending', 'processing', 'failed')
 		  )
 		ORDER BY r.system_from, r.revision_id
-		LIMIT ?`, generationID, embeddingJobKind, generationID, limit)
+		LIMIT ?`, generationID, kind, generationID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list revisions needing embedding jobs: %w", err)
 	}
@@ -319,9 +329,56 @@ func (s *SQLiteStore) listRevisionsNeedingEmbeddingJob(
 	return revisions, rows.Err()
 }
 
+// HasPendingEmbeddingJobs reports whether a job embedding into the generation
+// still waits to be claimed (the claim index answers it). Running jobs are not
+// counted: the gate runs inside the last one, whose vector is already stored,
+// and the others show up as memories still missing a vector.
+func (s *SQLiteStore) HasPendingEmbeddingJobs(ctx context.Context, generationID string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memory_processing_jobs
+		WHERE state = 'pending' AND kind IN (?, ?) AND generation = ?
+		LIMIT 1`, embeddingJobKind, embeddingJobKindV2, generationID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// HasMissingEmbeddingRevisions reports whether a live memory still lacks a
+// current vector in the generation. It stops at the first one found.
+func (s *SQLiteStore) HasMissingEmbeddingRevisions(ctx context.Context, generationID string) (bool, error) {
+	var missing bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM memories m
+		JOIN memory_revisions r ON r.revision_id = m.current_revision_id
+		WHERE m.deleted_at IS NULL AND r.is_tombstone = FALSE
+		  AND NOT EXISTS (
+			SELECT 1 FROM memory_embedding_vectors v
+			WHERE v.revision_id = r.revision_id
+			  AND v.generation_id = ?
+			  AND v.purpose = 'document'
+			  AND v.content_hash = r.content_hash
+		  ))`, generationID).Scan(&missing)
+	return missing, err
+}
+
+// SampleEmbeddingVectors draws up to n document vectors of the generation's
+// live memories at random, for the health check.
+func (s *SQLiteStore) SampleEmbeddingVectors(ctx context.Context, generationID string, n int) ([][]float32, error) {
+	return sampleGenerationVectors(ctx, s.db, generationID, n)
+}
+
 func (s *SQLiteStore) ActivateEmbeddingGeneration(ctx context.Context, generationID string) error {
+	generation, err := s.EmbeddingGeneration(ctx, generationID)
+	if err != nil {
+		return err
+	}
+	space := ""
+	if generation != nil {
+		space = generation.SemanticSpaceID
+	}
 	return s.PublishEmbeddingGeneration(ctx, generationID, true, func(vectors map[string][]float32) error {
-		s.cache.Replace(vectors)
+		s.cache.ReplaceSpace(space, vectors)
 		return nil
 	})
 }
@@ -353,7 +410,11 @@ func (s *SQLiteStore) PublishEmbeddingGeneration(
 		return err
 	}
 	if publish == nil {
-		s.cache.Replace(vectors)
+		space := ""
+		if g, err := s.EmbeddingGeneration(ctx, generationID); err == nil && g != nil {
+			space = g.SemanticSpaceID
+		}
+		s.cache.ReplaceSpace(space, vectors)
 		return nil
 	}
 	return publish(vectors)
