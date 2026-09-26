@@ -8,6 +8,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Embeddings match the model again.** The tokenizer misread the
+  multilingual model's `tokenizer.json`. The whole text was one word, every
+  space became token id -1, and neither the Precompiled normalizer nor the
+  Viterbi segmentation ran. Every vector landed in a collapsed space: random
+  pairs of real memories had a mean cosine of 0.73. The tokenizer now matches
+  the HuggingFace reference on all 2,054 sentences of a golden set. On the
+  real-embedder eval, recall@5 goes from 0.171 to 0.380 and MRR@10 from 0.121
+  to 0.357; on the real corpus the mean cosine drops to 0.23.
+- **Upgrading re-embeds without switching semantic search off.**
+  - The new generation is built in the background. The existing one keeps
+    answering queries through the old pipeline, and new memories go into
+    both.
+  - The switch waits until the new generation covers every live memory, its
+    vectors are healthy (mean cosine ≤ 0.45), and no binary older than 0.20
+    holds the database. On macOS and Windows, which have no `/proc`, that last
+    check cannot run, so the switch waits for `embedding.confirm_upgrade:
+    true`.
+  - Every running process follows a switch made by another within 30
+    seconds. If an older binary brings the old generation back, the
+    processes follow it too and switch again once the checks pass.
+  - `embedding.hold_upgrade: true` keeps the old generation.
+  - `anchored doctor` and `anchored stats` show the progress.
+  - The upgrade applies to the multilingual model. An installation still on
+    the older English model keeps its current pipeline.
+- **BM25 no longer ranks the weakest lexical match first.** The score was
+  inverted, so the best full-text hit weighed least in the fusion.
+- **A project-scoped search includes global memories**, and the vector top-k
+  is taken inside the scope, so a small project is not crowded out by a large
+  one closer to the query.
+- **The same search returns the same ranking.** Diversification by session
+  happens before the cut to k, so a search no longer returns fewer results
+  than it could.
+- **One age decay:** exponential from the later of creation and last use.
+  Pinned memories do not decay.
+- **Queries:**
+  - words with punctuation (`node.js`, `config.yaml`, `foo-bar`) no longer
+    break the full-text expression; a broken one fell back to matching the
+    literal words "and"/"or";
+  - `a NEAR/5 b` works again;
+  - long pasted queries are cut to their first 32 words;
+  - prefix terms start at five letters;
+  - more Portuguese and Spanish function words are ignored;
+  - a memory covering every word of the query gets twice the score of one
+    matching only part of it;
+  - synonyms that matched unrelated memories were removed.
 - **Dream no longer deletes memories across projects.** Exact dedup grouped
   memories by content hash alone, so the same text saved in two projects
   counted as a duplicate and one project lost its copy. On the database that
