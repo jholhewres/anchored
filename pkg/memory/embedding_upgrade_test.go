@@ -470,12 +470,11 @@ func TestTryActivate_RefusesAGenerationThatIsNotTheCurrentOne(t *testing.T) {
 // register): it holds until the user confirms.
 func TestEmbeddingUpgrade_HoldsWhereProcessesCannotBeSeen(t *testing.T) {
 	ctx := context.Background()
+	store, legacy, legacyGen := legacyDatabase(t)
+	svc := newGenerationTestService(t, store, &bowEmbedder{seed: 2, revision: "v2", legacy: legacy})
 	old := procRoot
 	procRoot = filepath.Join(t.TempDir(), "no-proc")
 	t.Cleanup(func() { procRoot = old })
-
-	store, legacy, legacyGen := legacyDatabase(t)
-	svc := newGenerationTestService(t, store, &bowEmbedder{seed: 2, revision: "v2", legacy: legacy})
 	drainUpgrade(t, svc)
 	st, err := svc.EmbeddingUpgrade(ctx)
 	if err != nil {

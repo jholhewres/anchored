@@ -91,6 +91,12 @@ func newGenerationTestService(
 	embedder EmbeddingProvider,
 ) *Service {
 	t.Helper()
+	// An empty, readable process root: the pre-0.20 gate sees no holders on
+	// every platform (macOS has no /proc, where the gate would hold).
+	if procRoot == "/proc" {
+		procRoot = t.TempDir()
+		t.Cleanup(func() { procRoot = "/proc" })
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := &Service{
 		store:    store,
