@@ -103,13 +103,16 @@ var allMaintenanceSkipFlags = []string{
 // restores it when the test ends.
 func interceptMaintenanceSteps(t *testing.T) *[]string {
 	t.Helper()
-	original := runMaintenanceStep
+	original, originalExe := runMaintenanceStep, resolveMaintenanceExe
 	var spawned []string
 	runMaintenanceStep = func(cmd *exec.Cmd) error {
 		spawned = append(spawned, strings.Join(cmd.Args[1:], " "))
 		return nil
 	}
-	t.Cleanup(func() { runMaintenanceStep = original })
+	// Under go test the real lookup falls back to PATH, where CI has no
+	// anchored binary; the steps never run, so any path will do.
+	resolveMaintenanceExe = func() (string, error) { return "/nonexistent/anchored", nil }
+	t.Cleanup(func() { runMaintenanceStep, resolveMaintenanceExe = original, originalExe })
 	return &spawned
 }
 
