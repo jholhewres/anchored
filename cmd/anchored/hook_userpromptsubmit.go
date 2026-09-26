@@ -303,8 +303,10 @@ func autoRecallPreview(configPath, cwd, prompt, sessionID string, dlog *debuglog
 	return preview
 }
 
-// injectionWriteTimeout bounds the DB writes of injection tracking.
-const injectionWriteTimeout = 50 * time.Millisecond
+// injectionWriteTimeout bounds the DB writes of injection tracking. A var so
+// tests that assert the writes landed can lift it: on a loaded machine 50 ms
+// drops them, which the hook accepts and a count assertion does not.
+var injectionWriteTimeout = 50 * time.Millisecond
 
 // injectionTotalBudget is the hard wall-clock cap for the entire tracking
 // call, including config load and directory/DB setup that the inner context

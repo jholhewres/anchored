@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/debuglog"
@@ -690,6 +691,9 @@ func TestAutoRecallPreview_FailSafe(t *testing.T) {
 // injection. Uses a real config file + migrated DB so the write path matches
 // production.
 func TestRecordInjection_TracksWorkingSetAndCount(t *testing.T) {
+	old := injectionWriteTimeout
+	injectionWriteTimeout = 10 * time.Second
+	t.Cleanup(func() { injectionWriteTimeout = old })
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	cfgPath := filepath.Join(dir, "config.yaml")
