@@ -153,7 +153,7 @@ func installCursorHooks(homeDir string) error {
 		return fmt.Errorf("marshal %s: %w", path, err)
 	}
 
-	_ = os.WriteFile(path+".bak", data, 0644)
+	writeBackupFile(path, data)
 	if err := os.WriteFile(path, append(out, '\n'), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

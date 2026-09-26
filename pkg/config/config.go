@@ -390,6 +390,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
+	// The config carries remote API keys; an older writer or a manual edit
+	// may have left it group/world readable.
+	if changed, err := TightenPerm(path, PrivateFileMode); err != nil {
+		slog.Debug("could not tighten config permissions", "path", path, "error", err)
+	} else if changed {
+		slog.Info("tightened config permissions to 0600", "path", path)
+	}
+
 	cfg.migrateRemotes()
 
 	return expandPaths(cfg), nil

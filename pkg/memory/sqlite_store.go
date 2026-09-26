@@ -7,14 +7,19 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/jholhewres/anchored/pkg/config"
 )
 
 type ImportRecord struct {
@@ -38,6 +43,9 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
+	if err := KeepDatabasePrivate(dbPath); err != nil {
+		return nil, err
+	}
 	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate&_foreign_keys=on", dbPath)
 
 	db, err := sql.Open("sqlite3", dsn)
@@ -1064,4 +1072,33 @@ func (s *SQLiteStore) BackfillContentHash(ctx context.Context) (int, error) {
 		total++
 	}
 	return total, rows.Err()
+}
+
+// KeepDatabasePrivate makes the database owner-only. SQLite creates the file
+// with 0644 minus the umask, usually world-readable, and gives the WAL and SHM
+// the main file's mode; so a new database is created 0600 here before SQLite
+// opens it, and an existing one (with its WAL/SHM) has any group or other bit
+// removed. Modes are only ever tightened, directories and files owned by
+// someone else are left alone, and a failure to tighten (a read-only or
+// network mount) is a warning, never a reason not to open the store. Every
+// path that opens the database, hooks included, calls it.
+func KeepDatabasePrivate(dbPath string) error {
+	if dbPath == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return nil
+	}
+	f, err := os.OpenFile(dbPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, config.PrivateFileMode)
+	switch {
+	case err == nil:
+		_ = f.Close()
+	case !errors.Is(err, fs.ErrExist):
+		return fmt.Errorf("create database %s: %w", dbPath, err)
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if changed, err := config.TightenPerm(p, config.PrivateFileMode); err != nil {
+			slog.Warn("could not restrict database file permissions", "path", p, "error", err)
+		} else if changed {
+			slog.Info("tightened database file permissions to 0600", "path", p)
+		}
+	}
+	return nil
 }

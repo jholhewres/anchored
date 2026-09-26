@@ -166,7 +166,7 @@ func writeConfigFile(configFile string, cfg *config.Config) {
 		fmt.Fprintf(os.Stderr, "error creating config dir: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(configFile, out, 0o644); err != nil {
+	if err := writePrivateFile(configFile, out); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
 		os.Exit(1)
 	}

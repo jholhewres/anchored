@@ -352,7 +352,7 @@ func writeMCPConfigFile(configPath string, cfg map[string]json.RawMessage, prevD
 	}
 
 	if _, err := os.Stat(configPath); err == nil {
-		_ = os.WriteFile(configPath+".bak", prevData, 0644)
+		writeBackupFile(configPath, prevData)
 	}
 
 	if err := os.WriteFile(configPath, append(out, '\n'), 0644); err != nil {
@@ -427,7 +427,7 @@ func registerMCPTOML(t string, cwd string) error {
 			// every other line (including foreign tables elsewhere in the
 			// file) is byte-preserved.
 			if repaired, changed := repairTOMLBareCommand(lines, sectionIdx); changed {
-				_ = os.WriteFile(configPath+".bak", data, 0644)
+				writeBackupFile(configPath, data)
 				out := strings.Join(repaired, "\n")
 				if err := os.WriteFile(configPath, []byte(out), 0644); err != nil {
 					return fmt.Errorf("write %s: %w", configPath, err)
@@ -443,7 +443,7 @@ func registerMCPTOML(t string, cwd string) error {
 	entry := fmt.Sprintf("[mcp_servers.anchored]\ncommand = %q\nenabled = true\n", anchoredBinaryPath())
 
 	if _, err := os.Stat(configPath); err == nil {
-		_ = os.WriteFile(configPath+".bak", data, 0644)
+		writeBackupFile(configPath, data)
 	}
 
 	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jholhewres/anchored/pkg/config"
 )
 
 // registerMCPYAMLMap registers anchored in a host whose MCP servers live in a
@@ -160,6 +162,22 @@ func writeYAMLDoc(configPath string, doc map[string]any, prev []byte) error {
 	return nil
 }
 
+// writePrivateFile writes a file that may hold credentials (the config and
+// its .bak carry remote API keys) owner-only. os.WriteFile applies its mode
+// only when it creates the file, so an existing file is tightened as well.
+func writePrivateFile(path string, data []byte) error {
+	// Tighten first: writing into an existing 0664 file and fixing the mode
+	// afterwards would leave the new keys readable in between.
+	if _, err := config.TightenPerm(path, config.PrivateFileMode); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, config.PrivateFileMode); err != nil {
+		return err
+	}
+	_, err := config.TightenPerm(path, config.PrivateFileMode)
+	return err
+}
+
 // backupOnce writes prev to path+".bak" only if the target file exists and no
 // .bak is present yet. This keeps the .bak pinned to the user's ORIGINAL config
 // even when `anchored init` rewrites the same file more than once in a run
@@ -170,7 +188,33 @@ func backupOnce(path string, prev []byte) {
 		return // no original file → nothing to back up
 	}
 	if _, err := os.Stat(path + ".bak"); err == nil {
-		return // backup already captured the original
+		// Backup already captured the original; still bring an older
+		// version's world-readable copy down to the original's mode.
+		tightenBackup(path)
+		return
 	}
-	_ = os.WriteFile(path+".bak", prev, 0644)
+	writeBackupFile(path, prev)
+}
+
+// writeBackupFile writes data to path+".bak" with the original's mode:
+// another tool's config can hold its own secrets, and a 0644 copy would
+// expose what a 0600 original did not. An existing backup is tightened
+// before it is overwritten.
+func writeBackupFile(path string, data []byte) {
+	mode := config.PrivateFileMode
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	bak := path + ".bak"
+	_, _ = config.TightenPerm(bak, mode)
+	if err := os.WriteFile(bak, data, mode); err != nil {
+		return
+	}
+	_, _ = config.TightenPerm(bak, mode)
+}
+
+func tightenBackup(path string) {
+	if info, err := os.Stat(path); err == nil {
+		_, _ = config.TightenPerm(path+".bak", info.Mode().Perm())
+	}
 }

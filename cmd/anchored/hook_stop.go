@@ -352,6 +352,11 @@ func openHookContextWrite(configPath string) (*HookContext, error) {
 	}
 
 	// Limit busy_timeout to 300ms so a locked DB doesn't blow the hard cap.
+	// A hook can be the first process to open a new database; SQLite would
+	// create it world-readable.
+	if err := memory.KeepDatabasePrivate(cfg.Memory.DatabasePath); err != nil {
+		return nil, err
+	}
 	dsn := cfg.Memory.DatabasePath + "?_journal_mode=WAL&_busy_timeout=300"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {

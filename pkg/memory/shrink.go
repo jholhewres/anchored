@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+
+	"github.com/jholhewres/anchored/pkg/config"
 )
 
 // ErrDatabaseBusy reports that another process still holds the database, so the
@@ -71,6 +74,12 @@ func Shrink(ctx context.Context, dbPath string) (ShrinkStats, error) {
 	if err := verifyShrunkCopy(ctx, tmp, wantMemories, wantRevisions); err != nil {
 		_ = os.Remove(tmp)
 		return stats, err
+	}
+	// VACUUM INTO creates the copy with the default 0644; it becomes the
+	// database, which must stay owner-only.
+	if err := os.Chmod(tmp, config.PrivateFileMode); err != nil && runtime.GOOS != "windows" {
+		_ = os.Remove(tmp)
+		return stats, fmt.Errorf("restrict compacted copy: %w", err)
 	}
 
 	// Close before swapping: on Windows the open handle would block the rename,

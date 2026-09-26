@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jholhewres/anchored/pkg/config"
 )
 
 func runPurge(args []string) {
@@ -129,7 +131,9 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	out, err := os.Create(dst)
+	// The copy is a whole database: every memory, and whatever secrets
+	// slipped past redaction. os.Create would make it 0644 minus the umask.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, config.PrivateFileMode)
 	if err != nil {
 		return err
 	}

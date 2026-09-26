@@ -144,7 +144,7 @@ func writePluginFiles(dir string, files map[string]string) error {
 		path := filepath.Join(dir, name)
 		body := strings.ReplaceAll(content, "<BIN>", bin)
 		if prev, err := os.ReadFile(path); err == nil && string(prev) != body {
-			_ = os.WriteFile(path+".bak", prev, 0644)
+			writeBackupFile(path, prev)
 		}
 		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 			return err
