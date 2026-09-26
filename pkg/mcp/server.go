@@ -138,7 +138,7 @@ func (s *Server) SetDebugLogger(d *debuglog.Logger) {
 func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
 	req, err := ParseRequest(data)
 	if err != nil {
-		s.dlog.Event("mcp.parse_error", map[string]any{"error": err.Error(), "raw": debuglog.Snippet(string(data), 200)})
+		s.dlog.Event("mcp.parse_error", map[string]any{"error": err.Error(), "raw": debuglog.Content(string(data), 200)})
 		return MarshalResponse(NewErrorResponse(nil, NewError(-32700, err.Error())))
 	}
 
@@ -239,7 +239,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 			"stage":      "error",
 			"tool":       p.Name,
 			"latency_ms": latencyMs,
-			"args":       debuglog.Snippet(string(p.Arguments), 240),
+			"args":       debuglog.Content(string(p.Arguments), 240),
 			"error":      err.Error(),
 		})
 		return MarshalResponse(NewErrorResponse(id, InternalError(err)))
@@ -249,9 +249,9 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 		"stage":          "ok",
 		"tool":           p.Name,
 		"latency_ms":     latencyMs,
-		"args":           debuglog.Snippet(string(p.Arguments), 240),
+		"args":           debuglog.Content(string(p.Arguments), 240),
 		"result_bytes":   len(result),
-		"result_preview": debuglog.Snippet(result, 200),
+		"result_preview": debuglog.Content(result, 200),
 	})
 
 	return MarshalResponse(NewResponse(id, map[string]any{

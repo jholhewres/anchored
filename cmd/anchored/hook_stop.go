@@ -194,7 +194,7 @@ func runHookStop(args []string) {
 			break
 		}
 		if isDuplicate(c.Text, recentContents) {
-			dlog.Event("hook.stop", map[string]any{"stage": "dedup_skip", "head": debuglog.Snippet(c.Text, 80)})
+			dlog.Event("hook.stop", map[string]any{"stage": "dedup_skip", "head": debuglog.Content(c.Text, 80)})
 			continue
 		}
 		id := newHookID()
@@ -206,7 +206,7 @@ func runHookStop(args []string) {
 			"stage":    "saved",
 			"id":       id,
 			"category": c.Category,
-			"head":     debuglog.Snippet(c.Text, 80),
+			"head":     debuglog.Content(c.Text, 80),
 		})
 		// Add to in-memory set so the next candidate deduplicates against it too.
 		recentContents = append(recentContents, c.Text)

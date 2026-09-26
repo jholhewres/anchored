@@ -90,7 +90,7 @@ func runHookPreCompact(args []string) {
 		"text_len":   len(text),
 		"memory_id":  m.ID,
 		"event_id":   eventID,
-		"head":       debuglog.Snippet(text, 200),
+		"head":       debuglog.Content(text, 200),
 	})
 	outputJSON(map[string]any{
 		"snapshot_saved": true,

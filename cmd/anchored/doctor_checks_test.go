@@ -469,3 +469,80 @@ func TestCheckMaintenanceTimerAt_NotInstalledWarns(t *testing.T) {
 		t.Fatalf("expected warn when timer unit is not installed, got %+v", doctorChecks)
 	}
 }
+
+func TestCheckDebugLog_ExpiredWarns(t *testing.T) {
+	withDoctorChecks(t)
+	_ = os.Unsetenv("ANCHORED_DEBUG")
+	_ = os.Unsetenv("ANCHORED_DEBUG_PATH")
+
+	home := t.TempDir()
+	logPath := filepath.Join(home, ".anchored", "debug.log")
+	writeDoctorFixture(t, logPath, "{}\n")
+	writeDoctorFixture(t, logPath+".since", time.Now().Add(-8*24*time.Hour).UTC().Format(time.RFC3339))
+
+	cfg := &config.Config{Debug: config.DebugConfig{Enabled: true, MaxAgeDays: 7}}
+	checkDebugLog(cfg, home)
+
+	c := findCheck("hook observability")
+	if c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "expired") {
+		t.Fatalf("expected an expiry warning, got %+v", doctorChecks)
+	}
+}
+
+// A shell that exports ANCHORED_DEBUG=1 keeps logging past the window: the
+// doctor must not tell the user logging stopped.
+func TestCheckDebugLog_ExpiredButForcedByEnvSaysItStillLogs(t *testing.T) {
+	withDoctorChecks(t)
+	t.Setenv("ANCHORED_DEBUG", "1")
+	_ = os.Unsetenv("ANCHORED_DEBUG_PATH")
+
+	home := t.TempDir()
+	logPath := filepath.Join(home, ".anchored", "debug.log")
+	writeDoctorFixture(t, logPath, "{}\n")
+	writeDoctorFixture(t, logPath+".since", time.Now().Add(-8*24*time.Hour).UTC().Format(time.RFC3339))
+
+	cfg := &config.Config{Debug: config.DebugConfig{Enabled: true, MaxAgeDays: 7}}
+	checkDebugLog(cfg, home)
+
+	c := findCheck("hook observability")
+	if c == nil || !strings.Contains(c.Detail, "ANCHORED_DEBUG=1") || strings.Contains(c.Detail, "logging stopped") {
+		t.Fatalf("expected the env bypass to be named, got %+v", doctorChecks)
+	}
+}
+
+func TestCheckDebugLog_ContentModeWarns(t *testing.T) {
+	withDoctorChecks(t)
+	_ = os.Unsetenv("ANCHORED_DEBUG")
+	_ = os.Unsetenv("ANCHORED_DEBUG_PATH")
+	_ = os.Unsetenv("ANCHORED_DEBUG_CONTENT")
+
+	home := t.TempDir()
+	writeDoctorFixture(t, filepath.Join(home, ".anchored", "debug.log"), "{}\n")
+
+	cfg := &config.Config{Debug: config.DebugConfig{Enabled: true, Content: true, MaxAgeDays: 7}}
+	checkDebugLog(cfg, home)
+
+	c := findCheck("debug log content")
+	if c == nil || c.Status != "warn" {
+		t.Fatalf("expected a warning that prompts and tool output are written, got %+v", doctorChecks)
+	}
+}
+
+func TestCheckDebugLog_LegacyLogWarns(t *testing.T) {
+	withDoctorChecks(t)
+	_ = os.Unsetenv("ANCHORED_DEBUG")
+	_ = os.Unsetenv("ANCHORED_DEBUG_PATH")
+
+	home := t.TempDir()
+	logPath := filepath.Join(home, ".anchored", "debug.log")
+	writeDoctorFixture(t, logPath, "{}\n")
+	writeDoctorFixture(t, logPath+".legacy", `{"prompt_head":"raw"}`+"\n")
+
+	cfg := &config.Config{Debug: config.DebugConfig{Enabled: true, MaxAgeDays: 7}}
+	checkDebugLog(cfg, home)
+
+	c := findCheck("debug log content")
+	if c == nil || c.Status != "warn" || !strings.Contains(c.FixCommand, ".legacy") {
+		t.Fatalf("expected a warning to delete the legacy log, got %+v", doctorChecks)
+	}
+}

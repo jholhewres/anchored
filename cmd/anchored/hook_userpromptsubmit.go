@@ -94,7 +94,7 @@ func runHookUserPromptSubmit(args []string) {
 		"stage":         "emitted",
 		"session_id":    parsed.SessionID,
 		"prompt_len":    len(parsed.Prompt),
-		"prompt_head":   debuglog.Snippet(parsed.Prompt, 240),
+		"prompt_head":   debuglog.Content(parsed.Prompt, 240),
 		"context_bytes": len(additional),
 	})
 
@@ -235,7 +235,7 @@ func autoRecallPreview(configPath, cwd, prompt, sessionID string, dlog *debuglog
 		// search in the serve process CAN catch the semantic match. This turns a
 		// silent miss into a directed tool call instead of just the generic
 		// reminder.
-		dlog.Event("hook.userpromptsubmit.recall", map[string]any{"stage": "no_hits", "intent": string(in.Kind), "query": debuglog.Snippet(expandedQ, 80)})
+		dlog.Event("hook.userpromptsubmit.recall", map[string]any{"stage": "no_hits", "intent": string(in.Kind), "query": debuglog.Content(expandedQ, 80)})
 		return renderRecallMissNudge(expandedQ)
 	}
 
@@ -250,7 +250,7 @@ func autoRecallPreview(configPath, cwd, prompt, sessionID string, dlog *debuglog
 		"intent":       string(in.Kind),
 		"hits":         len(hits),
 		"artifacts":    len(arts),
-		"query":        debuglog.Snippet(expandedQ, 80),
+		"query":        debuglog.Content(expandedQ, 80),
 		"project":      projectID,
 		"anchor_files": len(fileAnchors),
 		"anchor_syms":  len(symAnchors),

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
+	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/jholhewres/anchored/pkg/project"
 	"github.com/jholhewres/anchored/pkg/sync"
 )
@@ -566,6 +567,29 @@ func checkDebugLog(cfg *config.Config, home string) {
 		path = filepath.Join(home, path[2:])
 	}
 
+	st := debuglog.InspectAt(cfg, path)
+	if st.Legacy {
+		recordCheck("warn", "debug log content",
+			"a debug log from before v0.20 was set aside at "+path+".legacy: it holds raw prompt heads and tool output",
+			"rm "+path+".legacy", false)
+	}
+	if st.Content {
+		recordCheck("warn", "debug log content",
+			"debug.content is on: prompt heads, tool arguments and output are written to "+path+" (credentials redacted)",
+			"set debug.content: false in ~/.anchored/config.yaml", false)
+	}
+	if st.Expired {
+		stopped := "logging stopped"
+		if debuglog.ForcedByEnv() {
+			stopped = "ANCHORED_DEBUG=1 keeps processes that set it logging"
+		}
+		recordCheck("warn", "hook observability",
+			fmt.Sprintf("debug mode expired on %s (started %s, max_age_days %d): %s",
+				st.Expires.Local().Format("2006-01-02"), st.Since.Local().Format("2006-01-02"), cfg.Debug.MaxAgeDays, stopped),
+			fmt.Sprintf("set debug.enabled: false, or rm %s%s to log for another %d days", path, ".since", cfg.Debug.MaxAgeDays), false)
+		return
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		recordCheck("warn", "hook observability", "debug enabled but log file not found: "+path, "", false)
@@ -578,8 +602,11 @@ func checkDebugLog(cfg *config.Config, home string) {
 			"", false)
 		return
 	}
-	recordCheck("ok", "hook observability",
-		fmt.Sprintf("debug log fresh (last write %s ago)", age.Round(time.Minute)), "", false)
+	detail := fmt.Sprintf("debug log fresh (last write %s ago, %s)", age.Round(time.Minute), humanBytes(info.Size()))
+	if !st.Expires.IsZero() {
+		detail += fmt.Sprintf(", stops on %s", st.Expires.Local().Format("2006-01-02"))
+	}
+	recordCheck("ok", "hook observability", detail, "", false)
 }
 
 // --- Model label hygiene ---

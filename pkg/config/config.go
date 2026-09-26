@@ -239,6 +239,13 @@ func (p PluginConfig) ContextGateMode() string {
 type DebugConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Path    string `yaml:"path"`
+	// Content records the text of prompts, tool arguments and outputs
+	// (credentials redacted). Off by default: events then carry only the size
+	// of that text.
+	Content bool `yaml:"content"`
+	// MaxAgeDays stops a forgotten debug mode: logging ends this many days
+	// after it started. 0 means no limit.
+	MaxAgeDays int `yaml:"max_age_days"`
 }
 
 type ContextOptimizerConfig struct {
@@ -360,8 +367,9 @@ func Defaults() *Config {
 			FetchCacheTTL:  24,
 		},
 		Debug: DebugConfig{
-			Enabled: false,
-			Path:    "~/.anchored/debug.log",
+			Enabled:    false,
+			Path:       "~/.anchored/debug.log",
+			MaxAgeDays: 7,
 		},
 		Plugin: PluginConfig{
 			// Default true — same policy as the binary auto-updater.

@@ -108,7 +108,7 @@ func runHookSessionStart(args []string) {
 		"session_id": input.SessionID,
 		"cwd":        cwdVal,
 		"input_len":  len(content),
-		"input_head": debuglog.Snippet(string(content), 200),
+		"input_head": debuglog.Content(string(content), 200),
 	})
 
 	hc, err := openHookContext(*configPath)

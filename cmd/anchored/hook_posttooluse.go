@@ -338,7 +338,7 @@ func recordPostToolUseEvent(deps PostToolUseDeps) {
 		"project_id": projectID,
 		"tool":       input.ToolName,
 		"event_id":   eventID,
-		"summary":    debuglog.Snippet(summary, 200),
+		"summary":    debuglog.Content(summary, 200),
 	})
 	writePostToolUseResp(deps.Stdout, map[string]any{
 		"recorded": true,

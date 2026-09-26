@@ -116,7 +116,7 @@ func runHookPreToolUse(args []string) {
 				"stage":   "blocked",
 				"tool":    tool,
 				"pattern": pattern,
-				"args":    debuglog.Snippet(string(content), 240),
+				"args":    debuglog.Content(string(content), 240),
 			})
 			emitDecision(&hookroute.Decision{
 				Action: hookroute.ActionDeny,
