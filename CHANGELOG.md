@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0-rc.2] - 2026-09-26
+
+Release candidate, published as a GitHub pre-release: auto-update does not
+install it.
+
+### Fixed
+
+- **The embedding rebuild no longer pegs a CPU core per process for hours.**
+  Every embedding job re-ran a reconciliation that scanned every live memory
+  (1.5 s on 84k memories) and queued at most 200 jobs. On a real database the
+  rebuild ran at about one memory per second across four processes, each at
+  100% CPU. Missing jobs are now queued in one pass, the reconciliation runs
+  at most every 2 minutes, and jobs of the active generation no longer reload
+  the whole vector cache. On a copy of that database: about 170 memories per
+  minute per process, up from about 17.
+- **Maintenance tests no longer need an installed `anchored` binary.** The run
+  looked its own executable up before checking whether any step would run.
+
 ## [0.20.0-rc.1] - 2026-09-26
 
 Release candidate: published as a GitHub pre-release, so auto-update does
