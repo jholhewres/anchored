@@ -543,11 +543,12 @@ func TestSaveLightweight_LockedDB_FailsFastWithinCap(t *testing.T) {
 	if saveErr == nil {
 		t.Fatal("save against a locked DB should fail, got nil error")
 	}
-	// The regression this guards is the store's 30 s busy_timeout: the save
-	// must give up after its own 300 ms. Shared CI runners (macOS) add a few
-	// hundred ms of scheduling on top, hence the 2x allowance on the cap.
-	if elapsed > 2*stopHardCap {
-		t.Errorf("locked save took %v, far past the hard cap %v", elapsed, stopHardCap)
+	// The regression this guards is inheriting the store's 30 s busy_timeout:
+	// the save must give up after its own 300 ms (0.32 s end to end locally).
+	// Shared macOS CI runners measured 0.6-1.2 s for the same wait, so the
+	// bound sits well below 30 s instead of at the hook's hard cap.
+	if elapsed > 10*stopHardCap {
+		t.Errorf("locked save took %v: it waited for the lock instead of failing fast (hard cap %v)", elapsed, stopHardCap)
 	}
 }
 
