@@ -30,8 +30,10 @@ type modelConfig struct {
 	Vocab    json.RawMessage `json:"vocab"`
 	UnkToken string          `json:"unk_token"`
 	Prefix   string          `json:"continuing_subword_prefix,omitempty"`
-	MaxChars int             `json:"max_input_chars_per_word,omitempty"`
-	Merges   []string        `json:"merges,omitempty"`
+	// UnkID is how Unigram models name their unknown piece (no unk_token).
+	UnkID    *int     `json:"unk_id,omitempty"`
+	MaxChars int      `json:"max_input_chars_per_word,omitempty"`
+	Merges   []string `json:"merges,omitempty"`
 }
 
 type normalizerConfig struct {
@@ -41,11 +43,21 @@ type normalizerConfig struct {
 	HandleChineseChars *bool              `json:"handle_chinese_chars,omitempty"`
 	StripAccentsN      *bool              `json:"strip_accents,omitempty"`
 	LowercaseN         *bool              `json:"lowercase,omitempty"`
+	// PrecompiledCharsmap is the base64 SentencePiece map of Precompiled.
+	PrecompiledCharsmap string `json:"precompiled_charsmap,omitempty"`
 }
 
 type preTokenizerConfig struct {
 	Type          string               `json:"type"`
 	PreTokenizers []preTokenizerConfig `json:"pre_tokenizers,omitempty"`
+	// PreTokenizersAlt is the key tokenizer.json files actually use for a
+	// Sequence ("pretokenizers"); the legacy pipeline never read it.
+	PreTokenizersAlt []preTokenizerConfig `json:"pretokenizers,omitempty"`
+	// Metaspace options.
+	Replacement    string `json:"replacement,omitempty"`
+	AddPrefixSpace *bool  `json:"add_prefix_space,omitempty"`
+	PrependScheme  string `json:"prepend_scheme,omitempty"`
+	Split          *bool  `json:"split,omitempty"`
 }
 
 type postProcessorConfig struct {
@@ -72,6 +84,8 @@ type addedTokenConfig struct {
 	ID      int    `json:"id"`
 	Content string `json:"content"`
 	Special bool   `json:"special"`
+	LStrip  bool   `json:"lstrip,omitempty"`
+	RStrip  bool   `json:"rstrip,omitempty"`
 }
 
 type normalizerFn func(string) string
@@ -97,10 +111,36 @@ type FastTokenizer struct {
 	maxInputChars   int
 	// BPE merge table: pair → rank
 	bpeMerges map[[2]string]int
+
+	// legacy keeps the pipeline the existing vectors were built with: it
+	// ignores "pretokenizers", unk_id and the Precompiled normalizer, and
+	// segments Unigram greedily. See NewLegacyFastTokenizer.
+	legacy bool
+	// Unigram piece scores by id, the unknown-piece score and the longest
+	// piece in bytes (bounds the Viterbi lookahead).
+	scores        []float64
+	unkScore      float64
+	maxPieceBytes int
+	// specials are the added tokens split out of the raw text, longest first.
+	specials []addedToken
 }
 
-// NewFastTokenizer loads a HuggingFace tokenizer.json and builds a FastTokenizer.
+// NewFastTokenizer loads a HuggingFace tokenizer.json and builds a tokenizer
+// that reproduces the `tokenizers` library (TestTokenizerGolden).
 func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) {
+	return newFastTokenizer(tokenizerPath, maxLen, false)
+}
+
+// NewLegacyFastTokenizer builds the tokenizer vectors were produced with up to
+// v0.19. It misreads SentencePiece tokenizer.json files (the whole text is one
+// word and every space becomes id -1), but an embedding generation built with
+// it can only be queried with it: the legacy pipeline serves the active
+// generation until one built by NewFastTokenizer replaces it.
+func NewLegacyFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) {
+	return newFastTokenizer(tokenizerPath, maxLen, true)
+}
+
+func newFastTokenizer(tokenizerPath string, maxLen int, legacy bool) (*FastTokenizer, error) {
 	data, err := os.ReadFile(tokenizerPath)
 	if err != nil {
 		return nil, fmt.Errorf("read tokenizer.json: %w", err)
@@ -116,7 +156,7 @@ func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) 
 	}
 
 	// Parse vocab: map[string]int (WordPiece/BPE) or array of [token, score] pairs (Unigram)
-	vocab, err := parseVocab(cfg.Model.Vocab)
+	vocab, scores, err := parseVocab(cfg.Model.Vocab)
 	if err != nil {
 		return nil, fmt.Errorf("parse vocab: %w", err)
 	}
@@ -129,6 +169,7 @@ func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) 
 		maxLen:          maxLen,
 		wordPiecePrefix: cfg.Model.Prefix,
 		maxInputChars:   cfg.Model.MaxChars,
+		legacy:          legacy,
 	}
 
 	if ft.wordPiecePrefix == "" && ft.modelType == "WordPiece" {
@@ -144,11 +185,35 @@ func NewFastTokenizer(tokenizerPath string, maxLen int) (*FastTokenizer, error) 
 	}
 
 	ft.unkID = ft.tokenID(ft.unkToken, -1)
+	if !legacy {
+		if cfg.Model.UnkID != nil {
+			ft.unkID = *cfg.Model.UnkID
+		}
+		ft.scores = scores
+		minScore := 0.0
+		for i, sc := range scores {
+			if i == 0 || sc < minScore {
+				minScore = sc
+			}
+		}
+		ft.unkScore = minScore - unigramUnkPenalty
+		for token := range vocab {
+			if len(token) > ft.maxPieceBytes {
+				ft.maxPieceBytes = len(token)
+			}
+		}
+		for _, at := range cfg.AddedTokens {
+			ft.specials = append(ft.specials, addedToken{content: at.Content, id: at.ID, lstrip: at.LStrip, rstrip: at.RStrip})
+		}
+		sortAddedTokens(ft.specials)
+	}
 	ft.clsID = ft.tokenID("[CLS]", ft.tokenID("<s>", -1))
 	ft.sepID = ft.tokenID("[SEP]", ft.tokenID("</s>", -1))
 	ft.padID = ft.tokenID("[PAD]", ft.tokenID("<pad>", 0))
 
-	ft.normalizer = ft.buildNormalizer(cfg.Normalizer)
+	if ft.normalizer, err = ft.buildNormalizerChecked(cfg.Normalizer); err != nil {
+		return nil, err
+	}
 	ft.preTokenizer = ft.buildPreTokenizer(cfg.PreTokenizer)
 	ft.postProcessor = ft.buildPostProcessor(cfg.PostProcessor)
 
@@ -172,33 +237,41 @@ func (ft *FastTokenizer) tokenID(token string, defaultID int) int {
 	return defaultID
 }
 
-func parseVocab(raw json.RawMessage) (map[string]int, error) {
+// parseVocab reads a token → id map (WordPiece/BPE) or a Unigram array of
+// [token, score] pairs, whose scores it also returns by id.
+func parseVocab(raw json.RawMessage) (map[string]int, []float64, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("empty vocab")
+		return nil, nil, fmt.Errorf("empty vocab")
 	}
 	if raw[0] == '{' {
 		var m map[string]int
 		if err := json.Unmarshal(raw, &m); err != nil {
-			return nil, fmt.Errorf("parse vocab as map: %w", err)
+			return nil, nil, fmt.Errorf("parse vocab as map: %w", err)
 		}
-		return m, nil
+		return m, nil, nil
 	}
 	if raw[0] == '[' {
 		var arr [][]interface{}
 		if err := json.Unmarshal(raw, &arr); err != nil {
-			return nil, fmt.Errorf("parse vocab as array: %w", err)
+			return nil, nil, fmt.Errorf("parse vocab as array: %w", err)
 		}
 		m := make(map[string]int, len(arr))
+		scores := make([]float64, len(arr))
 		for i, entry := range arr {
 			if len(entry) >= 1 {
 				if token, ok := entry[0].(string); ok {
 					m[token] = i
 				}
 			}
+			if len(entry) >= 2 {
+				if sc, ok := entry[1].(float64); ok {
+					scores[i] = sc
+				}
+			}
 		}
-		return m, nil
+		return m, scores, nil
 	}
-	return nil, fmt.Errorf("unexpected vocab format: %s", string(raw[:min(len(raw), 20)]))
+	return nil, nil, fmt.Errorf("unexpected vocab format: %s", string(raw[:min(len(raw), 20)]))
 }
 
 func spTokenToInt(st spTokenConfig) int {
@@ -237,26 +310,11 @@ func truncateUTF8(s string, n int) string {
 }
 
 func (ft *FastTokenizer) Tokenize(text string) (inputIDs, attentionMask, tokenTypeIDs []int64) {
-	text = strings.TrimSpace(text)
-	text = truncateUTF8(text, maxTokenizeBytes)
-	text = ft.normalizer(text)
-	words := ft.preTokenizer(text)
-
 	var tokenIDs []int
-	for _, word := range words {
-		if word == "" {
-			continue
-		}
-		if id, ok := ft.addedTokens[word]; ok {
-			tokenIDs = append(tokenIDs, id)
-			continue
-		}
-		pieces := ft.encodeWord(truncateUTF8(word, maxWordBytes))
-		tokenIDs = append(tokenIDs, pieces...)
-		if len(tokenIDs) >= ft.maxLen-2 {
-			tokenIDs = tokenIDs[:ft.maxLen-2]
-			break
-		}
+	if ft.legacy {
+		tokenIDs = ft.tokenizeLegacy(text)
+	} else {
+		tokenIDs = ft.tokenizeHF(text)
 	}
 
 	if ft.postProcessor != nil {
@@ -286,6 +344,33 @@ func (ft *FastTokenizer) Tokenize(text string) (inputIDs, attentionMask, tokenTy
 	return inputIDs, attentionMask, tokenTypeIDs
 }
 
+// tokenizeLegacy is the pre-v0.20 pipeline, unchanged: see
+// NewLegacyFastTokenizer.
+func (ft *FastTokenizer) tokenizeLegacy(text string) []int {
+	text = strings.TrimSpace(text)
+	text = truncateUTF8(text, maxTokenizeBytes)
+	text = ft.normalizer(text)
+	words := ft.preTokenizer(text)
+
+	var tokenIDs []int
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		if id, ok := ft.addedTokens[word]; ok {
+			tokenIDs = append(tokenIDs, id)
+			continue
+		}
+		pieces := ft.encodeWord(truncateUTF8(word, maxWordBytes))
+		tokenIDs = append(tokenIDs, pieces...)
+		if len(tokenIDs) >= ft.maxLen-2 {
+			tokenIDs = tokenIDs[:ft.maxLen-2]
+			break
+		}
+	}
+	return tokenIDs
+}
+
 func (ft *FastTokenizer) encodeWord(word string) []int {
 	switch ft.modelType {
 	case "WordPiece":
@@ -295,10 +380,26 @@ func (ft *FastTokenizer) encodeWord(word string) []int {
 	case "WordLevel":
 		return ft.encodeWordLevel(word)
 	case "Unigram":
+		if !ft.legacy {
+			return ft.encodeUnigramViterbi(word)
+		}
 		return ft.encodeUnigram(word)
 	default:
 		return ft.encodeWordPiece(word)
 	}
+}
+
+// buildNormalizerChecked is buildNormalizer, failing on a Precompiled map
+// that does not parse (the HF pipeline would silently skip normalization).
+func (ft *FastTokenizer) buildNormalizerChecked(cfg *normalizerConfig) (normalizerFn, error) {
+	if !ft.legacy && cfg != nil && cfg.Type == "Precompiled" {
+		m, err := parseSPMCharsMap(cfg.PrecompiledCharsmap)
+		if err != nil {
+			return nil, err
+		}
+		return m.normalize, nil
+	}
+	return ft.buildNormalizer(cfg), nil
 }
 
 func (ft *FastTokenizer) buildNormalizer(cfg *normalizerConfig) normalizerFn {
@@ -600,8 +701,12 @@ func (ft *FastTokenizer) buildPreTokenizer(cfg *preTokenizerConfig) preTokenizer
 	}
 	switch cfg.Type {
 	case "Sequence":
-		fns := make([]preTokenizerFn, len(cfg.PreTokenizers))
-		for i, sub := range cfg.PreTokenizers {
+		subs := cfg.PreTokenizers
+		if !ft.legacy {
+			subs = append(append([]preTokenizerConfig(nil), cfg.PreTokenizers...), cfg.PreTokenizersAlt...)
+		}
+		fns := make([]preTokenizerFn, len(subs))
+		for i, sub := range subs {
 			fns[i] = ft.buildPreTokenizer(&sub)
 		}
 		return chainPreTokenizers(fns)
@@ -618,6 +723,9 @@ func (ft *FastTokenizer) buildPreTokenizer(cfg *preTokenizerConfig) preTokenizer
 	case "ByteLevel":
 		return whitespacePreTokenizer
 	case "Metaspace":
+		if !ft.legacy {
+			return newMetaspaceConfig(cfg).apply
+		}
 		return metaspacePreTokenizer
 	default:
 		return defaultPreTokenizer
