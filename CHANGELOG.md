@@ -30,6 +30,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The full-text index is only rewritten when content changes.** The index
   used to be rewritten on every tombstone, restore and re-save of unchanged
   text. Migration 024 replaces the trigger on existing databases.
+- **The database, config and backups are created private (0600).** They
+  used to get the default mode minus the umask, usually 0644, so any local
+  user could read every memory and the remotes' API keys. This covered the
+  database and its WAL and SHM, the config, the `init` backups, and the
+  `compact --shrink` and `purge --hard` copies. Existing files are tightened
+  when opened: bits are only ever removed, never added. Other tools'
+  configs keep their own mode, and their backups inherit it.
+- **An unknown subcommand no longer starts a server.** `anchored staus`
+  started an MCP server that sat waiting on stdin. It now prints the usage and
+  exits with 2. No argument, or a leading flag, is still `serve`.
+- **`anchored serve --stdio` works.** It is the documented form, and it used
+  to fail with `flag provided but not defined`.
+- **Release builds are optimised again.** FTS5 was enabled by overriding
+  `CGO_CFLAGS`, which dropped cgo's default `-O2`. The `sqlite_fts5` build tag
+  enables it instead. On a real database, full-text search went from 29 ms to
+  12 ms.
 
 ### Added
 
@@ -49,6 +65,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Values of secret flags on command lines are redacted.
 - `anchored dream --semantic` runs the vector tiers (near-duplicate, synthesis,
   contradiction), which are now off by default.
+- **The debug log no longer stores what you typed.** With `debug.enabled`,
+  prompts, tool arguments, output and error messages went to
+  `~/.anchored/debug.log` verbatim and without a size limit.
+  - Text is now recorded as its length only. `debug.content: true` records it
+    redacted and truncated.
+  - Every string and error field is scrubbed: credentials are redacted, URL
+    queries are cut and length is capped.
+  - The log rotates at 10 MB and keeps three generations.
+  - Logging stops after `debug.max_age_days` (default 7). `ANCHORED_DEBUG=1`
+    overrides the limit.
+  - A log written by an earlier version is moved to `debug.log.legacy`, and
+    `doctor` asks you to delete it.
+- **Shared redaction, with more formats.** Memory content and the debug log
+  use one set of rules. It adds JSON/YAML keys with escaped quotes,
+  credentials in any URL's userinfo, Basic auth, and the key prefixes
+  `sk-ant-`/`sk-proj-`, `sk_live_`/`rk_`/`pk_`, `github_pat_`, `glpat-`,
+  `AIza` and `anc_live_`.
+- **`anchored version`** prints the version without opening the database or
+  loading the model.
+- **`anchored eval recall --real` and `anchored eval embedding-health`.**
+  - `recall --real` scores search with the real embedder on a PT/EN/ES
+    fixture: recall@5, MRR@10 and nDCG@10.
+  - It can save a baseline tied to the fixture and the model, and fail when a
+    change does not beat it.
+  - `embedding-health` measures how spread out the database's vectors are.
+- **CI runs the tests, the eval and the linter.** A release is only published
+  when the tag, `VERSION` and the plugin manifests agree.
 
 ## [0.19.2] - 2026-09-22
 
