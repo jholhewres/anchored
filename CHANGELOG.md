@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0-rc.1] - 2026-09-26
+
+Release candidate: published as a GitHub pre-release, so auto-update does
+not install it. It fixes search at the root: the embedding tokenizer, BM25,
+scope and ranking. The embeddings of existing memories are rebuilt in the
+background without switching semantic search off. It also stops dream from
+deleting across projects, and makes the database, the config and the debug
+log private.
+
 ### Fixed
 
 - **Embeddings match the model again.** The tokenizer misread the
