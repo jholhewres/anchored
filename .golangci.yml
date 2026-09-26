@@ -1,0 +1,24 @@
+version: "2"
+
+run:
+  # FTS5 comes from go-sqlite3's build tag; without it the FTS tests and the
+  # code paths behind them do not type-check the same way.
+  build-tags:
+    - sqlite_fts5
+
+linters:
+  settings:
+    errcheck:
+      # Closing a read cursor or a finished database handle, rolling back a
+      # transaction already failing, and parsing flags on a set built with
+      # ExitOnError have no error worth handling. File closes stay checked: a
+      # close after a write is where a lost write surfaces.
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Conn).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Tx).Rollback
+        - (*flag.FlagSet).Parse
+        - (*github.com/jholhewres/anchored/pkg/memory.SQLiteStore).Close
+        - (*github.com/jholhewres/anchored/pkg/memory.Service).Close

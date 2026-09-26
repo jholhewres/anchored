@@ -1,11 +1,8 @@
-CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
-CGO_LDFLAGS=-lm
-
-# macOS doesn't need -lm (it's part of the system)
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-  CGO_LDFLAGS=
-endif
+# FTS5 is enabled through go-sqlite3's own build tag, which adds the define
+# and -lm in its #cgo directives. Setting CGO_CFLAGS instead would REPLACE Go's
+# default "-g -O2" and compile SQLite unoptimised (measured 1.3-2.4x slower
+# queries). Every build, test and lint of this module needs the tag.
+GO_TAGS := sqlite_fts5
 
 # Single source of truth for the version. Build injects it into main.Version
 # via -ldflags so the binary, plugin manifests, and goreleaser tags stay in
@@ -34,10 +31,10 @@ SRC_BIN     := $(CURDIR)/bin/anchored
 .PHONY: build test lint clean sync-version eval sync-bin sync-bin-dry
 
 build:
-	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" go build -ldflags "$(LDFLAGS)" -o bin/anchored ./cmd/anchored/
+	go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o bin/anchored ./cmd/anchored/
 
 test:
-	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" go test ./... -v
+	go test -tags "$(GO_TAGS)" ./...
 
 # Local evaluation gates (recall, sync-safety, identity). Builds the binary and
 # runs each eval against its embedded fixture; any failure exits non-zero so CI
@@ -48,7 +45,7 @@ eval: build
 	./bin/anchored eval identity
 
 lint:
-	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" golangci-lint run ./...
+	golangci-lint run ./...
 
 clean:
 	rm -rf bin/

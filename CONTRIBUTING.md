@@ -9,9 +9,15 @@ git clone https://github.com/jholhewres/anchored.git
 cd anchored
 make build
 make test
+make eval
 ```
 
-**Requirements**: Go 1.25+, GCC (for CGO/SQLite with FTS5).
+**Requirements**: Go 1.25+ and a C compiler (CGO builds SQLite).
+
+FTS5 is enabled by go-sqlite3's `sqlite_fts5` build tag, so plain `go` commands
+need it too: `go test -tags sqlite_fts5 ./...`. Do not enable FTS5 through
+`CGO_CFLAGS`: setting it replaces Go's default `-O2` and compiles SQLite
+unoptimised.
 
 ## Making Changes
 
@@ -36,8 +42,9 @@ docs: update tool support table
 
 - Include a description of **what changed** and **why**.
 - Reference issues when applicable (`Closes #12`).
-- Ensure `go vet ./...` and `go build ./...` pass.
-- Pre-existing test failures (e.g., FTS5 in environments without the module) are known — just note them.
+- CI runs, and a PR must pass: `go test -tags sqlite_fts5 ./...` on Linux and
+  macOS, `make eval`, `go run ./cmd/version-sync --check`, and golangci-lint on
+  the lines the PR changes (`golangci-lint run --new-from-rev=origin/main`).
 
 ## Adding Tool Support
 

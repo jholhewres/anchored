@@ -5,20 +5,48 @@ on:
     tags:
       - "v*"
 
+# Read-only by default; only the jobs that publish get write access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  # Nothing is built or published until the tag, VERSION and the plugin
+  # manifests agree and the tests and eval gates pass on the tagged commit.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+
+      - name: Tag, VERSION and manifests agree
+        run: go run ./cmd/version-sync --check --tag "$GITHUB_REF_NAME"
+
+      - name: Test
+        run: go test -tags sqlite_fts5 -count=1 ./...
+
+      - name: Eval gates
+        run: make eval
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25"
 
@@ -39,8 +67,8 @@ jobs:
 
       - name: Verify glibc baseline of the amd64 binary
         run: |
-          CGO_ENABLED=1 CC=zcc-amd64 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" CGO_LDFLAGS="-lm" \
-            go build -o /tmp/anchored-glibc-check ./cmd/anchored
+          CGO_ENABLED=1 CC=zcc-amd64 \
+            go build -tags sqlite_fts5 -o /tmp/anchored-glibc-check ./cmd/anchored
           MAX=$(objdump -T /tmp/anchored-glibc-check | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
           echo "max glibc symbol: $MAX"
           case "$MAX" in
@@ -48,7 +76,7 @@ jobs:
           esac
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           version: "~> v2"
           args: release --clean
@@ -56,18 +84,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-macos:
+    needs: verify
     runs-on: macos-latest
+    permissions:
+      contents: write
     strategy:
       matrix:
         goarch: [arm64, amd64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25"
 
@@ -97,7 +128,7 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             ${{ env.ARCHIVE }}

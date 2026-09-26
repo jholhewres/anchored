@@ -8,10 +8,12 @@ builds:
     # released binaries run on older distros; the runner's native gcc would
     # link against its current glibc and break them there. Wrappers are
     # installed by the release workflow.
+    # FTS5 comes from go-sqlite3's build tag; a CGO_CFLAGS override would
+    # drop Go's default -O2 and ship an unoptimised SQLite.
+    tags:
+      - sqlite_fts5
     env:
       - CGO_ENABLED=1
-      - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
-      - CGO_LDFLAGS=-lm
       - CC=zcc-amd64
     ldflags:
       - -s -w -X main.Version={{.Version}}
@@ -29,9 +31,10 @@ builds:
   - id: anchored-windows
     main: ./cmd/anchored
     binary: anchored
+    tags:
+      - sqlite_fts5
     env:
       - CGO_ENABLED=1
-      - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
       - CC=x86_64-w64-mingw32-gcc
     ldflags:
       - -s -w -X main.Version={{.Version}}

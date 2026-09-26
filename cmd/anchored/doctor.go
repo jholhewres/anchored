@@ -168,7 +168,7 @@ func checkDatabase(dbPath string, expectedDims int) {
 		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='memories_fts'").Scan(&ftsCount)
 	if err != nil || ftsCount == 0 {
 		printCheck(false, "FTS5 enabled (memories_fts table)", "missing",
-			"rebuild binary with -DSQLITE_ENABLE_FTS5 (Makefile already does this for 'make build')")
+			"rebuild with `go build -tags sqlite_fts5` (make build already does this)")
 	} else {
 		printCheck(true, "FTS5 enabled", "", "")
 	}

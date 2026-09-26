@@ -5,10 +5,16 @@
 // dumb: it loads each JSON file, rewrites the version-bearing fields, and
 // writes back with the same indentation. Goreleaser already picks the version
 // from the git tag (which should match VERSION) so it doesn't need rewriting.
+//
+// With --check it rewrites nothing and fails when a manifest disagrees with
+// VERSION or, given --tag, when the release tag does: the release workflow
+// runs it before building so binaries and plugin never ship different
+// versions.
 package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,19 +22,97 @@ import (
 )
 
 func main() {
-	version, err := readVersion("VERSION")
+	check := flag.Bool("check", false, "verify the manifests (and --tag) match VERSION; write nothing")
+	tag := flag.String("tag", "", "release tag that must match VERSION (e.g. v0.20.0)")
+	flag.Parse()
+	if *tag != "" && !*check {
+		fail("--tag only applies with --check")
+	}
+	if err := run(".", *check, *tag); err != nil {
+		fail("%v", err)
+	}
+}
+
+func run(root string, check bool, tag string) error {
+	version, err := readVersion(filepath.Join(root, "VERSION"))
 	if err != nil {
-		fail("read VERSION: %v", err)
+		return fmt.Errorf("read VERSION: %w", err)
+	}
+	pluginPath := filepath.Join(root, ".claude-plugin", "plugin.json")
+	marketplacePath := filepath.Join(root, ".claude-plugin", "marketplace.json")
+
+	if check {
+		var problems []string
+		if tag != "" && strings.TrimPrefix(tag, "v") != version {
+			problems = append(problems, fmt.Sprintf("tag %s != VERSION %s", tag, version))
+		}
+		found, err := manifestVersions(pluginPath, marketplacePath)
+		if err != nil {
+			return err
+		}
+		for _, f := range found {
+			if f.version != version {
+				problems = append(problems, fmt.Sprintf("%s %s is %q, VERSION is %s", f.file, f.field, f.version, version))
+			}
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("version mismatch (run `make sync-version`):\n  %s", strings.Join(problems, "\n  "))
+		}
+		fmt.Printf("versions agree: v%s\n", version)
+		return nil
 	}
 
-	if err := syncPluginJSON(filepath.Join(".claude-plugin", "plugin.json"), version); err != nil {
-		fail("sync plugin.json: %v", err)
+	if err := syncPluginJSON(pluginPath, version); err != nil {
+		return fmt.Errorf("sync plugin.json: %w", err)
 	}
-	if err := syncMarketplaceJSON(filepath.Join(".claude-plugin", "marketplace.json"), version); err != nil {
-		fail("sync marketplace.json: %v", err)
+	if err := syncMarketplaceJSON(marketplacePath, version); err != nil {
+		return fmt.Errorf("sync marketplace.json: %w", err)
 	}
-
 	fmt.Printf("synced manifests to v%s\n", version)
+	return nil
+}
+
+type manifestVersion struct{ file, field, version string }
+
+// manifestVersions reads every version-bearing field syncPluginJSON and
+// syncMarketplaceJSON write.
+func manifestVersions(pluginPath, marketplacePath string) ([]manifestVersion, error) {
+	var out []manifestVersion
+	var plugin map[string]any
+	if err := readJSON(pluginPath, &plugin); err != nil {
+		return nil, err
+	}
+	v, _ := plugin["version"].(string)
+	out = append(out, manifestVersion{"plugin.json", "version", v})
+
+	var market map[string]any
+	if err := readJSON(marketplacePath, &market); err != nil {
+		return nil, err
+	}
+	if md, ok := market["metadata"].(map[string]any); ok {
+		v, _ := md["version"].(string)
+		out = append(out, manifestVersion{"marketplace.json", "metadata.version", v})
+	}
+	if plugins, ok := market["plugins"].([]any); ok {
+		for i, p := range plugins {
+			if pm, ok := p.(map[string]any); ok {
+				v, _ := pm["version"].(string)
+				out = append(out, manifestVersion{"marketplace.json", fmt.Sprintf("plugins[%d].version", i), v})
+			}
+		}
+	}
+	return out, nil
+}
+
+func readJSON(path string, into any) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		return fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+	}
+	return nil
 }
 
 func readVersion(path string) (string, error) {

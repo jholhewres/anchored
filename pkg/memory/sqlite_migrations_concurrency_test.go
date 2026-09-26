@@ -108,7 +108,7 @@ func TestMigrate_UpToDateDatabaseTakesNoWriteLock(t *testing.T) {
 	if _, err := writer.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 		t.Fatal(err)
 	}
-	defer writer.ExecContext(context.Background(), "ROLLBACK")
+	defer func() { _, _ = writer.ExecContext(context.Background(), "ROLLBACK") }()
 
 	opener, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=200&_txlock=immediate")
 	if err != nil {

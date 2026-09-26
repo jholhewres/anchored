@@ -10,20 +10,68 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25"
 
+      # FTS5 comes from go-sqlite3's build tag. Never set CGO_CFLAGS for it:
+      # that replaces Go's default -O2 and builds an unoptimised SQLite.
       - name: Build
-        run: CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" CGO_LDFLAGS="-lm" go build -o /dev/null ./...
+        run: go build -tags sqlite_fts5 ./...
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -tags sqlite_fts5 ./...
+
+      - name: Test
+        run: go test -tags sqlite_fts5 -count=1 ./...
+
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+
+      - name: Eval gates (recall, sync-safety, identity)
+        run: make eval
+
+      - name: Manifests agree with VERSION
+        run: go run ./cmd/version-sync --check
+
+  lint:
+    runs-on: ubuntu-latest
+    # only-new-issues reads the pull request's diff through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+
+      # The tree predates the linter; only issues introduced by the change
+      # under review fail the job. Build tags come from .golangci.yml.
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        with:
+          version: v2.12
+          only-new-issues: true
