@@ -1,0 +1,167 @@
+description: >
+  Retrieval quality with the real embedder, end to end through the production
+  search path (vector + BM25 fusion, MMR, decay). The corpus is synthetic — a
+  developer's memories across five fictional projects plus personal
+  preferences, in Portuguese, English and Spanish — with near-topic
+  distractors. Queries paraphrase or translate their targets, so lexical
+  overlap alone does not find most of them: this is the eval that moves when
+  the embedding space is healthy and stays flat when it is collapsed.
+k: 5
+min_recall: 0.0
+memories:
+  # --- atlas: Go API gateway ---------------------------------------------
+  - {key: at_rate_limit, category: decision, content: "atlas usa rate limiting por token bucket no Redis, 100 requisições por minuto por chave de API, com burst de 20"}
+  - {key: at_rate_limit_old, category: event, content: "em março o atlas ainda limitava requisições em memória por instância, o que deixava passar o dobro com duas réplicas"}
+  - {key: at_auth, category: decision, content: "atlas validates JWTs locally with the JWKS cached for 10 minutes instead of calling the auth service on every request"}
+  - {key: at_timeout, category: fact, content: "the atlas upstream timeout is 8 seconds; the mobile app retries once after 2 seconds"}
+  - {key: at_circuit, category: learning, content: "sem circuit breaker, uma lentidão no serviço de pagamentos derrubou o atlas inteiro por esgotar as goroutines"}
+  - {key: at_go_version, category: fact, content: "atlas is built with Go 1.25 and ships as a distroless container"}
+  - {key: at_logging, category: decision, content: "atlas logs in JSON with slog; request bodies are never logged, only their size"}
+  - {key: at_cors, category: fact, content: "atlas allows CORS only from the lumen dashboard origin and localhost:5173 in development"}
+  - {key: at_healthcheck, category: fact, content: "o healthcheck do atlas em /healthz não consulta o banco, só confirma que o processo responde"}
+  - {key: at_readiness, category: fact, content: "the atlas readiness probe at /readyz does check Redis and the auth JWKS"}
+  - {key: at_versioning, category: decision, content: "atlas versiona rotas pelo prefixo /v2 e mantém /v1 por seis meses depois de cada lançamento"}
+  - {key: at_grpc, category: decision, content: "internal calls from atlas to orca use gRPC with deadlines propagated from the incoming request"}
+  - {key: at_pprof, category: learning, content: "el endpoint pprof de atlas quedó expuesto en producción; ahora solo escucha en la red interna"}
+  - {key: at_tls, category: fact, content: "TLS terminates at the load balancer; atlas speaks plain HTTP inside the cluster"}
+  - {key: at_idempotency, category: decision, content: "POSTs de cobrança no atlas exigem o header Idempotency-Key e guardam a resposta por 24 horas"}
+  - {key: at_compression, category: fact, content: "atlas compresses responses with gzip only above 1 KB"}
+  - {key: at_tests, category: preference, content: "nos testes do atlas prefiro httptest com servidores reais a mocks de interface"}
+  - {key: at_migration_bug, category: learning, content: "a migration que renomeou a coluna user_id travou a tabela de sessões por 40 segundos em produção; renomes agora são feitos em três etapas"}
+  - {key: at_panic, category: learning, content: "a nil map write in the atlas middleware panicked only under concurrent requests; the race detector caught it in CI"}
+  - {key: at_owner, category: fact, content: "o time de plataforma é dono do atlas; o plantão é rotativo semanal"}
+  # --- lumen: React dashboard ---------------------------------------------
+  - {key: lu_state, category: decision, content: "lumen keeps server state in TanStack Query and only UI state in Zustand"}
+  - {key: lu_state_old, category: event, content: "lumen used Redux for everything until the rewrite in June"}
+  - {key: lu_build, category: fact, content: "lumen builds with Vite; the production bundle must stay under 300 KB gzipped"}
+  - {key: lu_i18n, category: decision, content: "o lumen carrega as traduções por rota, e o espanhol é o idioma padrão para clientes da América Latina"}
+  - {key: lu_charts, category: decision, content: "lumen draws charts with uPlot because Chart.js was too heavy for the real-time panels"}
+  - {key: lu_auth_flow, category: fact, content: "lumen stores the access token in memory and the refresh token in an httpOnly cookie"}
+  - {key: lu_a11y, category: preference, content: "no lumen todo componente novo precisa passar no axe e ser navegável só pelo teclado"}
+  - {key: lu_tests, category: decision, content: "lumen uses Playwright for end-to-end tests and Vitest for units; no Jest"}
+  - {key: lu_flaky, category: learning, content: "los tests de Playwright de lumen fallaban por animaciones; desactivamos las transiciones en el entorno de test"}
+  - {key: lu_dark, category: decision, content: "o lumen segue o tema do sistema operacional por padrão e guarda a escolha manual no localStorage"}
+  - {key: lu_tables, category: fact, content: "lumen virtualizes tables with more than 200 rows"}
+  - {key: lu_forms, category: decision, content: "forms in lumen use react-hook-form with zod schemas shared with atlas through a generated package"}
+  - {key: lu_errors, category: fact, content: "lumen reports frontend errors to Sentry with the release set to the git SHA"}
+  - {key: lu_deploy, category: fact, content: "o lumen é publicado como site estático no CDN a cada merge na main"}
+  - {key: lu_csp, category: learning, content: "a CSP do lumen bloqueou o script do Intercom; foi preciso liberar o domínio em script-src"}
+  - {key: lu_perf, category: learning, content: "the lumen overview page re-rendered on every websocket tick; memoizing the selector cut CPU by half"}
+  - {key: lu_node, category: fact, content: "lumen requires Node 22; the CI image pins 22.9"}
+  - {key: lu_storybook, category: preference, content: "prefiro documentar componentes do lumen no Storybook em vez de no README"}
+  # --- orca: Python data pipeline -----------------------------------------
+  - {key: or_scheduler, category: decision, content: "orca schedules jobs with Airflow; each DAG runs in its own Kubernetes pod"}
+  - {key: or_scheduler_old, category: event, content: "orca rodava com cron numa VM até a migração para o Airflow em abril"}
+  - {key: or_warehouse, category: fact, content: "orca loads into BigQuery partitioned by event date and clustered by customer_id"}
+  - {key: or_dedup, category: learning, content: "eventos duplicados no orca vinham de retries do produtor Kafka; a deduplicação agora usa o event_id na staging"}
+  - {key: or_schema, category: decision, content: "orca valida os eventos com JSON Schema antes de gravar; eventos inválidos vão para uma dead letter queue"}
+  - {key: or_python, category: fact, content: "orca runs on Python 3.12 with dependencies managed by uv"}
+  - {key: or_backfill, category: learning, content: "a backfill of two years of events blew the BigQuery quota; backfills now run in monthly slices at night"}
+  - {key: or_pii, category: decision, content: "orca hashes e-mails and phone numbers with a salted SHA-256 before they reach the warehouse"}
+  - {key: or_latency, category: fact, content: "o SLA do orca é ter os eventos no warehouse em até 15 minutos"}
+  - {key: or_kafka, category: fact, content: "orca consumes the events topic with 12 partitions and a consumer group per environment"}
+  - {key: or_costs, category: learning, content: "las consultas sin filtro de partición en orca costaban cientos de dólares; ahora el warehouse exige el filtro"}
+  - {key: or_tests, category: preference, content: "nos testes do orca prefiro fixtures com dados reais anonimizados a dados inventados"}
+  - {key: or_owner, category: fact, content: "the data team owns orca; alerts go to the #data-oncall channel"}
+  - {key: or_dbt, category: decision, content: "as transformações do orca ficam no dbt, e só a ingestão fica em Python"}
+  - {key: or_timezone, category: learning, content: "orca stored timestamps in local time for a month, which broke the daily aggregates at daylight saving changes; everything is UTC now"}
+  # --- nimbus: infrastructure ---------------------------------------------
+  - {key: ni_k8s, category: fact, content: "nimbus runs three GKE clusters: dev, staging and prod, in southamerica-east1"}
+  - {key: ni_terraform, category: decision, content: "toda a infraestrutura do nimbus é declarada em Terraform, com estado remoto num bucket versionado"}
+  - {key: ni_secrets, category: decision, content: "nimbus keeps secrets in Google Secret Manager and syncs them to pods with the External Secrets operator"}
+  - {key: ni_secrets_old, category: event, content: "até julho os segredos do nimbus ficavam em arquivos .env no repositório de deploy"}
+  - {key: ni_ci, category: fact, content: "nimbus CI runs on GitHub Actions with self-hosted runners for the Docker builds"}
+  - {key: ni_deploy, category: decision, content: "deploys no nimbus são feitos pelo Argo CD a partir do repositório de manifests, nunca com kubectl apply manual"}
+  - {key: ni_rollback, category: fact, content: "rolling back in nimbus means reverting the manifest commit; Argo CD syncs within two minutes"}
+  - {key: ni_dns, category: fact, content: "nimbus manages DNS in Cloudflare through Terraform"}
+  - {key: ni_backup, category: decision, content: "os bancos do nimbus têm backup diário com retenção de 30 dias e um teste de restauração por mês"}
+  - {key: ni_outage, category: learning, content: "a certificate expired on the staging ingress because cert-manager lacked DNS permissions; renewal is now alerted 14 days ahead"}
+  - {key: ni_costs, category: learning, content: "nodos sin límites de CPU en nimbus dispararon el autoscaler; todos los pods declaran requests y limits"}
+  - {key: ni_monitoring, category: fact, content: "nimbus monitors with Prometheus and Grafana; logs go to Loki"}
+  - {key: ni_alerts, category: preference, content: "prefiro alertas por sintoma (latência, erro) em vez de por causa (CPU alta)"}
+  - {key: ni_postgres, category: fact, content: "nimbus runs Postgres 16 on Cloud SQL with a read replica for reporting"}
+  - {key: ni_network, category: fact, content: "pods in nimbus reach the internet only through a Cloud NAT with fixed egress IPs, which partners allowlist"}
+  # --- quill: docs site ---------------------------------------------------
+  - {key: qu_stack, category: decision, content: "quill is an Astro site with MDX pages; search is Pagefind, built at deploy time"}
+  - {key: qu_versioning, category: decision, content: "o quill mantém a documentação das duas últimas versões maiores da API"}
+  - {key: qu_style, category: preference, content: "na documentação do quill uso voz ativa, segunda pessoa e frases curtas"}
+  - {key: qu_links, category: learning, content: "links quebrados no quill passavam despercebidos; o CI agora roda um verificador de links em cada PR"}
+  - {key: qu_screens, category: preference, content: "prefiero capturas de pantalla anotadas solo cuando el texto no alcanza"}
+  - {key: qu_api_ref, category: fact, content: "the quill API reference is generated from the atlas OpenAPI file on every release"}
+  - {key: qu_deploy, category: fact, content: "quill deploys to Cloudflare Pages; previews are created for every pull request"}
+  # --- cross-cutting: conventions, people, personal preferences ----------
+  - {key: pr_commits, category: preference, content: "commits pequenos e temáticos, mensagens em português no imperativo, sem co-author"}
+  - {key: pr_review, category: preference, content: "code review focuses on correctness first; style issues go to the linter, not to comments"}
+  - {key: pr_branches, category: preference, content: "branch names carry the ticket key and a short slug, like PAY-123-cancel-pending-orders"}
+  - {key: pr_meetings, category: preference, content: "prefiro receber decisões por escrito num documento a discutir em reunião"}
+  - {key: pr_editor, category: fact, content: "I use Neovim with the Go and TypeScript language servers"}
+  - {key: pr_shell, category: fact, content: "my shell is zsh on Ubuntu, and I keep dotfiles in a private repo"}
+  - {key: pr_language, category: preference, content: "responda em português por padrão; termos técnicos podem ficar em inglês"}
+  - {key: pr_oncall, category: fact, content: "estou no plantão do atlas na terceira semana de cada mês"}
+  - {key: pr_deadlines, category: preference, content: "quando um prazo aperta, prefiro cortar escopo a cortar teste"}
+  - {key: pe_ana, category: fact, content: "Ana leads the data team and approves any change to the orca warehouse schema"}
+  - {key: pe_bruno, category: fact, content: "Bruno is the lumen tech lead and reviews every dependency upgrade"}
+  - {key: pe_carla, category: fact, content: "Carla cuida da infraestrutura do nimbus e é quem aprova mudanças de rede"}
+  - {key: pe_diego, category: fact, content: "Diego es el responsable de seguridad; toda excepción de CSP pasa por él"}
+  # --- distractors: near-topic, wrong answer ------------------------------
+  - {key: dx_rate_blog, category: fact, content: "read an article comparing leaky bucket and sliding window counters for rate limiting"}
+  - {key: dx_redis_cache, category: fact, content: "o cache de catálogo do lumen fica no navegador, não no Redis"}
+  - {key: dx_jwt_lib, category: fact, content: "the golang-jwt library changed its import path in v5"}
+  - {key: dx_airflow_ui, category: fact, content: "the Airflow UI is only reachable through the VPN"}
+  - {key: dx_terraform_fmt, category: preference, content: "rodo terraform fmt antes de abrir PR"}
+  - {key: dx_grafana_theme, category: preference, content: "uso o tema escuro no Grafana"}
+  - {key: dx_astro_upgrade, category: event, content: "upgraded Astro to version 5 without issues"}
+  - {key: dx_python_lint, category: fact, content: "ruff replaced flake8 and isort in all Python repositories"}
+  - {key: dx_k8s_course, category: event, content: "terminei um curso de Kubernetes em agosto"}
+  - {key: dx_sentry_quota, category: fact, content: "the Sentry plan allows 50k events per month"}
+queries:
+  - {query: "how many requests per minute can an API key make on the gateway?", expect: [at_rate_limit]}
+  - {query: "como o gateway verifica os tokens de login sem chamar o serviço de autenticação?", expect: [at_auth]}
+  - {query: "¿por qué se cayó el gateway cuando pagos se volvió lento?", expect: [at_circuit]}
+  - {query: "qual endpoint confirma que o atlas está pronto para receber tráfego?", expect: [at_readiness]}
+  - {query: "how long do old API routes keep working after a release?", expect: [at_versioning]}
+  - {query: "profiling endpoint exposed in production", expect: [at_pprof]}
+  - {query: "evitar cobrança duplicada quando o cliente reenvia a requisição", expect: [at_idempotency]}
+  - {query: "renaming a column locked a table in production", expect: [at_migration_bug]}
+  - {query: "quem atende incidentes do gateway?", expect: [at_owner, pr_oncall]}
+  - {query: "where is TLS terminated?", expect: [at_tls]}
+  - {query: "what does the dashboard use for data fetched from the server?", expect: [lu_state]}
+  - {query: "limite de tamanho do bundle do front", expect: [lu_build]}
+  - {query: "¿qué idioma ve por defecto un cliente latinoamericano en el panel?", expect: [lu_i18n]}
+  - {query: "why not Chart.js for the live graphs?", expect: [lu_charts]}
+  - {query: "onde fica o refresh token no navegador?", expect: [lu_auth_flow]}
+  - {query: "testes end-to-end instáveis por causa de animações", expect: [lu_flaky]}
+  - {query: "accessibility requirements for new UI components", expect: [lu_a11y]}
+  - {query: "a página inicial do painel gastava muita CPU com o websocket", expect: [lu_perf]}
+  - {query: "the chat widget script was blocked by the content security policy", expect: [lu_csp, pe_diego]}
+  - {query: "who must review a dependency bump in the frontend?", expect: [pe_bruno]}
+  - {query: "what orchestrates the data pipeline jobs today?", expect: [or_scheduler]}
+  - {query: "de onde vinham os eventos repetidos no pipeline?", expect: [or_dedup]}
+  - {query: "what happens to events that fail validation?", expect: [or_schema]}
+  - {query: "a carga histórica estourou a cota do data warehouse", expect: [or_backfill]}
+  - {query: "how is personal data protected before it reaches BigQuery?", expect: [or_pii]}
+  - {query: "¿cuánto tarda un evento en llegar al warehouse?", expect: [or_latency]}
+  - {query: "consultas caras sem filtro de partição", expect: [or_costs]}
+  - {query: "daylight saving time broke the daily numbers", expect: [or_timezone]}
+  - {query: "who approves warehouse schema changes?", expect: [pe_ana]}
+  - {query: "where do the transformations live, SQL or Python?", expect: [or_dbt]}
+  - {query: "em que região rodam os clusters?", expect: [ni_k8s]}
+  - {query: "how are secrets delivered to the pods now?", expect: [ni_secrets]}
+  - {query: "can I deploy with kubectl apply?", expect: [ni_deploy]}
+  - {query: "como desfazer um deploy ruim?", expect: [ni_rollback]}
+  - {query: "why did the staging certificate expire?", expect: [ni_outage]}
+  - {query: "¿con qué frecuencia se prueba restaurar un backup?", expect: [ni_backup]}
+  - {query: "partners need our outbound IP addresses", expect: [ni_network]}
+  - {query: "que tipo de alerta eu prefiro?", expect: [ni_alerts]}
+  - {query: "who approves network changes in the infrastructure?", expect: [pe_carla]}
+  - {query: "how is search built on the docs site?", expect: [qu_stack]}
+  - {query: "tom e estilo de escrita da documentação", expect: [qu_style]}
+  - {query: "where does the API reference come from?", expect: [qu_api_ref]}
+  - {query: "¿cómo evitamos enlaces rotos en la documentación?", expect: [qu_links]}
+  - {query: "how should I write commit messages?", expect: [pr_commits]}
+  - {query: "what goes into a branch name?", expect: [pr_branches]}
+  - {query: "em que idioma devo responder?", expect: [pr_language]}
+  - {query: "prazo apertado: corto escopo ou teste?", expect: [pr_deadlines]}
+  - {query: "who handles security exceptions?", expect: [pe_diego]}
+  - {query: "which editor do I use?", expect: [pr_editor]}
+  - {query: "testes com dados reais ou inventados no pipeline?", expect: [or_tests]}

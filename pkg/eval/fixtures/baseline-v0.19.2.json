@@ -1,0 +1,569 @@
+{
+  "name": "recall-real",
+  "passed": true,
+  "score": 0.17050000000000004,
+  "summary": "50 queries over 98 memories, 20 runs: recall@5=0.171 (0.140-0.200) mrr@10=0.121 ndcg@10=0.133",
+  "cases": [
+    {
+      "name": "how many requests per minute can an API key make on the gateway?",
+      "passed": true,
+      "score": 0.9000000000000002,
+      "detail": "recall@5=0.90 mrr@10=0.60 ndcg@10=0.68 top=[at_pprof at_rate_limit at_versioning]"
+    },
+    {
+      "name": "como o gateway verifica os tokens de login sem chamar o serviço de autenticação?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_circuit ni_terraform at_idempotency]"
+    },
+    {
+      "name": "¿por qué se cayó el gateway cuando pagos se volvió lento?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_versioning at_pprof lu_perf]"
+    },
+    {
+      "name": "qual endpoint confirma que o atlas está pronto para receber tráfego?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_rate_limit at_versioning at_pprof]"
+    },
+    {
+      "name": "how long do old API routes keep working after a release?",
+      "passed": true,
+      "score": 0.9500000000000003,
+      "detail": "recall@5=0.95 mrr@10=0.34 ndcg@10=0.49 top=[at_rate_limit at_pprof at_versioning]"
+    },
+    {
+      "name": "profiling endpoint exposed in production",
+      "passed": true,
+      "score": 0.9000000000000002,
+      "detail": "recall@5=0.90 mrr@10=0.90 ndcg@10=0.90 top=[at_pprof lu_flaky lu_perf]"
+    },
+    {
+      "name": "evitar cobrança duplicada quando o cliente reenvia a requisição",
+      "passed": true,
+      "score": 0.2,
+      "detail": "recall@5=0.20 mrr@10=0.07 ndcg@10=0.10 top=[ni_terraform at_circuit lu_i18n]"
+    },
+    {
+      "name": "renaming a column locked a table in production",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform at_versioning lu_flaky]"
+    },
+    {
+      "name": "quem atende incidentes do gateway?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform lu_flaky ni_outage]"
+    },
+    {
+      "name": "where is TLS terminated?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[or_costs at_pprof ni_deploy]"
+    },
+    {
+      "name": "what does the dashboard use for data fetched from the server?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_auth at_grpc or_schema]"
+    },
+    {
+      "name": "limite de tamanho do bundle do front",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_costs at_versioning ni_outage]"
+    },
+    {
+      "name": "¿qué idioma ve por defecto un cliente latinoamericano en el panel?",
+      "passed": true,
+      "score": 0.05,
+      "detail": "recall@5=0.05 mrr@10=0.03 ndcg@10=0.03 top=[qu_links at_circuit ni_terraform]"
+    },
+    {
+      "name": "why not Chart.js for the live graphs?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_grpc or_schema or_timezone]"
+    },
+    {
+      "name": "onde fica o refresh token no navegador?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_pprof at_versioning at_rate_limit]"
+    },
+    {
+      "name": "testes end-to-end instáveis por causa de animações",
+      "passed": true,
+      "score": 1.0000000000000002,
+      "detail": "recall@5=1.00 mrr@10=0.38 ndcg@10=0.53 top=[ni_costs at_rate_limit lu_flaky]"
+    },
+    {
+      "name": "accessibility requirements for new UI components",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[lu_perf ni_outage lu_state]"
+    },
+    {
+      "name": "a página inicial do painel gastava muita CPU com o websocket",
+      "passed": true,
+      "score": 1.0000000000000002,
+      "detail": "recall@5=1.00 mrr@10=0.55 ndcg@10=0.67 top=[ni_costs lu_perf lu_flaky]"
+    },
+    {
+      "name": "the chat widget script was blocked by the content security policy",
+      "passed": true,
+      "score": 0.025,
+      "detail": "recall@5=0.03 mrr@10=0.02 ndcg@10=0.02 top=[ni_terraform at_versioning at_auth]"
+    },
+    {
+      "name": "who must review a dependency bump in the frontend?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_pprof lu_perf ni_deploy]"
+    },
+    {
+      "name": "what orchestrates the data pipeline jobs today?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_grpc lu_dark or_schema]"
+    },
+    {
+      "name": "de onde vinham os eventos repetidos no pipeline?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_rate_limit ni_backup or_schema]"
+    },
+    {
+      "name": "what happens to events that fail validation?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[or_backfill or_dedup at_pprof]"
+    },
+    {
+      "name": "a carga histórica estourou a cota do data warehouse",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform at_circuit lu_perf]"
+    },
+    {
+      "name": "how is personal data protected before it reaches BigQuery?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[lu_perf at_pprof at_versioning]"
+    },
+    {
+      "name": "¿cuánto tarda un evento en llegar al warehouse?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[qu_links at_circuit at_pprof]"
+    },
+    {
+      "name": "consultas caras sem filtro de partição",
+      "passed": true,
+      "score": 1.0000000000000002,
+      "detail": "recall@5=1.00 mrr@10=1.00 ndcg@10=1.00 top=[or_costs lu_forms qu_links]"
+    },
+    {
+      "name": "daylight saving time broke the daily numbers",
+      "passed": true,
+      "score": 1.0000000000000002,
+      "detail": "recall@5=1.00 mrr@10=1.00 ndcg@10=1.00 top=[or_timezone at_panic at_auth]"
+    },
+    {
+      "name": "who approves warehouse schema changes?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[or_costs ni_costs ni_outage]"
+    },
+    {
+      "name": "where do the transformations live, SQL or Python?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_grpc lu_dark or_schema]"
+    },
+    {
+      "name": "em que região rodam os clusters?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform at_versioning ni_backup]"
+    },
+    {
+      "name": "how are secrets delivered to the pods now?",
+      "passed": true,
+      "score": 0.05,
+      "detail": "recall@5=0.05 mrr@10=0.02 ndcg@10=0.03 top=[lu_perf lu_forms ni_secrets]"
+    },
+    {
+      "name": "can I deploy with kubectl apply?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_outage ni_terraform lu_flaky]"
+    },
+    {
+      "name": "como desfazer um deploy ruim?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_rate_limit ni_outage ni_deploy]"
+    },
+    {
+      "name": "why did the staging certificate expire?",
+      "passed": true,
+      "score": 1.0000000000000002,
+      "detail": "recall@5=1.00 mrr@10=1.00 ndcg@10=1.00 top=[ni_outage ni_costs at_rate_limit]"
+    },
+    {
+      "name": "¿con qué frecuencia se prueba restaurar un backup?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform at_versioning at_panic]"
+    },
+    {
+      "name": "partners need our outbound IP addresses",
+      "passed": true,
+      "score": 0.15000000000000002,
+      "detail": "recall@5=0.15 mrr@10=0.05 ndcg@10=0.08 top=[ni_costs lu_flaky at_rate_limit]"
+    },
+    {
+      "name": "que tipo de alerta eu prefiro?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_rate_limit at_pprof at_versioning]"
+    },
+    {
+      "name": "who approves network changes in the infrastructure?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[lu_perf or_timezone pe_ana]"
+    },
+    {
+      "name": "how is search built on the docs site?",
+      "passed": true,
+      "score": 0.25,
+      "detail": "recall@5=0.25 mrr@10=0.08 ndcg@10=0.12 top=[ni_costs at_rate_limit or_costs]"
+    },
+    {
+      "name": "tom e estilo de escrita da documentação",
+      "passed": true,
+      "score": 0.05,
+      "detail": "recall@5=0.05 mrr@10=0.02 ndcg@10=0.03 top=[ni_costs at_rate_limit ni_outage]"
+    },
+    {
+      "name": "where does the API reference come from?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[lu_perf at_grpc qu_links]"
+    },
+    {
+      "name": "¿cómo evitamos enlaces rotos en la documentación?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[or_costs at_pprof ni_deploy]"
+    },
+    {
+      "name": "how should I write commit messages?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[lu_flaky or_costs ni_outage]"
+    },
+    {
+      "name": "what goes into a branch name?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform ni_outage lu_tests]"
+    },
+    {
+      "name": "em que idioma devo responder?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_terraform at_versioning lu_flaky]"
+    },
+    {
+      "name": "prazo apertado: corto escopo ou teste?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_grpc qu_links ni_deploy]"
+    },
+    {
+      "name": "who handles security exceptions?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_pprof ni_outage at_auth]"
+    },
+    {
+      "name": "which editor do I use?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[ni_outage or_pii ni_secrets]"
+    },
+    {
+      "name": "testes com dados reais ou inventados no pipeline?",
+      "passed": true,
+      "detail": "recall@5=0.00 mrr@10=0.00 ndcg@10=0.00 top=[at_pprof at_versioning lu_perf]"
+    }
+  ],
+  "metrics": {
+    "recall_at_5": 0.17050000000000004,
+    "mrr_at_10": 0.12083333333333333,
+    "ndcg_at_10": 0.1334128339856696
+  },
+  "per_query": {
+    "a carga histórica estourou a cota do data warehouse": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "a página inicial do painel gastava muita CPU com o websocket": {
+      "recall_at_5": 1.0000000000000002,
+      "mrr_at_10": 0.5500000000000002,
+      "ndcg_at_10": 0.6678367782143114
+    },
+    "accessibility requirements for new UI components": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "can I deploy with kubectl apply?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "como desfazer um deploy ruim?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "como o gateway verifica os tokens de login sem chamar o serviço de autenticação?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "consultas caras sem filtro de partição": {
+      "recall_at_5": 1.0000000000000002,
+      "mrr_at_10": 1.0000000000000002,
+      "ndcg_at_10": 1.0000000000000002
+    },
+    "daylight saving time broke the daily numbers": {
+      "recall_at_5": 1.0000000000000002,
+      "mrr_at_10": 1.0000000000000002,
+      "ndcg_at_10": 1.0000000000000002
+    },
+    "de onde vinham os eventos repetidos no pipeline?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "em que idioma devo responder?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "em que região rodam os clusters?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "evitar cobrança duplicada quando o cliente reenvia a requisição": {
+      "recall_at_5": 0.2,
+      "mrr_at_10": 0.06666666666666667,
+      "ndcg_at_10": 0.1
+    },
+    "how are secrets delivered to the pods now?": {
+      "recall_at_5": 0.05,
+      "mrr_at_10": 0.016666666666666666,
+      "ndcg_at_10": 0.025
+    },
+    "how is personal data protected before it reaches BigQuery?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "how is search built on the docs site?": {
+      "recall_at_5": 0.25,
+      "mrr_at_10": 0.08333333333333333,
+      "ndcg_at_10": 0.125
+    },
+    "how long do old API routes keep working after a release?": {
+      "recall_at_5": 0.9500000000000003,
+      "mrr_at_10": 0.3416666666666667,
+      "ndcg_at_10": 0.49463946303571876
+    },
+    "how many requests per minute can an API key make on the gateway?": {
+      "recall_at_5": 0.9000000000000002,
+      "mrr_at_10": 0.6000000000000003,
+      "ndcg_at_10": 0.6785578521428745
+    },
+    "how should I write commit messages?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "limite de tamanho do bundle do front": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "onde fica o refresh token no navegador?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "partners need our outbound IP addresses": {
+      "recall_at_5": 0.15000000000000002,
+      "mrr_at_10": 0.05,
+      "ndcg_at_10": 0.07500000000000001
+    },
+    "prazo apertado: corto escopo ou teste?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "profiling endpoint exposed in production": {
+      "recall_at_5": 0.9000000000000002,
+      "mrr_at_10": 0.9000000000000002,
+      "ndcg_at_10": 0.9000000000000002
+    },
+    "qual endpoint confirma que o atlas está pronto para receber tráfego?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "que tipo de alerta eu prefiro?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "quem atende incidentes do gateway?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "renaming a column locked a table in production": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "testes com dados reais ou inventados no pipeline?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "testes end-to-end instáveis por causa de animações": {
+      "recall_at_5": 1.0000000000000002,
+      "mrr_at_10": 0.375,
+      "ndcg_at_10": 0.5327324383928644
+    },
+    "the chat widget script was blocked by the content security policy": {
+      "recall_at_5": 0.025,
+      "mrr_at_10": 0.016666666666666666,
+      "ndcg_at_10": 0.015328679819136461
+    },
+    "tom e estilo de escrita da documentação": {
+      "recall_at_5": 0.05,
+      "mrr_at_10": 0.016666666666666666,
+      "ndcg_at_10": 0.025
+    },
+    "what does the dashboard use for data fetched from the server?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "what goes into a branch name?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "what happens to events that fail validation?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "what orchestrates the data pipeline jobs today?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "where do the transformations live, SQL or Python?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "where does the API reference come from?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "where is TLS terminated?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "which editor do I use?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "who approves network changes in the infrastructure?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "who approves warehouse schema changes?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "who handles security exceptions?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "who must review a dependency bump in the frontend?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "why did the staging certificate expire?": {
+      "recall_at_5": 1.0000000000000002,
+      "mrr_at_10": 1.0000000000000002,
+      "ndcg_at_10": 1.0000000000000002
+    },
+    "why not Chart.js for the live graphs?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "¿con qué frecuencia se prueba restaurar un backup?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "¿cuánto tarda un evento en llegar al warehouse?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "¿cómo evitamos enlaces rotos en la documentación?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "¿por qué se cayó el gateway cuando pagos se volvió lento?": {
+      "recall_at_5": 0,
+      "mrr_at_10": 0,
+      "ndcg_at_10": 0
+    },
+    "¿qué idioma ve por defecto un cliente latinoamericano en el panel?": {
+      "recall_at_5": 0.05,
+      "mrr_at_10": 0.025,
+      "ndcg_at_10": 0.03154648767857287
+    }
+  },
+  "corpus": 98,
+  "embedded": 83,
+  "label": "search as of v0.19.2 (tokenizer and BM25 bugs present), measured on feat/v0.20-m1 before M2",
+  "runs": 20,
+  "recall_spread": [
+    0.14,
+    0.2
+  ],
+  "per_run_recall_at_5": [
+    0.18,
+    0.16,
+    0.14,
+    0.2,
+    0.16,
+    0.2,
+    0.14,
+    0.18,
+    0.17,
+    0.16,
+    0.2,
+    0.18,
+    0.18,
+    0.14,
+    0.2,
+    0.18,
+    0.16,
+    0.14,
+    0.16,
+    0.18
+  ],
+  "fixture_sha256": "3f5d2d858bde81ba62639ff7c97f9ab4e54250250633dd6008b03f4aed789e6e",
+  "model": "paraphrase-multilingual-MiniLM-L12-v2",
+  "health": {
+    "vectors": 98,
+    "pairs": 49,
+    "mean_cosine": 0.8892576594748361,
+    "median_cosine": 0.9041460217059034,
+    "share_above_0_75": 0.9387755102040817
+  }
+}
