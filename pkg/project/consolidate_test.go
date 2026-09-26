@@ -89,7 +89,7 @@ func TestConsolidate_FoldsWorktreeIntoRepository(t *testing.T) {
 	db := openConsolidateTestDB(t)
 	d := NewDetector(db)
 
-	base := t.TempDir()
+	base := realTempDir(t)
 	main := filepath.Join(base, "repo")
 	initRepo(t, main)
 	wt := filepath.Join(base, "wt")
@@ -146,7 +146,7 @@ func TestConsolidate_RepathsWhenRepositoryHasNoRow(t *testing.T) {
 	db := openConsolidateTestDB(t)
 	d := NewDetector(db)
 
-	base := t.TempDir()
+	base := realTempDir(t)
 	main := filepath.Join(base, "repo")
 	initRepo(t, main)
 	wt := filepath.Join(base, "wt")
@@ -183,7 +183,7 @@ func TestConsolidate_LeavesUnrelatedProjectsAlone(t *testing.T) {
 	db := openConsolidateTestDB(t)
 	d := NewDetector(db)
 
-	base := t.TempDir()
+	base := realTempDir(t)
 	cloneA := filepath.Join(base, "clone-a")
 	cloneB := filepath.Join(base, "clone-b")
 	initRepo(t, cloneA)
@@ -221,7 +221,7 @@ func TestConsolidate_ReportsMissingPathsWithoutGuessing(t *testing.T) {
 	db := openConsolidateTestDB(t)
 	d := NewDetector(db)
 
-	gone := filepath.Join(t.TempDir(), "deleted-worktree")
+	gone := filepath.Join(realTempDir(t), "deleted-worktree")
 	seedFragmentedProject(t, db, "p-gone", "gone", gone, 4)
 
 	report, err := d.PlanConsolidate()
@@ -248,7 +248,7 @@ func TestConsolidate_IsIdempotent(t *testing.T) {
 	db := openConsolidateTestDB(t)
 	d := NewDetector(db)
 
-	base := t.TempDir()
+	base := realTempDir(t)
 	main := filepath.Join(base, "repo")
 	initRepo(t, main)
 	wt := filepath.Join(base, "wt")

@@ -144,7 +144,7 @@ func TestDeriveRemoteKeyConsistent(t *testing.T) {
 }
 
 func TestDeriveRemoteKeyEmptyForNoRemote(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	got := deriveRemoteKey(tmp)
 	if got != "" {
 		t.Errorf("deriveRemoteKey on dir with no git remote = %q, want empty", got)
@@ -156,7 +156,7 @@ func TestDetectWithGitRepo(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	runGit(t, tmp, "init")
 	runGit(t, tmp, "config", "user.email", "test@test.com")
 	runGit(t, tmp, "config", "user.name", "Test")
@@ -197,7 +197,7 @@ func TestDetectWithRemoteKey(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	runGit(t, tmp, "init")
 	runGit(t, tmp, "config", "user.email", "test@test.com")
 	runGit(t, tmp, "config", "user.name", "Test")
@@ -238,7 +238,7 @@ func TestDetectNoRemoteKeyForLocalRepo(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	runGit(t, tmp, "init")
 	runGit(t, tmp, "config", "user.email", "test@test.com")
 	runGit(t, tmp, "config", "user.name", "Test")
@@ -263,7 +263,7 @@ func TestDetectBackfillsRemoteKey(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	runGit(t, tmp, "init")
 	runGit(t, tmp, "config", "user.email", "test@test.com")
 	runGit(t, tmp, "config", "user.name", "Test")
@@ -309,7 +309,7 @@ func TestDetectRekeysLegacyToCanonical(t *testing.T) {
 		t.Skip("git not found in PATH")
 	}
 
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	runGit(t, tmp, "init")
 	runGit(t, tmp, "config", "user.email", "test@test.com")
 	runGit(t, tmp, "config", "user.name", "Test")
@@ -348,7 +348,7 @@ func TestDetectRekeysLegacyToCanonical(t *testing.T) {
 }
 
 func TestDetectNonGitDirReturnsNil(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := realTempDir(t)
 	db := openTestDB(t)
 	detector := NewDetector(db)
 
@@ -403,7 +403,7 @@ func TestDetect_WorktreeSharesMainProject(t *testing.T) {
 	db := openTestDB(t)
 	d := NewDetector(db)
 
-	main := filepath.Join(t.TempDir(), "repo")
+	main := filepath.Join(realTempDir(t), "repo")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestDetect_WorktreeSharesMainProject(t *testing.T) {
 		t.Fatalf("detect main: %v (project=%v)", err, mainProject)
 	}
 
-	wt := filepath.Join(t.TempDir(), "wt")
+	wt := filepath.Join(realTempDir(t), "wt")
 	runGit(t, main, "worktree", "add", "-q", "--detach", wt)
 
 	wtProject, err := d.Detect(wt)
@@ -470,7 +470,7 @@ func TestDetect_SeparateClonesStaySeparate(t *testing.T) {
 
 	var ids []string
 	for _, name := range []string{"clone-a", "clone-b"} {
-		dir := filepath.Join(t.TempDir(), name)
+		dir := filepath.Join(realTempDir(t), name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -495,7 +495,7 @@ func TestDetect_SubmoduleKeepsItsWorkingTree(t *testing.T) {
 	db := openTestDB(t)
 	d := NewDetector(db)
 
-	base := t.TempDir()
+	base := realTempDir(t)
 	sub := filepath.Join(base, "sub")
 	super := filepath.Join(base, "super")
 	for _, dir := range []string{sub, super} {
