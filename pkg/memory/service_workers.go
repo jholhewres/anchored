@@ -282,6 +282,13 @@ func (s *Service) processClaimedJob(
 			if err := s.embedRevisionForGeneration(ctx, generations, generation, revision); err != nil {
 				return err
 			}
+			// A vector of the active generation reaches the cache as it is
+			// written (PutEmbeddingVector). Re-enabling that generation after
+			// every job reloaded the whole corpus into the cache each time; only
+			// a generation still being built can change state here.
+			if generation.State != EmbeddingGenerationBuilding {
+				return nil
+			}
 			_, err = s.tryActivateEmbeddingGeneration(ctx, generations, generation.ID)
 			return err
 		}

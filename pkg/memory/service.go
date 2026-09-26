@@ -56,6 +56,8 @@ type Service struct {
 	healthVal               float64
 	healthSampled           int
 	lastActivationTry       time.Time // worker goroutine only
+	reconcileMu             sync.Mutex
+	lastReconcile           map[string]time.Time
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {

@@ -652,3 +652,44 @@ func TestLegacyPipeline_OfTheLegacyPipelineFails(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// Reconciliation queues every missing job in one pass (it used to stop at 200
+// per call, and the build depended on running it after every job).
+func TestEnsureEmbeddingGenerationJobs_QueuesEveryMissingRevisionAtOnce(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "jobs.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	for i := 0; i < 450; i++ {
+		if err := store.Save(ctx, Memory{ID: fmt.Sprintf("m%03d", i), Category: "fact", Source: "test", Content: fmt.Sprintf("memory number %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := EmbeddingIdentity{Provider: "bow", Model: "m", ModelRevision: "v2", Dimensions: 64, Normalization: "l2"}
+	gen, err := store.EnsureEmbeddingGeneration(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.EnsureEmbeddingGenerationJobsOfKind(ctx, gen.ID, embeddingJobKindV2, 0); err != nil || n != 450 {
+		t.Fatalf("first reconciliation queued %d (%v), want 450", n, err)
+	}
+	if n, err := store.EnsureEmbeddingGenerationJobsOfKind(ctx, gen.ID, embeddingJobKindV2, 0); err != nil || n != 0 {
+		t.Fatalf("second reconciliation queued %d (%v), want 0", n, err)
+	}
+	// A job finished without its vector is re-armed.
+	if _, err := store.DB().ExecContext(ctx, `UPDATE memory_processing_jobs SET state = 'done' WHERE revision_id = (SELECT current_revision_id FROM memories WHERE id = 'm007')`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.EnsureEmbeddingGenerationJobsOfKind(ctx, gen.ID, embeddingJobKindV2, 0); err != nil || n != 1 {
+		t.Fatalf("re-arm queued %d (%v), want 1", n, err)
+	}
+}
+
+func TestReconcileDue_OncePerIntervalPerGeneration(t *testing.T) {
+	s := &Service{}
+	if !s.reconcileDue("a") || s.reconcileDue("a") || !s.reconcileDue("b") {
+		t.Fatal("reconcile must run once per interval, per generation")
+	}
+}

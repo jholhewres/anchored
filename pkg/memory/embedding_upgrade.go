@@ -401,3 +401,22 @@ func (l *upgradeLog) changed(reason string) bool {
 	l.last, l.at = reason, time.Now()
 	return true
 }
+
+// reconcileEvery is how often a process re-runs the job reconciliation of a
+// generation it is building from the activation path.
+const reconcileEvery = 2 * time.Minute
+
+// reconcileDue reports whether the build reconciliation of generationID is
+// due, and records that it runs now.
+func (s *Service) reconcileDue(generationID string) bool {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	if s.lastReconcile == nil {
+		s.lastReconcile = make(map[string]time.Time)
+	}
+	if last, ok := s.lastReconcile[generationID]; ok && time.Since(last) < reconcileEvery {
+		return false
+	}
+	s.lastReconcile[generationID] = time.Now()
+	return true
+}

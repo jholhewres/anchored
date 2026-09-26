@@ -249,6 +249,9 @@ func (s *SQLiteStore) EnsureEmbeddingGenerationJobsOfKind(ctx context.Context, g
 	if generation.State != EmbeddingGenerationBuilding && generation.State != EmbeddingGenerationActive {
 		return 0, nil
 	}
+	if limit <= 0 {
+		return s.enqueueAllMissingEmbeddingJobs(ctx, generationID, kind)
+	}
 	revisions, err := s.listRevisionsNeedingEmbeddingJob(ctx, generationID, kind, limit)
 	if err != nil || len(revisions) == 0 {
 		return 0, err
@@ -284,6 +287,49 @@ func (s *SQLiteStore) EnsureEmbeddingGenerationJobsOfKind(ctx context.Context, g
 		return 0, fmt.Errorf("commit embedding job reconciliation: %w", err)
 	}
 	return enqueued, nil
+}
+
+// enqueueAllMissingEmbeddingJobs queues a job for every current revision
+// that has neither a vector in the generation nor a live job for it, in one
+// statement: the scan over every live revision is the expensive part, so it
+// runs once instead of once per batch of 200. A finished job whose vector is
+// missing is re-armed, as in the batched path.
+func (s *SQLiteStore) enqueueAllMissingEmbeddingJobs(ctx context.Context, generationID, kind string) (int, error) {
+	now := s.nowUTC().UnixNano()
+	result, err := s.db.ExecContext(ctx, `INSERT INTO memory_processing_jobs (
+			id, revision_id, memory_id, kind, generation, state, attempts,
+			max_attempts, created_at, updated_at
+		)
+		SELECT lower(hex(randomblob(16))), r.revision_id, r.memory_id, ?, ?, 'pending', 0, 5, ?, ?
+		FROM memory_revisions r
+		JOIN memories m ON m.current_revision_id = r.revision_id
+		WHERE m.deleted_at IS NULL
+		  AND r.is_tombstone = FALSE
+		  AND NOT EXISTS (
+			SELECT 1 FROM memory_embedding_vectors v
+			WHERE v.revision_id = r.revision_id
+			  AND v.generation_id = ?
+			  AND v.purpose = 'document'
+			  AND v.content_hash = r.content_hash
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM memory_processing_jobs j
+			WHERE j.revision_id = r.revision_id
+			  AND j.kind = ?
+			  AND j.generation = ?
+			  AND j.state IN ('pending', 'processing', 'failed')
+		  )
+		ON CONFLICT(revision_id, kind, generation) DO UPDATE SET
+			state = 'pending', attempts = 0, owner = NULL, lease_until = NULL,
+			next_attempt_at = NULL, last_error = NULL, completed_at = NULL,
+			updated_at = excluded.updated_at
+		WHERE memory_processing_jobs.state = 'done'`,
+		kind, generationID, now, now, generationID, kind, generationID)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile embedding jobs: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
 }
 
 func (s *SQLiteStore) listRevisionsNeedingEmbeddingJob(

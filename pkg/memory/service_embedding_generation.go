@@ -258,8 +258,13 @@ func (s *Service) tryActivateEmbeddingGeneration(
 	if provider == nil {
 		return false, nil
 	}
-	if _, err := s.ensureGenerationJobs(ctx, generations, generationID); err != nil {
-		return false, err
+	// Reconciliation scans every live revision (1.5 s on an 84k-memory
+	// database) and this runs after every embedding job of the build: once per
+	// reconcileEvery is enough to pick up memories saved without a job.
+	if s.reconcileDue(generationID) {
+		if _, err := s.ensureGenerationJobs(ctx, generations, generationID); err != nil {
+			return false, err
+		}
 	}
 	// Replacing an active generation is a one-way step for every process that
 	// can only query the old space: it waits for the upgrade gates.
