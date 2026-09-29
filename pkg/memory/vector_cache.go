@@ -26,9 +26,12 @@ type ScoredID struct {
 	Score float64
 }
 
-// VectorCache is a thread-safe in-memory cache of memory embeddings keyed by memory ID.
+// VectorCache is a thread-safe in-memory cache of memory embeddings keyed by
+// memory ID. It holds each vector only in its 8-bit quantized form, the one
+// scoring uses: a float32 copy took another 1.5 KB per memory (130 MB for 85k
+// memories) in every process. Get and All rebuild floats from it, within half
+// a quantization step of the stored vector.
 type VectorCache struct {
-	byID  map[string][]float32  // exact vectors (Get/All contract preserved)
 	quant map[string]quantEntry // memoized quantized form + norm for scoring
 	// scope is the project of each memory, "" for a global one, so a scoped
 	// search takes its top-k inside the scope. It follows memories, not
@@ -60,7 +63,6 @@ func NewVectorCache(logger *slog.Logger) *VectorCache {
 		logger = slog.Default()
 	}
 	return &VectorCache{
-		byID:   make(map[string][]float32),
 		quant:  make(map[string]quantEntry),
 		scope:  make(map[string]string),
 		logger: logger,
@@ -221,7 +223,6 @@ func (c *VectorCache) Load(db *sql.DB) error {
 			c.logger.Warn("vector cache: skipping invalid embedding", "id", id, "error", err)
 			continue
 		}
-		c.byID[id] = vec
 		c.quant[id] = makeQuantEntry(vec)
 		loaded++
 	}
@@ -236,18 +237,14 @@ func (c *VectorCache) Load(db *sql.DB) error {
 }
 
 func (c *VectorCache) Put(id string, embedding []float32) {
-	cp := make([]float32, len(embedding))
-	copy(cp, embedding)
-	e := makeQuantEntry(cp)
+	e := makeQuantEntry(embedding)
 	c.mu.Lock()
-	c.byID[id] = cp
 	c.quant[id] = e
 	c.mu.Unlock()
 }
 
 func (c *VectorCache) Remove(id string) {
 	c.mu.Lock()
-	delete(c.byID, id)
 	delete(c.quant, id)
 	delete(c.scope, id)
 	c.mu.Unlock()
@@ -285,23 +282,17 @@ func (c *VectorCache) Replace(vectors map[string][]float32) {
 		src = append(src, vector)
 	}
 
-	copies := make([][]float32, n)
 	entries := make([]quantEntry, n)
 	parallelFor(n, func(i int) {
-		cp := append([]float32(nil), src[i]...)
-		copies[i] = cp
-		entries[i] = makeQuantEntry(cp)
+		entries[i] = makeQuantEntry(src[i])
 	})
 
-	byID := make(map[string][]float32, n)
 	quant := make(map[string]quantEntry, n)
 	for i, id := range ids {
-		byID[id] = copies[i]
 		quant[id] = entries[i]
 	}
 
 	c.mu.Lock()
-	c.byID = byID
 	c.quant = quant
 	c.mu.Unlock()
 }
@@ -343,26 +334,35 @@ func parallelFor(n int, fn func(i int)) {
 	wg.Wait()
 }
 
+// Get returns the cached vector of id, rebuilt from its quantized form.
 func (c *VectorCache) Get(id string) ([]float32, bool) {
 	c.mu.RLock()
-	vec, ok := c.byID[id]
+	e, ok := c.quant[id]
 	c.mu.RUnlock()
-	return vec, ok
+	if !ok {
+		return nil, false
+	}
+	return e.q.Dequantize(), true
 }
 
+// All returns every cached vector, rebuilt from its quantized form.
 func (c *VectorCache) All() map[string][]float32 {
 	c.mu.RLock()
-	cp := make(map[string][]float32, len(c.byID))
-	for k, v := range c.byID {
-		cp[k] = v
+	entries := make(map[string]QuantizedEmbedding, len(c.quant))
+	for k, e := range c.quant {
+		entries[k] = e.q
 	}
 	c.mu.RUnlock()
-	return cp
+	out := make(map[string][]float32, len(entries))
+	for k, q := range entries {
+		out[k] = q.Dequantize()
+	}
+	return out
 }
 
 func (c *VectorCache) Len() int {
 	c.mu.RLock()
-	n := len(c.byID)
+	n := len(c.quant)
 	c.mu.RUnlock()
 	return n
 }
