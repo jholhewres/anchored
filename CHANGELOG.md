@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-29
+
+Memory and CPU. Measured with one `serve` on an 85k-memory database: it
+starts at 100 MB instead of 1,182 MB, idles at 0.05% of a core instead of
+0.9%, and drops back to ~150 MB after the model's idle delay instead of
+staying at ~1 GB.
+
+### Fixed
+
+- **An idle process no longer keeps the embedding model in memory.** Every
+  `serve`, the dashboard and every CLI command loaded the ~500 MB model at
+  start, whether or not it ever embedded anything. With several MCP sessions
+  open, that was about a gigabyte per session and the machine swapped.
+  - The model now loads on the first embed, in about a second.
+  - It unloads after `embedding.idle_unload_minutes` (default 5) without an
+    embed, and the freed memory goes back to the system. 0 keeps it loaded
+    once used.
+  - A new memory queued by another process is left for a minute to a process
+    that has the model loaded. A process loads the model for it only if no
+    other process takes the job.
+- **The vector cache holds each vector once.** It kept a float32 copy of every
+  vector next to the 8-bit form that scoring uses: 130 MB more per process for
+  85k memories.
+  - Ranking is unchanged: the real-embedder eval gives the same recall@5
+    (0.380) and MRR@10 (0.357).
+  - Diversification (MMR) and dream's semantic tiers now compare the 8-bit
+    form.
+- **Idle workers no longer take the database write lock to find nothing.**
+  Each process opened a write transaction four times a second to look for
+  jobs, even with none queued. It now checks with a read first. When there is
+  nothing to do, the check backs off from 250 ms to 2 s. A save in the same
+  process still starts its job at once.
+- **`anchored remote configure --disable` takes the default remote out of
+  routing.** The `remote:` block was merged into the remote list whether or
+  not it was enabled. A disabled or dead default server still received every
+  search and sync, and each search waited out its timeout: 5–7 s instead of
+  0.2 s.
+- **A short CLI command no longer warns "embedding generation warm
+  failed".** The command closed before the background cache warm finished; a
+  warm stopped by shutdown now logs at debug level.
+
 ## [0.20.0] - 2026-09-28
 
 The first stable 0.20 release. It carries everything in 0.20.0-rc.1 and
