@@ -46,31 +46,211 @@ const (
 )
 
 type ONNXEmbedder struct {
-	session       *ort.AdvancedSession
-	tokenizer     Tokenizer
+	rt            *onnxRuntime
 	dims          int
 	logger        *slog.Logger
 	modelName     string
 	modelRevision string
+	// pipeline is the revision of the pipeline this embedder's vectors are
+	// built with. The tokenizer that loads must name the same one.
+	pipeline string
+	legacy   bool
+	closed   bool
+}
 
+// onnxDefaultIdleUnload is how long the model stays loaded after its last
+// embed.
+const onnxDefaultIdleUnload = 5 * time.Minute
+
+// onnxRuntime holds what is heavy about an embedder: the model session, its
+// tensors and the tokenizers of the pipelines built from one load (Pipeline).
+// It loads on the first embed and unloads after idleAfter without one, so a
+// process that is not embedding (an idle MCP session, the dashboard, a CLI
+// command) does not keep the ~500 MB model resident. mu serializes inference
+// and the load/unload transitions across every pipeline; the last Close
+// releases everything.
+type onnxRuntime struct {
+	mu        sync.Mutex
+	paths     *ONNXPaths
+	logger    *slog.Logger
+	idleAfter time.Duration
+
+	session       *ort.AdvancedSession
 	inputIDs      *ort.Tensor[int64]
 	attentionMask *ort.Tensor[int64]
 	tokenTypeIDs  *ort.Tensor[int64]
 	output        *ort.Tensor[float32]
+	tokenizers    map[bool]Tokenizer
 
-	// The session and its tensors are shared by the pipelines built from one
-	// load (Pipeline): mu serializes inference across all of them and refs
-	// destroys the session when the last one closes.
-	mu     *sync.Mutex
-	refs   *onnxRefs
-	paths  *ONNXPaths
-	legacy bool
-	closed bool
+	// refs counts the open embedders per pipeline (legacy or not); the
+	// tokenizer of a pipeline is dropped when its last embedder closes.
+	refs    map[bool]int
+	lastUse time.Time
+	idle    *time.Timer
+	loads   int
 }
 
-type onnxRefs struct {
-	mu sync.Mutex
-	n  int
+func newONNXRuntime(paths *ONNXPaths, legacy bool, logger *slog.Logger) *onnxRuntime {
+	return &onnxRuntime{
+		paths:      paths,
+		logger:     logger,
+		idleAfter:  onnxDefaultIdleUnload,
+		tokenizers: map[bool]Tokenizer{},
+		refs:       map[bool]int{legacy: 1},
+	}
+}
+
+func (rt *onnxRuntime) openLocked() bool {
+	for _, n := range rt.refs {
+		if n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenizerLocked returns the tokenizer of a pipeline, loading it if needed.
+func (rt *onnxRuntime) tokenizerLocked(legacy bool, pipeline string) (Tokenizer, error) {
+	if tok := rt.tokenizers[legacy]; tok != nil {
+		return tok, nil
+	}
+	tok, got, err := loadONNXTokenizer(rt.paths, legacy, rt.logger)
+	if err != nil {
+		return nil, err
+	}
+	if got != pipeline {
+		// The embedder's identity was derived from the files on disk; a
+		// tokenizer that loads as another pipeline would put its vectors in
+		// a space they are not labelled with.
+		return nil, fmt.Errorf("onnx: tokenizer loaded as pipeline %q, embedder built for %q", got, pipeline)
+	}
+	rt.tokenizers[legacy] = tok
+	return tok, nil
+}
+
+// sessionLocked loads the model session if it is not loaded.
+func (rt *onnxRuntime) sessionLocked() error {
+	if rt.session != nil {
+		return nil
+	}
+	shape := ort.NewShape(1, int64(onnxMaxSeqLen))
+	var made []interface{ Destroy() error }
+	fail := func(err error) error {
+		destroyAll(made...)
+		return err
+	}
+	inputIDs, err := ort.NewEmptyTensor[int64](shape)
+	if err != nil {
+		return fail(fmt.Errorf("onnx: create input_ids tensor: %w", err))
+	}
+	made = append(made, inputIDs)
+	attentionMask, err := ort.NewEmptyTensor[int64](shape)
+	if err != nil {
+		return fail(fmt.Errorf("onnx: create attention_mask tensor: %w", err))
+	}
+	made = append(made, attentionMask)
+	tokenTypeIDs, err := ort.NewEmptyTensor[int64](shape)
+	if err != nil {
+		return fail(fmt.Errorf("onnx: create token_type_ids tensor: %w", err))
+	}
+	made = append(made, tokenTypeIDs)
+	output, err := ort.NewEmptyTensor[float32](ort.NewShape(1, int64(onnxMaxSeqLen), int64(onnxModelDims)))
+	if err != nil {
+		return fail(fmt.Errorf("onnx: create output tensor: %w", err))
+	}
+	made = append(made, output)
+	session, err := newONNXSession(rt.paths.ModelFile, inputIDs, attentionMask, tokenTypeIDs, output)
+	if err != nil {
+		return fail(err)
+	}
+	rt.session, rt.inputIDs, rt.attentionMask, rt.tokenTypeIDs, rt.output = session, inputIDs, attentionMask, tokenTypeIDs, output
+	rt.loads++
+	rt.logger.Info("ONNX model loaded", "loads", rt.loads)
+	return nil
+}
+
+// destroyAll frees ONNX values. A failed Destroy leaves nothing to recover:
+// the value is gone either way.
+func destroyAll(values ...interface{ Destroy() error }) {
+	for _, v := range values {
+		_ = v.Destroy()
+	}
+}
+
+// touchLocked records a use and pushes the idle unload back.
+func (rt *onnxRuntime) touchLocked() {
+	rt.lastUse = time.Now()
+	if rt.idleAfter <= 0 {
+		return
+	}
+	if rt.idle == nil {
+		rt.idle = time.AfterFunc(rt.idleAfter, rt.unloadIfIdle)
+		return
+	}
+	rt.idle.Reset(rt.idleAfter)
+}
+
+func (rt *onnxRuntime) unloadIfIdle() {
+	rt.mu.Lock()
+	if rt.session == nil && len(rt.tokenizers) == 0 {
+		rt.mu.Unlock()
+		return
+	}
+	if rt.idleAfter <= 0 {
+		rt.mu.Unlock()
+		return
+	}
+	if wait := rt.idleAfter - time.Since(rt.lastUse); wait > 0 {
+		rt.idle.Reset(wait)
+		rt.mu.Unlock()
+		return
+	}
+	rt.releaseLocked()
+	rt.mu.Unlock()
+	releaseMemoryToOS()
+	rt.logger.Info("ONNX model unloaded after idle", "idle", rt.idleAfter)
+}
+
+// releaseLocked destroys the session and drops the tokenizers.
+func (rt *onnxRuntime) releaseLocked() {
+	if rt.session != nil {
+		destroyAll(rt.session, rt.inputIDs, rt.attentionMask, rt.tokenTypeIDs, rt.output)
+		rt.session, rt.inputIDs, rt.attentionMask, rt.tokenTypeIDs, rt.output = nil, nil, nil, nil, nil
+	}
+	rt.tokenizers = map[bool]Tokenizer{}
+}
+
+// newONNXSession opens the model with inference capped at one thread per op.
+func newONNXSession(modelFile string, inputIDs, attentionMask, tokenTypeIDs *ort.Tensor[int64], output *ort.Tensor[float32]) (*ort.AdvancedSession, error) {
+	// Cap ONNX intra/inter-op parallelism. Embeds are short, single-sequence
+	// inferences run by a background worker that may live in several processes at
+	// once (the hub daemon plus each per-session MCP). With the default (nil)
+	// options the runtime spread every inference across ALL cores, so a
+	// corpus-wide re-embed saturated the machine (load ~15 on 12 cores). One
+	// thread per op keeps each embed to ~1 core; the throttle paces the rest.
+	sessOpts, err := ort.NewSessionOptions()
+	if err != nil {
+		return nil, fmt.Errorf("onnx: create session options: %w", err)
+	}
+	defer destroyAll(sessOpts)
+	if err := sessOpts.SetIntraOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("onnx: set intra-op threads: %w", err)
+	}
+	if err := sessOpts.SetInterOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("onnx: set inter-op threads: %w", err)
+	}
+	session, err := ort.NewAdvancedSession(
+		modelFile,
+		[]string{"input_ids", "attention_mask", "token_type_ids"},
+		[]string{"last_hidden_state"},
+		[]ort.Value{inputIDs, attentionMask, tokenTypeIDs},
+		[]ort.Value{output},
+		sessOpts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("onnx: create session: %w", err)
+	}
+	return session, nil
 }
 
 type ONNXPaths struct {
@@ -120,63 +300,12 @@ func newONNXEmbedder(modelDir string, legacy bool, logger *slog.Logger) (*ONNXEm
 		legacy = true
 	}
 
-	tokenizer, pipeline, err := loadONNXTokenizer(paths, legacy, logger)
-	if err != nil {
-		return nil, err
-	}
+	// The pipeline, and so the embedder's identity, follows from the files
+	// on disk; the tokenizer and the model load on the first embed.
+	pipeline := expectedONNXPipeline(paths, legacy)
 	modelRevision, err := onnxArtifactRevisionForPipeline(paths, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("onnx: identify model artifacts: %w", err)
-	}
-
-	shape := ort.NewShape(1, int64(onnxMaxSeqLen))
-	inputIDs, err := ort.NewEmptyTensor[int64](shape)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create input_ids tensor: %w", err)
-	}
-	attentionMask, err := ort.NewEmptyTensor[int64](shape)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create attention_mask tensor: %w", err)
-	}
-	tokenTypeIDs, err := ort.NewEmptyTensor[int64](shape)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create token_type_ids tensor: %w", err)
-	}
-
-	outputShape := ort.NewShape(1, int64(onnxMaxSeqLen), int64(onnxModelDims))
-	output, err := ort.NewEmptyTensor[float32](outputShape)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create output tensor: %w", err)
-	}
-
-	// Cap ONNX intra/inter-op parallelism. Embeds are short, single-sequence
-	// inferences run by a background worker that may live in several processes at
-	// once (the hub daemon plus each per-session MCP). With the default (nil)
-	// options the runtime spread every inference across ALL cores, so a
-	// corpus-wide re-embed saturated the machine (load ~15 on 12 cores). One
-	// thread per op keeps each embed to ~1 core; the throttle paces the rest.
-	sessOpts, err := ort.NewSessionOptions()
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create session options: %w", err)
-	}
-	defer sessOpts.Destroy()
-	if err := sessOpts.SetIntraOpNumThreads(1); err != nil {
-		return nil, fmt.Errorf("onnx: set intra-op threads: %w", err)
-	}
-	if err := sessOpts.SetInterOpNumThreads(1); err != nil {
-		return nil, fmt.Errorf("onnx: set inter-op threads: %w", err)
-	}
-
-	session, err := ort.NewAdvancedSession(
-		paths.ModelFile,
-		[]string{"input_ids", "attention_mask", "token_type_ids"},
-		[]string{"last_hidden_state"},
-		[]ort.Value{inputIDs, attentionMask, tokenTypeIDs},
-		[]ort.Value{output},
-		sessOpts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: create session: %w", err)
 	}
 
 	var activeModel string
@@ -186,24 +315,30 @@ func newONNXEmbedder(modelDir string, legacy bool, logger *slog.Logger) (*ONNXEm
 		activeModel = onnxModelName
 	}
 
-	logger.Info("ONNX embedder initialized", "model", activeModel, "dims", onnxModelDims)
+	logger.Info("ONNX embedder ready; the model loads on first use", "model", activeModel, "dims", onnxModelDims)
 
 	return &ONNXEmbedder{
-		session:       session,
-		tokenizer:     tokenizer,
+		rt:            newONNXRuntime(paths, legacy, logger),
 		dims:          onnxModelDims,
 		logger:        logger,
 		modelName:     activeModel,
 		modelRevision: modelRevision,
-		inputIDs:      inputIDs,
-		attentionMask: attentionMask,
-		tokenTypeIDs:  tokenTypeIDs,
-		output:        output,
-		mu:            &sync.Mutex{},
-		refs:          &onnxRefs{n: 1},
-		paths:         paths,
+		pipeline:      pipeline,
 		legacy:        legacy,
 	}, nil
+}
+
+// expectedONNXPipeline is the pipeline loadONNXTokenizer picks for these
+// files when the tokenizer loads.
+func expectedONNXPipeline(paths *ONNXPaths, legacy bool) string {
+	switch {
+	case legacy:
+		return onnxPipelineRevision
+	case fileExists(paths.TokenizerFile):
+		return onnxPipelineRevisionHF
+	default:
+		return onnxPipelineRevisionVocabV2
+	}
 }
 
 // Legacy reports whether e embeds with the legacy pipeline.
@@ -214,31 +349,43 @@ func (e *ONNXEmbedder) Legacy() bool { return e.legacy }
 // live in different semantic spaces, but the 470 MB model is loaded once. The
 // result must be closed like any embedder.
 func (e *ONNXEmbedder) Pipeline(legacy bool) (*ONNXEmbedder, error) {
-	if legacy == e.legacy {
-		e.refs.mu.Lock()
-		e.refs.n++
-		e.refs.mu.Unlock()
-		clone := *e
-		clone.closed = false
-		return &clone, nil
+	pipeline, revision := e.pipeline, e.modelRevision
+	if legacy != e.legacy {
+		pipeline = expectedONNXPipeline(e.rt.paths, legacy)
+		rev, err := onnxArtifactRevisionForPipeline(e.rt.paths, pipeline)
+		if err != nil {
+			return nil, fmt.Errorf("onnx: identify model artifacts: %w", err)
+		}
+		revision = rev
 	}
-	tokenizer, pipeline, err := loadONNXTokenizer(e.paths, legacy, e.logger)
-	if err != nil {
-		return nil, err
-	}
-	revision, err := onnxArtifactRevisionForPipeline(e.paths, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: identify model artifacts: %w", err)
-	}
-	e.refs.mu.Lock()
-	e.refs.n++
-	e.refs.mu.Unlock()
+	e.rt.mu.Lock()
+	e.rt.refs[legacy]++
+	e.rt.mu.Unlock()
 	sibling := *e
-	sibling.tokenizer = tokenizer
+	sibling.pipeline = pipeline
 	sibling.modelRevision = revision
 	sibling.legacy = legacy
 	sibling.closed = false
 	return &sibling, nil
+}
+
+// Loaded reports whether the model is in memory now.
+func (e *ONNXEmbedder) Loaded() bool {
+	e.rt.mu.Lock()
+	defer e.rt.mu.Unlock()
+	return e.rt.session != nil
+}
+
+// SetIdleUnload sets how long the model stays loaded after its last embed; 0
+// keeps it loaded once it has been used. It applies to every pipeline sharing
+// the model.
+func (e *ONNXEmbedder) SetIdleUnload(d time.Duration) {
+	e.rt.mu.Lock()
+	defer e.rt.mu.Unlock()
+	e.rt.idleAfter = d
+	if d <= 0 && e.rt.idle != nil {
+		e.rt.idle.Stop()
+	}
 }
 
 func (e *ONNXEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -254,25 +401,37 @@ func (e *ONNXEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 }
 
 func (e *ONNXEmbedder) embedSingle(text string) ([]float32, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	rt := e.rt
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !rt.openLocked() {
+		return nil, fmt.Errorf("onnx: embedder closed")
+	}
 
-	ids, mask, typeIDs := e.tokenizer.Tokenize(text)
+	tokenizer, err := rt.tokenizerLocked(e.legacy, e.pipeline)
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.sessionLocked(); err != nil {
+		return nil, err
+	}
+	ids, mask, typeIDs := tokenizer.Tokenize(text)
 
-	copy(e.inputIDs.GetData(), ids)
-	copy(e.attentionMask.GetData(), mask)
-	copy(e.tokenTypeIDs.GetData(), typeIDs)
+	copy(rt.inputIDs.GetData(), ids)
+	copy(rt.attentionMask.GetData(), mask)
+	copy(rt.tokenTypeIDs.GetData(), typeIDs)
 
-	if err := e.session.Run(); err != nil {
+	if err := rt.session.Run(); err != nil {
 		return nil, fmt.Errorf("session run: %w", err)
 	}
 
-	raw := e.output.GetData()
+	raw := rt.output.GetData()
 	vec := meanPool(raw, mask, onnxMaxSeqLen, e.dims)
 	l2Normalize(vec)
 
 	result := make([]float32, len(vec))
 	copy(result, vec)
+	rt.touchLocked()
 	return result, nil
 }
 
@@ -346,33 +505,23 @@ func hashArtifact(digest hash.Hash, path string) error {
 }
 
 func (e *ONNXEmbedder) Close() error {
-	if e.closed {
+	if e.closed || e.rt == nil {
 		return nil
 	}
 	e.closed = true
-	if e.refs != nil {
-		e.refs.mu.Lock()
-		e.refs.n--
-		last := e.refs.n <= 0
-		e.refs.mu.Unlock()
-		if !last {
-			return nil
+	rt := e.rt
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.refs[e.legacy]--
+	if rt.refs[e.legacy] <= 0 {
+		delete(rt.refs, e.legacy)
+		delete(rt.tokenizers, e.legacy)
+	}
+	if !rt.openLocked() {
+		if rt.idle != nil {
+			rt.idle.Stop()
 		}
-	}
-	if e.session != nil {
-		e.session.Destroy()
-	}
-	if e.inputIDs != nil {
-		e.inputIDs.Destroy()
-	}
-	if e.attentionMask != nil {
-		e.attentionMask.Destroy()
-	}
-	if e.tokenTypeIDs != nil {
-		e.tokenTypeIDs.Destroy()
-	}
-	if e.output != nil {
-		e.output.Destroy()
+		rt.releaseLocked()
 	}
 	return nil
 }

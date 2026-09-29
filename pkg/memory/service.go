@@ -102,6 +102,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 		if err != nil {
 			logger.Warn("ONNX embedder not available, search will be BM25-only", "error", err)
 		} else {
+			e.SetIdleUnload(time.Duration(max(cfg.Embedding.IdleUnloadMinutes, 0)) * time.Minute)
 			embedder = e
 			svc.embedder = e
 		}

@@ -139,6 +139,9 @@ func (s *Service) ensureEmbeddingGeneration(ctx context.Context, warmAsync bool)
 		if cache := s.store.VectorCache(); cache != nil {
 			s.logger.Info("vector cache warm", "count", cache.Len(), "took", time.Since(started).String())
 		}
+		// The fill decodes every vector before quantizing it; hand those
+		// buffers back instead of keeping them as heap headroom.
+		releaseMemoryToOS()
 	}()
 	return nil
 }

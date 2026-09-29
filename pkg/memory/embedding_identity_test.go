@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -174,38 +173,45 @@ func TestLoadONNXTokenizer_PipelineNamesTheTokenizerThatLoaded(t *testing.T) {
 	}
 }
 
-// Pipelines built from one load share the session: closing one (twice) leaves
-// the others working, and the last Close releases it.
+// Pipelines built from one load share the runtime: closing one (twice) leaves
+// the others working, drops its tokenizer, and the last Close releases the
+// runtime.
 func TestONNXPipeline_RefcountsTheSharedSession(t *testing.T) {
 	dir := t.TempDir()
 	paths := &ONNXPaths{TokenizerFile: writeTestTokenizerJSON(t, dir), VocabFile: filepath.Join(dir, "none.txt"), ModelFile: filepath.Join(dir, "model.onnx")}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tok, pipeline, err := loadONNXTokenizer(paths, false, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pipeline := expectedONNXPipeline(paths, false)
 	rev, err := onnxArtifactRevisionForPipeline(paths, pipeline)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v2 := &ONNXEmbedder{tokenizer: tok, modelRevision: rev, paths: paths, logger: logger,
-		mu: &sync.Mutex{}, refs: &onnxRefs{n: 1}, dims: onnxModelDims, modelName: onnxModelName}
+	v2 := &ONNXEmbedder{rt: newONNXRuntime(paths, false, logger), modelRevision: rev, pipeline: pipeline,
+		logger: logger, dims: onnxModelDims, modelName: onnxModelName}
 	le, err := v2.Pipeline(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := le
-	if !le.Legacy() || le.ModelRevision() == v2.ModelRevision() || le.mu != v2.mu || v2.refs.n != 2 {
-		t.Fatalf("legacy pipeline: legacy=%v same revision=%v shared lock=%v refs=%d",
-			le.Legacy(), le.ModelRevision() == v2.ModelRevision(), le.mu == v2.mu, v2.refs.n)
+	if !le.Legacy() || le.ModelRevision() == v2.ModelRevision() || le.rt != v2.rt || v2.rt.refs[true] != 1 || v2.rt.refs[false] != 1 {
+		t.Fatalf("legacy pipeline: legacy=%v same revision=%v shared runtime=%v refs=%v",
+			le.Legacy(), le.ModelRevision() == v2.ModelRevision(), le.rt == v2.rt, v2.rt.refs)
 	}
-	_ = legacy.Close()
-	_ = legacy.Close()
-	if v2.refs.n != 1 {
-		t.Fatalf("refs after closing the legacy pipeline twice: %d", v2.refs.n)
+	// Loading the legacy tokenizer, then closing its pipeline, drops it.
+	v2.rt.mu.Lock()
+	if _, err := v2.rt.tokenizerLocked(true, le.pipeline); err != nil {
+		v2.rt.mu.Unlock()
+		t.Fatal(err)
+	}
+	v2.rt.mu.Unlock()
+	_ = le.Close()
+	_ = le.Close()
+	if !v2.rt.openLocked() || v2.rt.refs[true] != 0 || v2.rt.tokenizers[true] != nil {
+		t.Fatalf("after closing the legacy pipeline twice: refs=%v legacy tokenizer kept=%v", v2.rt.refs, v2.rt.tokenizers[true] != nil)
 	}
 	_ = v2.Close()
-	if v2.refs.n != 0 {
-		t.Fatalf("refs after the last close: %d", v2.refs.n)
+	if v2.rt.openLocked() {
+		t.Fatalf("refs after the last close: %v", v2.rt.refs)
+	}
+	if _, err := v2.Embed(context.Background(), []string{"x"}); err == nil {
+		t.Fatal("embedding with a closed embedder should fail")
 	}
 }

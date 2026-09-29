@@ -303,6 +303,10 @@ type EmbeddingConfig struct {
 	// database" check where it cannot run (no /proc: macOS, Windows): set it
 	// once every client is upgraded.
 	ConfirmUpgrade bool `yaml:"confirm_upgrade"`
+	// IdleUnloadMinutes is how long the model stays in memory after its last
+	// embed. It loads again, in about a second, on the next one. 0 keeps it
+	// loaded once used.
+	IdleUnloadMinutes int `yaml:"idle_unload_minutes"`
 }
 
 type SearchConfig struct {
@@ -327,11 +331,12 @@ func Defaults() *Config {
 			DatabasePath: "~/.anchored/data/anchored.db",
 		},
 		Embedding: EmbeddingConfig{
-			Provider:   "onnx",
-			Model:      "paraphrase-multilingual-MiniLM-L12-v2",
-			ModelDir:   "~/.anchored/data/onnx",
-			Quantize:   true,
-			Dimensions: 384,
+			Provider:          "onnx",
+			Model:             "paraphrase-multilingual-MiniLM-L12-v2",
+			ModelDir:          "~/.anchored/data/onnx",
+			Quantize:          true,
+			Dimensions:        384,
+			IdleUnloadMinutes: 5,
 		},
 		Search: SearchConfig{
 			VectorWeight: 0.7,
