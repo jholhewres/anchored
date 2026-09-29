@@ -58,3 +58,28 @@ func TestResolveRemote_PathsRouteAndDefaultFallback(t *testing.T) {
 		t.Errorf("unmatched path should fall back to default, got %+v", e)
 	}
 }
+
+// A singular block turned off (`remote configure --disable`) stays out of the
+// map: `remote status` reports it disabled, so it must not keep routing
+// searches and syncs to its server.
+func TestMigrateRemotes_SkipsADisabledSingularBlock(t *testing.T) {
+	cfg := Defaults()
+	cfg.Remote.Enabled = false
+	cfg.Remote.ServerURL = "https://gone.example"
+	cfg.Remote.APIKey = "k1"
+	cfg.Remotes = map[string]RemoteEntry{
+		"company": {ServerURL: "https://company.example", APIKey: "k2"},
+	}
+
+	cfg.migrateRemotes()
+
+	if _, ok := cfg.Remotes["default"]; ok {
+		t.Fatal("a disabled singular remote was merged into routing")
+	}
+	if cfg.ResolveRemote("/anywhere") != nil {
+		t.Fatal("a disabled default remote still resolves")
+	}
+	if _, ok := cfg.Remotes["company"]; !ok {
+		t.Fatal("named remotes must be unaffected")
+	}
+}

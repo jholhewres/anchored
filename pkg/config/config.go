@@ -454,8 +454,10 @@ func (c *Config) migrateRemotes() {
 	// Merge the legacy singular `remote:` block into the named map as
 	// "default" so it keeps resolving alongside named entries. Without
 	// this, adding a second (named) server would silently drop the first
-	// from routing. An explicit "default" entry in the map wins.
-	if c.Remote.ServerURL == "" {
+	// from routing. An explicit "default" entry in the map wins. A block
+	// turned off (`remote configure --disable`, shown as disabled by `remote
+	// status`) stays out of routing, search and sync.
+	if c.Remote.ServerURL == "" || !c.Remote.Enabled {
 		return
 	}
 	if _, exists := c.Remotes["default"]; exists {
