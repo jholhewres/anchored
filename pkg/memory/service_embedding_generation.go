@@ -133,6 +133,11 @@ func (s *Service) ensureEmbeddingGeneration(ctx context.Context, warmAsync bool)
 		defer cancel()
 		started := time.Now()
 		if err := publish(warmCtx); err != nil {
+			if warmCtx.Err() != nil {
+				// The service closed first, as a short CLI command does.
+				s.logger.Debug("embedding generation warm stopped by shutdown", "error", err)
+				return
+			}
 			s.logger.Warn("embedding generation warm failed; semantic search stays cold", "error", err)
 			return
 		}
