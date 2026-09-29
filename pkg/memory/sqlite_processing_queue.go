@@ -58,6 +58,18 @@ func (s *SQLiteStore) ClaimProcessingJobIn(
 	now time.Time,
 	lease time.Duration,
 ) (*ProcessingJob, error) {
+	return s.ClaimProcessingJobCreatedBefore(ctx, kind, owner, generations, time.Time{}, now, lease)
+}
+
+// ClaimProcessingJobCreatedBefore is ClaimProcessingJobIn restricted to jobs
+// created before createdBefore (no restriction when it is zero).
+func (s *SQLiteStore) ClaimProcessingJobCreatedBefore(
+	ctx context.Context,
+	kind, owner string,
+	generations []string,
+	createdBefore, now time.Time,
+	lease time.Duration,
+) (*ProcessingJob, error) {
 	if owner == "" || lease <= 0 {
 		return nil, fmt.Errorf("processing claim requires owner and positive lease")
 	}
@@ -94,12 +106,7 @@ func (s *SQLiteStore) ClaimProcessingJobIn(
 		query += " AND kind = ?"
 		args = append(args, kind)
 	}
-	if len(generations) > 0 {
-		query += " AND generation IN (?" + strings.Repeat(", ?", len(generations)-1) + ")"
-		for _, g := range generations {
-			args = append(args, g)
-		}
-	}
+	query, args = filterProcessingJobs(query, args, generations, createdBefore)
 	query += " ORDER BY created_at ASC, id ASC LIMIT 1"
 	var id string
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(&id); err != nil {
@@ -129,6 +136,46 @@ func (s *SQLiteStore) ClaimProcessingJobIn(
 		return nil, err
 	}
 	return job, nil
+}
+
+// filterProcessingJobs narrows a pending-job query to generations (all when
+// empty) and to jobs created before createdBefore (all when zero).
+func filterProcessingJobs(query string, args []any, generations []string, createdBefore time.Time) (string, []any) {
+	if len(generations) > 0 {
+		query += " AND generation IN (?" + strings.Repeat(", ?", len(generations)-1) + ")"
+		for _, g := range generations {
+			args = append(args, g)
+		}
+	}
+	if !createdBefore.IsZero() {
+		query += " AND created_at < ?"
+		args = append(args, createdBefore.UTC().UnixNano())
+	}
+	return query, args
+}
+
+// HasClaimableProcessingJob reports, without taking the write lock, whether a
+// claim with the same arguments could find work: a due pending job, or a
+// processing one whose lease expired and that a claim would requeue. A claim
+// runs in a write transaction, so an idle worker asks this first.
+func (s *SQLiteStore) HasClaimableProcessingJob(
+	ctx context.Context,
+	kind string,
+	generations []string,
+	createdBefore, now time.Time,
+) (bool, error) {
+	now = now.UTC()
+	pending := `SELECT 1 FROM memory_processing_jobs
+		WHERE state = 'pending' AND kind = ? AND attempts < max_attempts
+		  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`
+	args := []any{kind, now.UnixNano()}
+	pending, args = filterProcessingJobs(pending, args, generations, createdBefore)
+	args = append(args, kind, now.UnixNano())
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(`+pending+`)
+		OR EXISTS(SELECT 1 FROM memory_processing_jobs
+			WHERE state = 'processing' AND kind = ? AND lease_until <= ?)`, args...).Scan(&found)
+	return found, err
 }
 
 func (s *SQLiteStore) CompleteProcessingJob(ctx context.Context, id, owner string, now time.Time) error {

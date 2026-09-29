@@ -10,6 +10,14 @@ import (
 const (
 	processingLease     = 30 * time.Second
 	processingPollEvery = 250 * time.Millisecond
+	// processingIdlePollMax caps the poll interval an idle worker backs off
+	// to. A local save wakes the worker at once; the poll only picks up work
+	// queued by other processes.
+	processingIdlePollMax = 2 * time.Second
+	// unloadedClaimGrace is how long a process whose model is unloaded leaves
+	// a new job, queued by another process, to one that has it loaded. The
+	// job still gets done if none claims it by then.
+	unloadedClaimGrace  = time.Minute
 	workerFinalizeLimit = 5 * time.Second
 	embeddingJobKind    = "embedding"
 
@@ -130,9 +138,9 @@ func (s *Service) signalDurableWorkers() {
 
 func (s *Service) runDurableWorkers() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(processingPollEvery)
-	defer ticker.Stop()
 	lastGenerationCheck := time.Now()
+	idle := processingPollEvery
+	woken := false
 	for {
 		if time.Since(lastGenerationCheck) >= generationCheckEvery {
 			lastGenerationCheck = time.Now()
@@ -140,7 +148,7 @@ func (s *Service) runDurableWorkers() {
 			s.checkActiveGeneration(ctx)
 			cancel()
 		}
-		busy := s.drainDurableWork()
+		busy, worked := s.drainDurableWork(woken)
 		if busy {
 			// Backlog remains: rest briefly so background processing never
 			// saturates the CPU, then keep draining.
@@ -151,58 +159,107 @@ func (s *Service) runDurableWorkers() {
 			}
 			continue
 		}
+		// Nothing to do: poll less and less often, up to the cap.
+		if worked {
+			idle = processingPollEvery
+		} else {
+			idle = min(2*idle, processingIdlePollMax)
+		}
+		wait := time.NewTimer(min(idle, time.Until(lastGenerationCheck.Add(generationCheckEvery))))
 		select {
 		case <-s.shutdown:
+			wait.Stop()
 			return
 		case <-s.workerWake:
-		case <-ticker.C:
+			wait.Stop()
+			woken, idle = true, processingPollEvery
+		case <-wait.C:
+			woken = false
 		}
 	}
 }
 
-func (s *Service) drainDurableWork() (busy bool) {
+// drainDurableWork runs the queued jobs. woken is true when a save in this
+// process asked for the pass. busy reports a batch cut short with work left,
+// worked that anything ran.
+func (s *Service) drainDurableWork(woken bool) (busy, worked bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), processingLease)
 	defer cancel()
 	if s.embedder != nil {
 		for _, kind := range []string{embeddingJobKind, embeddingJobKindV2} {
-			if s.drainProcessingKind(ctx, kind) {
-				busy = true
-			}
+			capped, n := s.drainProcessingKind(ctx, kind, s.claimCutoff(woken))
+			busy = busy || capped
+			worked = worked || n > 0
 		}
 	}
 	s.deliveryMu.RLock()
 	hasDeliverer := s.remoteDeliverer != nil
 	s.deliveryMu.RUnlock()
-	if hasDeliverer {
-		s.drainRemoteOutbox(ctx)
+	if hasDeliverer && s.drainRemoteOutbox(ctx) {
+		worked = true
 	}
-	return busy
+	return busy, worked
 }
 
-func (s *Service) drainProcessingKind(ctx context.Context, kind string) (hitBatchCap bool) {
+// claimCutoff is the creation time a job must predate for this pass to claim
+// it: zero (any job) unless the pass is a poll in a process whose model is
+// unloaded. Loading the model costs about a second and 500 MB, so a fresh
+// job waits unloadedClaimGrace for a process that has it loaded (the one that
+// saved it, usually) before an idle one loads it.
+func (s *Service) claimCutoff(woken bool) time.Time {
+	if woken {
+		return time.Time{}
+	}
+	if lazy, ok := s.embedder.(interface{ Loaded() bool }); ok && !lazy.Loaded() {
+		return time.Now().Add(-unloadedClaimGrace)
+	}
+	return time.Time{}
+}
+
+// processingClaimer is the queue an idle worker can ask before claiming.
+type processingClaimer interface {
+	HasClaimableProcessingJob(ctx context.Context, kind string, generations []string, createdBefore, now time.Time) (bool, error)
+	ClaimProcessingJobCreatedBefore(ctx context.Context, kind, owner string, generations []string, createdBefore, now time.Time, lease time.Duration) (*ProcessingJob, error)
+}
+
+func (s *Service) drainProcessingKind(ctx context.Context, kind string, createdBefore time.Time) (hitBatchCap bool, processed int) {
 	queue, ok := s.store.(ProcessingQueueStore)
 	if !ok {
-		return false
+		return false, 0
 	}
 	inputs, ok := s.store.(ProcessingRevisionStore)
 	if !ok {
-		return false
+		return false, 0
 	}
-	for processed := 0; processed < processingMaxBatchPerWake && ctx.Err() == nil; processed++ {
+	claimer, precheck := queue.(processingClaimer)
+	var generations []string
+	if isEmbeddingJobKind(kind) {
+		generations = s.servedJobGenerations()
+	}
+	if precheck {
+		has, err := claimer.HasClaimableProcessingJob(ctx, kind, generations, createdBefore, time.Now().UTC())
+		if err == nil && !has {
+			return false, 0
+		}
+	}
+	for ; processed < processingMaxBatchPerWake && ctx.Err() == nil; processed++ {
 		now := time.Now().UTC()
 		var job *ProcessingJob
 		var err error
-		if scoped, ok := queue.(generationScopedClaimer); ok && isEmbeddingJobKind(kind) {
-			job, err = scoped.ClaimProcessingJobIn(ctx, kind, s.workerOwner, s.servedJobGenerations(), now, processingLease)
-		} else {
+		switch scoped, ok := queue.(generationScopedClaimer); {
+		case precheck:
+			job, err = claimer.ClaimProcessingJobCreatedBefore(ctx, kind, s.workerOwner, generations, createdBefore, now, processingLease)
+		case ok && isEmbeddingJobKind(kind):
+			job, err = scoped.ClaimProcessingJobIn(ctx, kind, s.workerOwner, generations, now, processingLease)
+		default:
 			job, err = queue.ClaimProcessingJob(ctx, kind, s.workerOwner, now, processingLease)
 		}
 		if err != nil {
 			s.logger.Warn("claim durable processing job failed", "kind", kind, "error", err)
-			return false
+			return false, processed
 		}
 		if job == nil {
-			return false
+			return false, processed
 		}
 		if err := s.processClaimedJob(ctx, inputs, job); err != nil {
 			retryAt := processingRetryAt(now, job.Attempts)
@@ -234,7 +291,7 @@ func (s *Service) drainProcessingKind(ctx context.Context, kind string) (hitBatc
 	}
 	// Hit the per-wake batch cap with the context still live — more jobs are
 	// probably queued; signal the caller to throttle instead of spinning.
-	return ctx.Err() == nil
+	return ctx.Err() == nil, processed
 }
 
 func (s *Service) processClaimedJob(
@@ -334,21 +391,31 @@ func (s *Service) SetRemoteOutboxDeliverer(deliverer RemoteOutboxDeliverer) {
 	s.ensureDurableWorkers()
 }
 
-func (s *Service) drainRemoteOutbox(ctx context.Context) {
+// drainRemoteOutbox delivers the due outbox items and reports whether it
+// handled any.
+func (s *Service) drainRemoteOutbox(ctx context.Context) (worked bool) {
 	queue, ok := s.store.(RemoteOutboxStore)
 	if !ok {
-		return
+		return false
+	}
+	if pre, ok := queue.(interface {
+		HasDeliverableRemoteOutbox(ctx context.Context, now time.Time) (bool, error)
+	}); ok {
+		if has, err := pre.HasDeliverableRemoteOutbox(ctx, time.Now().UTC()); err == nil && !has {
+			return false
+		}
 	}
 	for ctx.Err() == nil {
 		now := time.Now().UTC()
 		item, err := queue.ClaimRemoteOutbox(ctx, s.workerOwner, now, processingLease)
 		if err != nil {
 			s.logger.Warn("claim remote outbox failed", "error", err)
-			return
+			return worked
 		}
 		if item == nil {
-			return
+			return worked
 		}
+		worked = true
 		s.deliveryMu.RLock()
 		deliverer := s.remoteDeliverer
 		s.deliveryMu.RUnlock()
@@ -358,7 +425,7 @@ func (s *Service) drainRemoteOutbox(ctx context.Context) {
 				"remote outbox deliverer unavailable", now,
 				OutboxRetryAtFor(item.OperationID, now, item.Attempts, 0), false,
 			)
-			return
+			return worked
 		}
 		result := deliverer(ctx, *item)
 		disposition := ClassifyOutboxResult(
@@ -409,6 +476,7 @@ func (s *Service) drainRemoteOutbox(ctx context.Context) {
 			s.logger.Warn("record remote outbox failure failed", "operation_id", item.OperationID, "error", err)
 		}
 	}
+	return worked
 }
 
 // generationScopedClaimer claims only jobs of the given generations.

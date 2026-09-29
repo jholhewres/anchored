@@ -76,6 +76,21 @@ func insertRemoteOutboxTx(
 	return nil
 }
 
+// HasDeliverableRemoteOutbox reports, without taking the write lock, whether
+// ClaimRemoteOutbox could find work: a due pending item, or a processing one
+// whose lease expired.
+func (s *SQLiteStore) HasDeliverableRemoteOutbox(ctx context.Context, now time.Time) (bool, error) {
+	now = now.UTC()
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM remote_outbox
+			WHERE state = 'pending' AND attempts < max_attempts
+			  AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+		OR EXISTS(SELECT 1 FROM remote_outbox
+			WHERE state = 'processing' AND lease_until <= ?)`,
+		now.UnixNano(), now.UnixNano()).Scan(&found)
+	return found, err
+}
+
 func (s *SQLiteStore) ClaimRemoteOutbox(
 	ctx context.Context,
 	owner string,

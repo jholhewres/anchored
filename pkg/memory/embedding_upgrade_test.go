@@ -100,7 +100,10 @@ func legacyDatabase(t *testing.T) (*SQLiteStore, *bowEmbedder, string) {
 func drainUpgrade(t *testing.T, svc *Service) {
 	t.Helper()
 	svc.workerOwner = "upgrade-test-worker" // ensureDurableWorkers sets it in production
-	for i := 0; svc.drainDurableWork(); i++ {
+	for i := 0; ; i++ {
+		if busy, _ := svc.drainDurableWork(true); !busy {
+			return
+		}
 		if i == 200 {
 			t.Fatal("durable work still busy after 200 drains")
 		}
