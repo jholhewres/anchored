@@ -73,6 +73,7 @@ func runServe(args []string) {
 		CurrentVersion: Version,
 		Logger:         logger,
 	})
+	go runDashboardRefresh(ctx, logger, dashboardRefreshEvery)
 
 	// session_events grows by ~1 row per tool call (PostToolUse hook). Without
 	// retention the table balloons in long-lived projects. We sweep on serve

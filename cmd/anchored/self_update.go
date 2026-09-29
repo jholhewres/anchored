@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jholhewres/anchored/pkg/memory"
 	"github.com/jholhewres/anchored/pkg/updater"
 )
 
@@ -172,6 +174,12 @@ Note: `+"`anchored update <id>`"+` updates a MEMORY, not the binary.
 	}
 
 	plugin := syncPluginAfterUpdate(*configPath, res, *noPlugin, *force)
+
+	restartCtx, restartCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if restartStaleDashboard(restartCtx, memory.CurrentExecutable(), slog.New(slog.DiscardHandler)) {
+		fmt.Fprintf(os.Stderr, "anchored self-update: restarted %s.service so it runs the new version\n", dashboardUnitName)
+	}
+	restartCancel()
 
 	if *jsonOut {
 		out := applyOutcome{
