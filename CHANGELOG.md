@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-28
+
+The first stable 0.20 release. It carries everything in 0.20.0-rc.1 and
+0.20.0-rc.2 below: search fixed at the root (tokenizer, BM25, scope, ranking),
+a background rebuild of every embedding that keeps semantic search on, dream
+no longer deleting across projects, and a private database, config and debug
+log.
+
+After the update, each process rebuilds embeddings in the background.
+`anchored stats` shows the progress. Search switches to the new vectors once
+every live memory has one and no process older than 0.20 holds the database.
+`anchored doctor --processes` lists the processes it is waiting for; restart
+the MCP clients that started them.
+
+### Fixed
+
+- **The dashboard service picks up an update without a reboot.** An update
+  replaces the binary on disk. The `anchored-dashboard` systemd unit kept
+  running the old code, and an old dashboard holds the database, so it held
+  the embedding switch indefinitely. `serve` now restarts the unit when its
+  process runs a binary that has since been replaced at the same path. It
+  checks at startup and every 10 minutes, with `try-restart --no-block`.
+  `self-update` does the same right after installing. A dashboard started from
+  another path is left alone, and so is a stopped unit.
+
 ## [0.20.0-rc.2] - 2026-09-26
 
 Release candidate, published as a GitHub pre-release: auto-update does not
