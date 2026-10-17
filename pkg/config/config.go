@@ -591,13 +591,58 @@ func globMatch(pattern, s string) bool {
 	return matched
 }
 
+// globMatchAny reports whether pattern, or the same pattern with the
+// directory before its first metacharacter resolved (see globVariants),
+// matches any of dirs.
 func globMatchAny(pattern string, dirs []string) bool {
-	for _, d := range dirs {
-		if globMatch(pattern, d) {
-			return true
+	for _, variant := range globVariants(pattern) {
+		for _, d := range dirs {
+			if globMatch(variant, d) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// globVariants is pattern and, when the directory it names before its first
+// metacharacter is reached through a symlink, the same pattern under the
+// resolved directory. Routing matches resolved paths (the repository root git
+// reports), so a glob written as /var/x/* must also match /private/var/x/a.
+func globVariants(pattern string) []string {
+	dir := pattern
+	if i := strings.IndexAny(pattern, globMeta); i >= 0 {
+		dir = pattern[:strings.LastIndex(pattern[:i], "/")+1]
+	}
+	dir = strings.TrimSuffix(dir, "/")
+	// Only an absolute directory: a relative glob matches no repository path,
+	// and resolving it would read the process's working directory.
+	if dir == "" || !filepath.IsAbs(filepath.FromSlash(dir)) {
+		return []string{pattern}
+	}
+	real, err := filepath.EvalSymlinks(filepath.FromSlash(dir))
+	if err != nil {
+		return []string{pattern}
+	}
+	if real = filepath.ToSlash(real); real == dir {
+		return []string{pattern}
+	}
+	return []string{pattern, globEscape(real) + pattern[len(dir):]}
+}
+
+// globMeta are path.Match's metacharacters, the escape included.
+const globMeta = `*?[\`
+
+// globEscape quotes path.Match's metacharacters so s matches only itself.
+func globEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(globMeta, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // routingPaths lists, without repeats, the directories a glob may match for
@@ -629,6 +674,13 @@ func routingPaths(p string) []string {
 		add(start)
 		root, main := repositoryRoots(start)
 		add(root)
+		if root != "" {
+			if real, err := filepath.EvalSymlinks(root); err == nil {
+				add(real)
+			}
+		}
+		// The main checkout comes from the .git file as written; it is not
+		// resolved, so a planted gitdir line never drives filesystem lookups.
 		add(main)
 	}
 	return paths

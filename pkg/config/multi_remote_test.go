@@ -299,3 +299,73 @@ func TestResolveRemote_IgnoresASymlinkedGitFile(t *testing.T) {
 		t.Errorf("a symlinked .git steered %s to %+v, want personal", wt, e)
 	}
 }
+
+// A glob written through a symlinked directory (macOS's /var is
+// /private/var) matches the repository under its resolved path too.
+func TestResolveRemote_GlobWrittenThroughASymlink(t *testing.T) {
+	real := t.TempDir()
+	link := t.TempDir() + "/link"
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.MkdirAll(real+"/work/api/.git", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{link + "/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	for _, p := range []string{real + "/work/api", link + "/work/api", real + "/work/api/pkg"} {
+		if e, pattern := cfg.ResolveRemoteWithPattern(p); e == nil || e.Name != "work" || pattern != link+"/work/*" {
+			t.Errorf("%s routed to %+v by %q, want work by the glob as written", p, e, pattern)
+		}
+	}
+
+	// The macOS shape on any OS: the glob names the resolved directory and the
+	// command runs from a not-yet-created subdirectory reached through a link,
+	// so only the repository root, resolved, can match.
+	cfg.Remotes["work"] = RemoteEntry{Name: "work", ServerURL: "https://w.example", Paths: []string{real + "/work/*"}}
+	if e := cfg.ResolveRemote(link + "/work/api/new"); e == nil || e.Name != "work" {
+		t.Errorf("an uncreated subdirectory reached through a link routed to %+v, want work", e)
+	}
+}
+
+// A resolved directory is spliced into the glob as literal text, so glob
+// characters in its name match only themselves; and a relative glob, which
+// can never match an absolute repository path, is not resolved against the
+// working directory.
+func TestResolveRemote_ResolvedGlobDirectoryIsLiteralAndRelativeGlobsStayUnresolved(t *testing.T) {
+	base := t.TempDir()
+	real := base + "/re[a]l"
+	if err := os.MkdirAll(real+"/work/api/.git", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, base+"/link"); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{base + "/link/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	if e := cfg.ResolveRemote(real + "/work/api"); e == nil || e.Name != "work" {
+		t.Errorf("a resolved directory with glob characters routed to %+v, want work", e)
+	}
+
+	plain := base + "/plain"
+	if err := os.MkdirAll(plain+"/work/api/.git", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(plain, base+"/plainlink"); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{"plainlink/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	t.Chdir(base)
+	if e := cfg.ResolveRemote(plain + "/work/api"); e == nil || e.Name != "personal" {
+		t.Errorf("a relative glob resolved against the working directory routed to %+v, want personal", e)
+	}
+}
