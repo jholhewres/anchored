@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-10-17
+
+Search latency and remote routing. On an 85k-memory database a search takes
+0.2 s instead of 4.4–4.9 s, with the same ranking. Remotes are now chosen the
+same way on every run, and a path glob keeps a repository on its remote.
+
+### Fixed
+
+- **Search no longer rebuilds the entity lexicon on every call.** Each search
+  scanned the keywords of every memory, about 4 s on a large store. The
+  lexicon now loads once per process and refreshes in the background with
+  only the memories added since. `eval recall --real` is unchanged.
+- **A remote that is down no longer stalls every search.** Remotes are asked
+  at the same time: the routed one first, the others after a second. Each one
+  gets at most 2.5 s, and the server keeps the answer for a few minutes.
+- **Ties between remotes resolve the same way every time.** Between path
+  globs, the one with the most literal characters wins, then the remote's
+  name. Between several remotes marked default, the first by name wins, and
+  `remote status` warns about the duplicates and shows the glob that routed
+  the repository.
+- **`anchored remote sync --all` works.** It failed on its own flag. It now
+  shares `sync-per-project`, which routes each project through the named
+  remotes, reuses the project it created before (matched by the repository's
+  routing key, never by folder name alone), and checks each project's
+  memories against that project's own folder instead of the current
+  directory. Both commands take `--remote` and `--dry-run`. A project ID
+  shorter than 8 characters no longer crashes them.
+
+### Changed
+
+- **Writes wait for a remote that may own the repository.** When a remote
+  ranked first does not answer, or refuses the credentials, automatic saves,
+  `kg_add` and `remote sync` hold the write instead of sending it to another
+  server. Held saves are retried a minute later without using up their
+  attempts. A 401/403 asks you to log in again.
+- **A path glob keeps a repository on its remote.** When a remote's `paths`
+  glob matches a repository, searches, skills and writes go to that remote
+  only, even if another remote lists a project under the same routing key.
+  If the glob's remote does not have the project yet, `remote sync` stops
+  and says so, and `sync --all` creates it there. `remote status` warns when
+  the repository is registered on another remote. A glob also covers the
+  repository's subdirectories, symlinks to it and its linked worktrees, but
+  never directories above a repository's root.
+- **`remote sync --all` and `sync-per-project` exit 1** when a project was held
+  or failed to sync, and `--all` refuses `--project-id`, `--project`,
+  `--full-store` and `--force` instead of ignoring them.
+- The `modernc.org/sqlite` dependency is gone.
+
 ## [0.20.1] - 2026-09-29
 
 Memory and CPU. Measured with one `serve` on an 85k-memory database: it

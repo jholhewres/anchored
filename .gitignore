@@ -9,3 +9,6 @@ node-compile-cache/
 
 # Working notes for in-flight tasks; they are not repository artifacts.
 tasks/
+
+# devpit's per-project Devflow setup and run data, kept outside the repository.
+.devpit/
