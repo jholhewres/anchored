@@ -18,6 +18,7 @@ import (
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/memory"
+	remotesync "github.com/jholhewres/anchored/pkg/sync"
 )
 
 func TestToolSaveRemoteOutboxRetriesWithStableIdempotencyKey(t *testing.T) {
@@ -439,5 +440,267 @@ func waitForOutboxState(
 			t.Fatalf("outbox state = %q, want %q (last error %v)", state, want, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestRemoteOutboxHoldsAutoRouteBehindDownRemote locks the outage path end to
+// end: an automatic save whose routed remote is down stays in the outbox as
+// held, with no attempt spent, instead of failing toward the dead letter.
+func TestRemoteOutboxHoldsAutoRouteBehindDownRemote(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: down.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	args, err := json.Marshal(map[string]any{
+		"content":  "decision: hold writes while the routed remote is down",
+		"category": "decision",
+		"cwd":      repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	state, attempts, errorClass := waitForNewestOutboxRow(t, svc, 5*time.Second, func(_ string, _ int, errorClass string) bool {
+		return errorClass != ""
+	})
+	if state != "pending" || attempts != 0 || errorClass != "held" {
+		t.Fatalf("outbox item: state=%s attempts=%d error_class=%s, want pending, 0, held", state, attempts, errorClass)
+	}
+}
+
+// TestRemoteOutboxRechecksRoutingAfterDeliveryFailure locks recovery from a
+// stale routing answer: when an automatic delivery fails because the routed
+// remote went down after it was resolved, the next attempt resolves again and
+// holds the item, instead of spending its attempts against the cached answer.
+func TestRemoteOutboxRechecksRoutingAfterDeliveryFailure(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+	var down atomic.Bool
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == "/v1/projects" {
+			if _, err := fmt.Fprintf(w, `[{"id":"rp-team","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+			return
+		}
+		// The remote goes down while the first delivery is on its way.
+		down.Store(true)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(remote.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	args, err := json.Marshal(map[string]any{
+		"content":  "decision: recheck routing after a failed delivery",
+		"category": "decision",
+		"cwd":      repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	// A claim counts the attempt before delivery, so a row in processing is
+	// mid-attempt; judge it once the attempt has settled.
+	state, attempts, errorClass := waitForNewestOutboxRow(t, svc, 8*time.Second, func(state string, attempts int, errorClass string) bool {
+		return state != "processing" && (errorClass == "held" || state == "dead_letter" || attempts > 1)
+	})
+	if errorClass != "held" || attempts > 1 {
+		t.Fatalf("after the remote went down: state=%s attempts=%d error_class=%s, want held with at most the first attempt spent", state, attempts, errorClass)
+	}
+}
+
+// waitForNewestOutboxRow polls the newest outbox row until done accepts it,
+// and returns that row.
+func waitForNewestOutboxRow(t *testing.T, svc *memory.Service, timeout time.Duration, done func(state string, attempts int, errorClass string) bool) (string, int, string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var state, errorClass string
+		var attempts int
+		err := svc.StoreDB().QueryRow(`SELECT state, attempts, COALESCE(error_class, '') FROM remote_outbox ORDER BY created_at DESC LIMIT 1`).Scan(&state, &attempts, &errorClass)
+		if err == nil && done(state, attempts, errorClass) {
+			return state, attempts, errorClass
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("outbox row never settled: state=%s attempts=%d error_class=%s err=%v", state, attempts, errorClass, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRemoteOutboxHoldsWhenTheRoutedRemoteRefusesCredentials locks the hold
+// for a refused credential at delivery time: with the routing already cached,
+// a 401 holds the item with the "log in again" reason and drops the cached
+// routing, instead of dead-lettering it.
+func TestRemoteOutboxHoldsWhenTheRoutedRemoteRefusesCredentials(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/projects" {
+			if _, err := fmt.Fprintf(w, `[{"id":"rp-team","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(remote.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	args, err := json.Marshal(map[string]any{
+		"content":  "decision: hold writes when the remote refuses the credentials",
+		"category": "decision",
+		"cwd":      repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	state, _, errorClass := waitForNewestOutboxRow(t, svc, 5*time.Second, func(state string, _ int, errorClass string) bool {
+		return state != "processing" && errorClass != ""
+	})
+	var lastError string
+	if err := svc.StoreDB().QueryRow(`SELECT COALESCE(last_error, '') FROM remote_outbox ORDER BY created_at DESC LIMIT 1`).Scan(&lastError); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || errorClass != "held" || !strings.Contains(lastError, "log in") {
+		t.Fatalf("after a 401 on delivery: state=%s error_class=%s last_error=%q, want pending, held, log in again", state, errorClass, lastError)
+	}
+}
+
+// TestRemoteOutboxDeliveryRefusalHoldsTheRepository locks the cost of a
+// refusal at delivery: once the routed remote refuses a save, the items
+// queued after it for the same repository are held without another listing
+// or send until the hold expires.
+func TestRemoteOutboxDeliveryRefusalHoldsTheRepository(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+	var listings, saves atomic.Int32
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/projects" {
+			listings.Add(1)
+			if _, err := fmt.Fprintf(w, `[{"id":"rp-team","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+			return
+		}
+		saves.Add(1)
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(remote.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	save := func(content string) {
+		t.Helper()
+		args, err := json.Marshal(map[string]any{"content": content, "category": "decision", "cwd": repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.toolSave(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("decision: hold the first write when the routed remote refuses the save credentials")
+	waitForNewestOutboxRow(t, svc, 5*time.Second, func(state string, _ int, errorClass string) bool {
+		return state != "processing" && errorClass == "held"
+	})
+	// A search in between lists the projects again; the hold still stands.
+	srv.resolveAutoRemoteTarget(context.Background(), repo)
+	save("decision: hold the second write for the same repository without asking the remote again")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var held int
+		if err := svc.StoreDB().QueryRow(`SELECT COUNT(*) FROM remote_outbox WHERE error_class = 'held' AND state = 'pending'`).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		if held == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of 2 items held", held)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sv := saves.Load(); sv != 1 {
+		t.Fatalf("two queued writes cost %d sends (and %d listings), want 1 send", sv, listings.Load())
+	}
+}
+
+// TestRemoteOutboxRefusalOutsideARepositoryIsNotHeld locks the bound on the
+// hold: outside a git repository there is no repository to hold, so a save
+// refused with 401/403 fails as before, toward the dead letter, instead of
+// being resent every minute forever.
+func TestRemoteOutboxRefusalOutsideARepositoryIsNotHeld(t *testing.T) {
+	dir := t.TempDir()
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(remote.Close)
+	cfg := config.Defaults()
+	cfg.Memory.StorageDir = dir
+	cfg.Memory.DatabasePath = filepath.Join(dir, "refusal.db")
+	cfg.Embedding.Provider = "none"
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true, Projects: []string{"rp-team"}},
+	}
+	svc, err := memory.NewService(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	payload, err := json.Marshal(remoteOutboxEnvelope{
+		Kind: autoRouteOutboxKind,
+		CWD:  dir,
+		Memory: remotesync.RemoteMemory{
+			ID: "m-outside", Category: "decision", Content: "decision: outside any repository", Source: "mcp",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := srv.saveRemoteIdempotent(context.Background(), memory.RemoteOutboxItem{
+		OperationID: "op-outside", Remote: autoRouteOutboxKind, Payload: payload,
+	})
+	if result.Held || result.StatusCode != http.StatusForbidden {
+		t.Fatalf("refusal outside a repository: held=%v status=%d, want a 403 failure", result.Held, result.StatusCode)
 	}
 }

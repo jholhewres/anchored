@@ -19,7 +19,12 @@ const (
 	// job still gets done if none claims it by then.
 	unloadedClaimGrace  = time.Minute
 	workerFinalizeLimit = 5 * time.Second
-	embeddingJobKind    = "embedding"
+	// outboxHeldRetry is a fixed delay rather than the outbox backoff: a held
+	// item waits on a remote rather than fails, and the MCP layer keeps the
+	// hold per repository for the same minute (remoteMissTTL), so a retry
+	// costs one probe per repository.
+	outboxHeldRetry  = time.Minute
+	embeddingJobKind = "embedding"
 
 	// processingMaxBatchPerWake bounds how many jobs one drain pass handles
 	// before yielding, and processingBusyThrottle is the rest between
@@ -428,6 +433,19 @@ func (s *Service) drainRemoteOutbox(ctx context.Context) (worked bool) {
 			return worked
 		}
 		result := deliverer(ctx, *item)
+		if result.Held {
+			finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), workerFinalizeLimit)
+			reason := "held: " + result.HeldReason
+			if result.HeldReason == "" {
+				reason = "held: waiting on a higher-precedence remote that is not answering"
+			}
+			ended := time.Now().UTC()
+			if err := queue.DeferRemoteOutbox(finalizeCtx, item.OperationID, s.workerOwner, reason, ended, ended.Add(outboxHeldRetry)); err != nil {
+				s.logger.Warn("defer remote outbox failed", "operation_id", item.OperationID, "error", err)
+			}
+			finalizeCancel()
+			continue
+		}
 		disposition := ClassifyOutboxResult(
 			result.StatusCode, result.SamePayloadConflict,
 			result.TransportError != nil,

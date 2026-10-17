@@ -69,6 +69,7 @@ type RemoteOutboxStore interface {
 	DeliverRemoteOutbox(ctx context.Context, operationID, owner string, ack []byte, now time.Time) error
 	FailRemoteOutbox(ctx context.Context, operationID, owner, errorClass, message string, now, retryAt time.Time, permanent bool) (*RemoteOutboxItem, error)
 	RequeueRemoteOutbox(ctx context.Context, operationID string, now time.Time) error
+	DeferRemoteOutbox(ctx context.Context, operationID, owner, reason string, now, retryAt time.Time) error
 }
 
 // RemoteOutboxDeliveryResult is the transport-independent outcome returned by
@@ -79,6 +80,13 @@ type RemoteOutboxDeliveryResult struct {
 	RetryAfter          time.Duration
 	SamePayloadConflict bool
 	TransportError      error
+	// Held means the item is waiting: either on a higher-precedence remote
+	// that is not answering (it was not sent), or on credentials the routed
+	// remote refused. It is retried later without counting as an attempt,
+	// so neither dead-letters it. HeldReason says why, for the person
+	// reading the outbox.
+	Held       bool
+	HeldReason string
 }
 
 type RemoteOutboxDeliverer func(context.Context, RemoteOutboxItem) RemoteOutboxDeliveryResult

@@ -244,6 +244,34 @@ func (s *SQLiteStore) FailRemoteOutbox(
 	return item, nil
 }
 
+// DeferRemoteOutbox hands a claimed item back without counting the claim as
+// an attempt, to be retried at retryAt. It is for held deliveries, which wait
+// on a remote rather than fail, so it never dead-letters.
+func (s *SQLiteStore) DeferRemoteOutbox(ctx context.Context, operationID, owner, reason string, now, retryAt time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE remote_outbox
+		SET state = 'pending', attempts = MAX(attempts - 1, 0), owner = NULL,
+			lease_until = NULL, next_attempt_at = ?, error_class = 'held',
+			last_error = ?, updated_at = ?
+		WHERE operation_id = ? AND state = 'processing' AND owner = ?`,
+		retryAt.UTC().UnixNano(), reason, now.UTC().UnixNano(), operationID, owner)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		var state string
+		if err := s.db.QueryRowContext(ctx, `SELECT state FROM remote_outbox WHERE operation_id = ?`, operationID).Scan(&state); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrQueueItemNotFound
+			}
+			return err
+		}
+		return ErrClaimOwnerMismatch
+	}
+	return nil
+}
+
 func (s *SQLiteStore) RequeueRemoteOutbox(ctx context.Context, operationID string, now time.Time) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE remote_outbox
 		SET state = 'pending', attempts = 0, owner = NULL, lease_until = NULL,

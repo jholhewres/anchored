@@ -187,6 +187,9 @@ func TestToolsList_AdvertisesSkillOnlyForReachableRemoteRepositoryProject(t *tes
 	// A stale linked ID cannot activate the tool when no remote project matches
 	// this repository's canonical or legacy key.
 	remoteKey = "different-repository"
+	// The server's answer changed; drop the resolution the server keeps for
+	// remoteResolutionTTL so the next probe sees it.
+	srv.remoteResolutions = remoteResolutionCache{}
 	entry := srv.cfg.Remotes["team"]
 	entry.Projects = []string{"stale-project"}
 	srv.cfg.Remotes["team"] = entry

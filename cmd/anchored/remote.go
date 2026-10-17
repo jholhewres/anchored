@@ -678,8 +678,14 @@ func runRemoteSync(args []string) {
 	// one doesn't know this repository, ask the other configured remotes —
 	// a freshly-configured second server (no routing paths yet) is found
 	// automatically instead of the push failing with "project not found".
-	if *remoteName == "" && proj != nil && proj.RemoteKey != "" && len(cfg.Remotes) > 1 {
-		if target, _, _ := sync.ResolveProjectAcrossRemotes(ctx, cfg, projectRoot, "cli", canonicalKey, legacyKey); target != nil && (entry == nil || target.Name != entry.Name) {
+	if *remoteName == "" && *projectID == "" && proj != nil && proj.RemoteKey != "" && len(cfg.Remotes) > 1 {
+		r := sync.ResolveProjectAcrossRemotesForWrite(ctx, cfg, projectRoot, "cli", canonicalKey, legacyKey)
+		if r.Held() {
+			fmt.Fprintf(os.Stderr, "Sync held: %s. Retry once it answers, or pick a remote with --remote.\n", r.HeldReason())
+			svc.Close()
+			os.Exit(1)
+		}
+		if target := r.Entry; target != nil && (entry == nil || target.Name != entry.Name) {
 			fmt.Printf("Repository is registered on remote %q — using it (force another with --remote)\n", target.Name)
 			entry = target
 		}

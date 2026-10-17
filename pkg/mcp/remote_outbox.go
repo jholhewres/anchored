@@ -36,7 +36,11 @@ func (s *Server) saveRemoteIdempotent(
 	var envelope remoteOutboxEnvelope
 	if err := json.Unmarshal(item.Payload, &envelope); err == nil &&
 		envelope.Kind == autoRouteOutboxKind {
-		entry, projectID := s.resolveAutoRemoteTarget(ctx, envelope.CWD)
+		r := s.resolveAutoRemoteWriteTarget(ctx, envelope.CWD)
+		if r.Held() {
+			return memory.RemoteOutboxDeliveryResult{Held: true, HeldReason: r.HeldReason()}
+		}
+		entry, projectID := r.Entry, r.ProjectID
 		if entry == nil || projectID == "" {
 			return memory.RemoteOutboxDeliveryResult{
 				TransportError: fmt.Errorf("automatic remote project is not currently resolvable"),
@@ -50,7 +54,24 @@ func (s *Server) saveRemoteIdempotent(
 		}
 		payload = envelope.Memory
 		payload.ProjectID = projectID
-		return s.deliverRemoteOutboxPayload(ctx, item, *entry, payload)
+		result := s.deliverRemoteOutboxPayload(ctx, item, *entry, payload)
+		switch {
+		case result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden:
+			// A refused credential holds the repository's writes, as it does
+			// at resolution, rather than dead-lettering them. Outside a
+			// repository there is nothing to hold per repository, so the
+			// refusal fails as before.
+			if _, _, inRepo := s.repositoryRemoteKeys(envelope.CWD); inRepo {
+				refused := remotesync.ProjectResolution{HeldBy: entry.Name, HeldStatus: result.StatusCode}
+				s.holdAutoRemoteTarget(envelope.CWD, refused)
+				return memory.RemoteOutboxDeliveryResult{Held: true, HeldReason: refused.HeldReason()}
+			}
+		case result.TransportError != nil || result.StatusCode >= http.StatusInternalServerError:
+			// The remote may have gone down since it was resolved: the next
+			// attempt resolves again, and is held if it is still down.
+			s.forgetAutoRemoteTarget(envelope.CWD)
+		}
+		return result
 	}
 
 	entry := s.remoteEntryForOutbox(item.Remote)

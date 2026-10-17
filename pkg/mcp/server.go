@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,6 +108,8 @@ type Server struct {
 	//   4-8: limit=1 with a warning appended
 	//   9+:  blocked, redirected to anchored_batch_execute
 	searchCalls atomic.Int32
+
+	remoteResolutions remoteResolutionCache
 }
 
 // resetSearchThrottle is called whenever a tool repopulates / extends the
@@ -982,6 +985,7 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 		selector := *p.Remote
 		var entry *config.RemoteEntry
 		projectID := ""
+		autoRouted := false
 		if selector == "" || selector == "_" || selector == "default" {
 			// "the repo's remote": resolve exactly like sync routing does
 			// (git-origin probe across every configured remote), so a repo
@@ -990,6 +994,7 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
 			entry, projectID = s.resolveAutoRemoteTarget(rctx, remoteCWD)
 			rcancel()
+			autoRouted = entry != nil
 			if entry == nil {
 				entry = s.resolveRemoteEntry(selector, p.CWD)
 			}
@@ -1016,6 +1021,9 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 			}
 			response, err := client.SearchRemoteDetailed(ctx, projectID, p.Query, limit)
 			if err != nil {
+				if autoRouted && routingMayBeStale(err) {
+					s.forgetAutoRemoteRead(remoteCWD)
+				}
 				remoteFallbackName = entry.Name
 				switch {
 				case remotesync.IsRemoteForbidden(err):
@@ -1118,6 +1126,11 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 				remoteSearchMeta = response
 			} else {
 				s.logger.Warn("remote merge skipped", "remote", target.Name, "error", rErr)
+				if routingMayBeStale(rErr) {
+					// The cached remote may have gone down: the next search
+					// resolves again and can fall back. A write hold stands.
+					s.forgetAutoRemoteRead(remoteCWD)
+				}
 			}
 		}
 		cancel()
@@ -1682,11 +1695,13 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
 			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			target, pid := s.resolveAutoRemoteTarget(rctx, p.CWD)
+			r := s.resolveAutoRemoteWriteTarget(rctx, p.CWD)
 			rcancel()
-			if target != nil && pid != "" && target.AutoSyncEnabled() {
+			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" && target.AutoSyncEnabled() {
 				go s.pushTripleTo(*target, pid, *triple)
 				result += fmt.Sprintf(" (auto-sync → %s)", target.Name)
+			} else if r.Held() {
+				result += " (local only — " + r.HeldReason() + "; `anchored remote sync` sends it later)"
 			} else {
 				result += " (local only — no remote project matched this repo)"
 			}
@@ -1718,25 +1733,96 @@ func (s *Server) resolveRemoteProjectID(ctx context.Context, client *remotesync.
 }
 
 // resolveAutoRemoteTarget picks the remote AND the server-side project for
-// the automatic flows (search merge, save write-through, kg write-through):
-// probe every configured remote by the repo's git-origin remote_key — so a
+// the automatic read flows (search merge, default-remote search): probe every
+// configured remote by the repo's git-origin remote_key — so a
 // freshly-configured server works with zero routing setup — falling back to
-// the path/default remote's linked project for non-repo contexts.
+// the path/default remote's linked project for non-repo contexts. Flows that
+// send data use resolveAutoRemoteWriteTarget.
 func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*config.RemoteEntry, string) {
-	if s.cfg == nil {
-		return nil, ""
+	r := s.autoRemoteTarget(ctx, cwd, false)
+	return r.Entry, r.ProjectID
+}
+
+// resolveAutoRemoteWriteTarget is resolveAutoRemoteTarget for flows that send
+// data to the remote (outbox delivery, kg write-through), under strict
+// precedence: a held result is a write waiting on a higher-precedence remote
+// that is not answering, which it never passes over.
+func (s *Server) resolveAutoRemoteWriteTarget(ctx context.Context, cwd string) remotesync.ProjectResolution {
+	return s.autoRemoteTarget(ctx, cwd, true)
+}
+
+// routingMayBeStale reports whether a failed remote call suggests the remote
+// is down, so a cached routing answer should be resolved again: a transport
+// failure or a 5xx. A 4xx, rate limits included, comes from a server that is
+// up.
+func routingMayBeStale(err error) bool {
+	var remoteErr *remotesync.RemoteError
+	if !errors.As(err, &remoteErr) {
+		return true
 	}
-	if s.mem != nil {
-		if proj, err := s.mem.ResolveProjectInfo(cwd); err == nil && proj != nil && proj.RemoteKey != "" {
-			canonicalKey, legacyKey := project.RemoteKeysFromDir(proj.Path)
-			target, pid, _ := remotesync.ResolveProjectAcrossRemotes(ctx, s.cfg, cwd, "mcp", canonicalKey, legacyKey)
-			return target, pid
-		}
+	return remoteErr.StatusCode >= http.StatusInternalServerError
+}
+
+// repositoryRemoteKeys returns the canonical and legacy remote keys of the
+// git repository at cwd, or ok=false outside one.
+func (s *Server) repositoryRemoteKeys(cwd string) (canonicalKey, legacyKey string, ok bool) {
+	if s.mem == nil {
+		return "", "", false
+	}
+	proj, err := s.mem.ResolveProjectInfo(cwd)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		return "", "", false
+	}
+	canonicalKey, legacyKey = project.RemoteKeysFromDir(proj.Path)
+	return canonicalKey, legacyKey, true
+}
+
+// forgetAutoRemoteTarget drops what the cache holds for cwd's repository.
+func (s *Server) forgetAutoRemoteTarget(cwd string) {
+	if s.cfg == nil {
+		return
+	}
+	if canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd); ok {
+		s.remoteResolutions.forget(remoteResolutionKey(s.cfg, cwd, canonicalKey, legacyKey))
+	}
+}
+
+// forgetAutoRemoteRead drops the read answer cached for cwd's repository and
+// leaves any write hold in place.
+func (s *Server) forgetAutoRemoteRead(cwd string) {
+	if s.cfg == nil {
+		return
+	}
+	if canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd); ok {
+		s.remoteResolutions.forgetRead(remoteResolutionKey(s.cfg, cwd, canonicalKey, legacyKey))
+	}
+}
+
+// holdAutoRemoteTarget replaces what the cache holds for cwd's repository with
+// a write hold, so the writes queued behind a refusal are held without asking
+// the remote again until the hold expires.
+func (s *Server) holdAutoRemoteTarget(cwd string, held remotesync.ProjectResolution) {
+	if s.cfg == nil {
+		return
+	}
+	if canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd); ok {
+		key := remoteResolutionKey(s.cfg, cwd, canonicalKey, legacyKey)
+		s.remoteResolutions.forget(key)
+		s.remoteResolutions.put(key+heldKeySuffix, held, remoteMissTTL)
+	}
+}
+
+func (s *Server) autoRemoteTarget(ctx context.Context, cwd string, write bool) remotesync.ProjectResolution {
+	if s.cfg == nil {
+		return remotesync.ProjectResolution{}
+	}
+	if canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd); ok {
+		return s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, write)
 	}
 	if entry := s.cfg.ResolveRemote(cwd); entry != nil && len(entry.Projects) > 0 {
-		return entry, entry.Projects[0]
+		return remotesync.ProjectResolution{Entry: entry, ProjectID: entry.Projects[0]}
 	}
-	return nil, ""
+	return remotesync.ProjectResolution{}
 }
 
 // hasAnyRemote reports whether at least one remote server is configured.
@@ -1761,16 +1847,15 @@ func (s *Server) hasReachableRemoteRepositoryProject(ctx context.Context, cwd st
 // it never falls back to a configured linked project, which could belong to a
 // different repository after configuration drift.
 func (s *Server) resolveReachableRemoteRepositoryProject(ctx context.Context, cwd string) (*config.RemoteEntry, string) {
-	if s.cfg == nil || s.mem == nil {
+	if s.cfg == nil {
 		return nil, ""
 	}
-	proj, err := s.mem.ResolveProjectInfo(cwd)
-	if err != nil || proj == nil || proj.RemoteKey == "" {
+	canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd)
+	if !ok {
 		return nil, ""
 	}
-	canonicalKey, legacyKey := project.RemoteKeysFromDir(proj.Path)
-	target, remoteProjectID, _ := remotesync.ResolveProjectAcrossRemotes(ctx, s.cfg, cwd, "mcp", canonicalKey, legacyKey)
-	return target, remoteProjectID
+	r := s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, false)
+	return r.Entry, r.ProjectID
 }
 
 func (s *Server) hasAutoSyncRemote() bool {

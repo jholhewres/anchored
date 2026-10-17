@@ -85,7 +85,12 @@ func autoSyncRemote(ctx context.Context, cfg *config.Config, svc *memory.Service
 		if proj, err := svc.ResolveProjectInfo(cwd); err == nil && proj != nil && proj.RemoteKey != "" {
 			originRouted = true
 			canonicalKey, legacyKey := project.RemoteKeysFromDir(proj.Path)
-			if target, pid, _ := sync.ResolveProjectAcrossRemotes(ctx, cfg, cwd, "cli", canonicalKey, legacyKey); target != nil && pid != "" {
+			r := sync.ResolveProjectAcrossRemotesForWrite(ctx, cfg, cwd, "cli", canonicalKey, legacyKey)
+			if r.Held() {
+				fmt.Fprintf(os.Stderr, "warning: auto-sync held: %s; run `anchored remote sync` once it answers\n", r.HeldReason())
+				return
+			}
+			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" {
 				if !target.AutoSyncEnabled() {
 					return
 				}

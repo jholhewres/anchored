@@ -2,7 +2,10 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -547,5 +550,86 @@ func assertTableCount(t *testing.T, store *SQLiteStore, table string, want int) 
 	}
 	if got != want {
 		t.Fatalf("%s count = %d, want %d", table, got, want)
+	}
+}
+
+// TestDrainRemoteOutbox_HeldDeliveryKeepsItsAttempts locks the held outcome:
+// an item whose destination waits on a remote that is not answering goes back
+// to pending for a later retry, without spending an attempt or dead-lettering.
+func TestDrainRemoteOutbox_HeldDeliveryKeepsItsAttempts(t *testing.T) {
+	store := newTemporalTestStore(t)
+	ctx := context.Background()
+	if _, err := store.SaveTemporal(ctx,
+		Memory{ID: "m1", Category: "fact", Content: "remote", Source: "test"},
+		TemporalWriteOptions{RemoteOutbox: []RemoteOutboxSpec{{
+			OperationID: "op-held", Remote: "auto", Project: "p1",
+			PayloadHash: "hash-1", Payload: []byte("snapshot-1"), MaxAttempts: 1,
+		}}}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := &Service{store: store, logger: logger, workerOwner: "worker", shutdown: make(chan struct{})}
+	var returned time.Time
+	svc.SetRemoteOutboxDeliverer(func(context.Context, RemoteOutboxItem) RemoteOutboxDeliveryResult {
+		// Resolving a held write can take a while; the retry counts from
+		// when it ended, not from the claim.
+		time.Sleep(50 * time.Millisecond)
+		returned = time.Now()
+		return RemoteOutboxDeliveryResult{Held: true}
+	})
+
+	svc.drainRemoteOutbox(ctx)
+
+	var state string
+	var attempts int
+	var next sql.NullInt64
+	if err := store.DB().QueryRow(`SELECT state, attempts, next_attempt_at FROM remote_outbox WHERE operation_id = 'op-held'`).Scan(&state, &attempts, &next); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(OutboxPending) || attempts != 0 {
+		t.Fatalf("after a held delivery: state=%s attempts=%d, want pending with 0 attempts", state, attempts)
+	}
+	if !next.Valid || time.Unix(0, next.Int64).Before(returned.Add(outboxHeldRetry)) {
+		t.Fatalf("held item should wait %s after the delivery ended, next_attempt_at=%v ended=%v", outboxHeldRetry, next, returned)
+	}
+}
+
+// TestDeferRemoteOutbox_RefusesAStaleOwner locks the owner guard: a worker
+// whose lease ran out cannot hand back, and refund an attempt to, an item
+// another worker has since claimed.
+func TestDeferRemoteOutbox_RefusesAStaleOwner(t *testing.T) {
+	store := newTemporalTestStore(t)
+	ctx := context.Background()
+	now := instant(1)
+	store.now = clockAt(now)
+	if _, err := store.SaveTemporal(ctx,
+		Memory{ID: "m1", Category: "fact", Content: "remote", Source: "test"},
+		TemporalWriteOptions{RemoteOutbox: []RemoteOutboxSpec{{
+			OperationID: "op-stale", Remote: "auto", Project: "p1",
+			PayloadHash: "hash-1", Payload: []byte("snapshot-1"), MaxAttempts: 5,
+		}}}); err != nil {
+		t.Fatal(err)
+	}
+	if first, err := store.ClaimRemoteOutbox(ctx, "sender-a", now, time.Minute); err != nil || first == nil {
+		t.Fatalf("first claim = (%#v, %v)", first, err)
+	}
+	later := now.Add(2 * time.Minute)
+	second, err := store.ClaimRemoteOutbox(ctx, "sender-b", later, time.Minute)
+	if err != nil || second == nil {
+		t.Fatalf("second claim = (%#v, %v)", second, err)
+	}
+	if err := store.DeferRemoteOutbox(ctx, "op-stale", "sender-a", "held", later, later.Add(time.Minute)); !errors.Is(err, ErrClaimOwnerMismatch) {
+		t.Fatalf("defer by a stale owner = %v, want ErrClaimOwnerMismatch", err)
+	}
+	var state string
+	var attempts int
+	if err := store.DB().QueryRow(`SELECT state, attempts FROM remote_outbox WHERE operation_id = 'op-stale'`).Scan(&state, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(OutboxProcessing) || attempts != second.Attempts {
+		t.Fatalf("after the stale defer: state=%s attempts=%d, want processing with %d", state, attempts, second.Attempts)
+	}
+	if err := store.DeferRemoteOutbox(ctx, "op-missing", "sender-b", "held", later, later.Add(time.Minute)); !errors.Is(err, ErrQueueItemNotFound) {
+		t.Fatalf("defer of a missing item = %v, want ErrQueueItemNotFound", err)
 	}
 }
