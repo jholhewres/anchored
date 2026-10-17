@@ -150,8 +150,10 @@ func remoteResolutionKey(cfg *config.Config, cwd, canonicalKey, legacyKey string
 		}
 	}
 	write(canonicalKey, legacyKey)
-	if routed := cfg.ResolveRemote(cwd); routed != nil {
-		write("routed", routed.Name)
+	// The glob that routed cwd is part of the key: under a glob only its remote
+	// is asked, so its answer must not be shared with a default route.
+	if routed, pattern := cfg.ResolveRemoteWithPattern(cwd); routed != nil {
+		write("routed", routed.Name, pattern)
 	}
 	for _, name := range cfg.RemoteNames() {
 		entry := cfg.Remotes[name]

@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // TestMigrateRemotes_MergesSingularIntoMap locks the multi-server contract:
 // the legacy singular `remote:` block must keep resolving as "default" even
@@ -155,5 +159,143 @@ func TestResolveRemote_MetacharactersDoNotMakeAGlobSpecific(t *testing.T) {
 	}
 	if entry, pattern := cfg.ResolveRemoteWithPattern("/home/me/oss/lib"); entry == nil || entry.Name != "personal" || pattern != "/home/me/[a-z]*/*" {
 		t.Fatalf("/home/me/oss/lib routed to %+v by %q, want personal", entry, pattern)
+	}
+}
+
+// A glob routes the directory it matches and everything below it, so a
+// command run from a repository's subdirectory, or with a relative path,
+// routes like the repository itself.
+func TestResolveRemote_GlobCoversSubdirectoriesAndRelativePaths(t *testing.T) {
+	base := t.TempDir()
+	repo := base + "/work/api"
+	if err := os.MkdirAll(repo+"/.git", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{base + "/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	for _, p := range []string{repo, repo + "/pkg/sync", repo + "/"} {
+		if e, pattern := cfg.ResolveRemoteWithPattern(p); e == nil || e.Name != "work" || pattern != base+"/work/*" {
+			t.Errorf("%s routed to %+v by %q, want work", p, e, pattern)
+		}
+	}
+	if e := cfg.ResolveRemote(base + "/home/notes"); e == nil || e.Name != "personal" {
+		t.Errorf("a path no glob covers routed to %+v, want personal", e)
+	}
+
+	if err := os.MkdirAll(repo+"/pkg", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo + "/pkg")
+	for _, p := range []string{".", "../pkg"} {
+		if e := cfg.ResolveRemote(p); e == nil || e.Name != "work" {
+			t.Errorf("relative %q routed to %+v, want work", p, e)
+		}
+	}
+	// No path at all routes to the default remote, as before.
+	if e := cfg.ResolveRemote(""); e == nil || e.Name != "personal" {
+		t.Errorf("an empty path routed to %+v, want personal", e)
+	}
+}
+
+// A glob also covers the same repository reached another way: through a
+// symlink, or as a linked worktree elsewhere whose main checkout it matches.
+func TestResolveRemote_GlobCoversSymlinksAndLinkedWorktrees(t *testing.T) {
+	base := t.TempDir()
+	repo := base + "/work/api"
+	if err := os.MkdirAll(repo+"/.git/worktrees/wt", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(base+"/work", base+"/w"); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	wt := base + "/scratch/wt"
+	if err := os.MkdirAll(wt+"/pkg", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wt+"/.git", []byte("gitdir: "+repo+"/.git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{base + "/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	for _, p := range []string{base + "/w/api", wt, wt + "/pkg"} {
+		if e, _ := cfg.ResolveRemoteWithPattern(p); e == nil || e.Name != "work" {
+			t.Errorf("%s routed to %+v, want work", p, e)
+		}
+	}
+	if e := cfg.ResolveRemote(base + "/scratch"); e == nil || e.Name != "personal" {
+		t.Errorf("a directory outside the worktree routed to %+v, want personal", e)
+	}
+}
+
+// A glob covers what it matches and the repositories inside it, never the
+// directories above a repository's root: "/home/me/*" does not take over a
+// repository at /home/me/work/x.
+func TestResolveRemote_GlobDoesNotReachAboveARepositoryRoot(t *testing.T) {
+	base := t.TempDir()
+	nested := base + "/work/x"
+	if err := os.MkdirAll(nested+"/.git", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"personal": {Name: "personal", ServerURL: "https://p.example", Paths: []string{base + "/*"}},
+		"company":  {Name: "company", ServerURL: "https://c.example", Default: true},
+	}
+	for _, p := range []string{nested, nested + "/pkg"} {
+		if e, pattern := cfg.ResolveRemoteWithPattern(p); e == nil || e.Name != "company" || pattern != "" {
+			t.Errorf("%s routed to %+v by %q, want the default company", p, e, pattern)
+		}
+	}
+}
+
+// Only a small regular .git file is read for a worktree's main checkout.
+func TestResolveRemote_IgnoresAnOversizedGitFile(t *testing.T) {
+	base := t.TempDir()
+	wt := base + "/scratch/wt"
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := "gitdir: " + base + "/work/api/.git/worktrees/wt\n" + strings.Repeat("#", 8<<10)
+	if err := os.WriteFile(wt+"/.git", []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{base + "/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	if e := cfg.ResolveRemote(wt); e == nil || e.Name != "personal" {
+		t.Errorf("an oversized .git steered %s to %+v, want personal", wt, e)
+	}
+}
+
+// A .git that is not a regular file, a symlink included, is not followed to a
+// gitdir line.
+func TestResolveRemote_IgnoresASymlinkedGitFile(t *testing.T) {
+	base := t.TempDir()
+	wt := base + "/scratch/wt"
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := base + "/gitfile"
+	if err := os.WriteFile(target, []byte("gitdir: "+base+"/work/api/.git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, wt+"/.git"); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := Defaults()
+	cfg.Remotes = map[string]RemoteEntry{
+		"work":     {Name: "work", ServerURL: "https://w.example", Paths: []string{base + "/work/*"}},
+		"personal": {Name: "personal", ServerURL: "https://p.example", Default: true},
+	}
+	if e := cfg.ResolveRemote(wt); e == nil || e.Name != "personal" {
+		t.Errorf("a symlinked .git steered %s to %+v, want personal", wt, e)
 	}
 }

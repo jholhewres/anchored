@@ -327,3 +327,43 @@ func TestToolSearch_DefaultSelectorFollowsOriginRouting(t *testing.T) {
 		t.Errorf("selector \"default\" must follow origin routing to the team server\n--- output ---\n%s", out)
 	}
 }
+
+// An explicit search of "the repo's remote" with cwd omitted runs from the
+// server's directory: under a glob it reaches only the glob's remote, never
+// the default remote's linked project.
+func TestToolSearch_DefaultRemoteWithoutCWDFollowsTheGlob(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	work := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(work.Close)
+	var searched atomic.Int32
+	shared := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "search") {
+			searched.Add(1)
+		}
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(shared.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"work":   {Name: "work", ServerURL: work.URL, APIKey: "k1", Paths: []string{filepath.Dir(repo) + "/*"}},
+		"shared": {Name: "shared", ServerURL: shared.URL, APIKey: "k2", Default: true, Projects: []string{"p1"}},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+	t.Chdir(repo)
+
+	args, err := json.Marshal(map[string]any{"query": "fallback fixture", "remote": "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSearch(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	if n := searched.Load(); n != 0 {
+		t.Fatalf("the default remote's linked project was searched %d times past the glob", n)
+	}
+}

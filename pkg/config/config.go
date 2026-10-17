@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -56,7 +57,10 @@ type RemoteEntry struct {
 	Default   bool   `yaml:"default,omitempty"`
 	// Paths are glob patterns matched against a project's local path to
 	// route it to this remote (e.g. "/home/me/work/*"). path.Match
-	// semantics: `*` does not cross `/`.
+	// semantics: `*` does not cross `/`. A glob covers the repositories it
+	// matches, with their subdirectories, symlinks to them and their linked
+	// worktrees (see ResolveRemoteWithPattern), and a repository a glob
+	// covers reads from and writes to this remote only.
 	Paths []string `yaml:"paths,omitempty"`
 	// Projects are remote project IDs linked to THIS server via
 	// `anchored remote link --remote <name> <id>`. IDs are server-scoped,
@@ -496,14 +500,19 @@ func (c *Config) ResolveRemote(projectPath string) *RemoteEntry {
 }
 
 // ResolveRemoteWithPattern is ResolveRemote that also returns the glob that
-// routed the path, or "" when the default remote did.
+// routed the path, or "" when the default remote did. A glob is matched
+// against the path and the root of the repository holding it (see
+// routingPaths), so a repository's subdirectories, a symlink to it and its
+// linked worktrees route like the repository; a relative path is taken from
+// the process's working directory, and an empty one matches no glob.
 func (c *Config) ResolveRemoteWithPattern(projectPath string) (*RemoteEntry, string) {
+	dirs := routingPaths(projectPath)
 	var best *RemoteEntry
 	bestPattern, bestScore := "", -1
 	for _, name := range c.RemoteNames() {
 		entry := c.Remotes[name]
 		for _, pattern := range entry.Paths {
-			if score := globLiteralLen(pattern); score > bestScore && globMatch(pattern, projectPath) {
+			if score := globLiteralLen(pattern); score > bestScore && globMatchAny(pattern, dirs) {
 				entry.Name = name
 				best, bestPattern, bestScore = &entry, pattern, score
 			}
@@ -581,6 +590,87 @@ func globMatch(pattern, s string) bool {
 	matched, _ := path.Match(pattern, s)
 	return matched
 }
+
+func globMatchAny(pattern string, dirs []string) bool {
+	for _, d := range dirs {
+		if globMatch(pattern, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// routingPaths lists, without repeats, the directories a glob may match for
+// p: the absolute path and the root of the repository holding it, each also
+// with symlinks resolved, and the main checkout when that repository is a
+// linked worktree. Directories above a repository's root are left out, so a
+// glob covers what it matches and the repositories inside it, never more. An
+// empty path has none.
+func routingPaths(p string) []string {
+	if p == "" {
+		return nil
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	starts := []string{filepath.Clean(p)}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		starts = append(starts, real)
+	}
+	var paths []string
+	seen := map[string]bool{}
+	add := func(d string) {
+		if d = filepath.ToSlash(d); d != "" && !seen[d] {
+			seen[d] = true
+			paths = append(paths, d)
+		}
+	}
+	for _, start := range starts {
+		add(start)
+		root, main := repositoryRoots(start)
+		add(root)
+		add(main)
+	}
+	return paths
+}
+
+// repositoryRoots walks up from dir to the first .git and returns the
+// directory holding it and, when that .git is a linked worktree's file, the
+// main checkout it points to ("gitdir: <main>/.git/worktrees/<name>"). Both
+// are "" outside a repository. Only a small regular file is read, and no git
+// is run.
+func repositoryRoots(dir string) (root, main string) {
+	for d := dir; ; d = filepath.Dir(d) {
+		gitPath := filepath.Join(d, ".git")
+		if info, err := os.Lstat(gitPath); err == nil {
+			if !info.Mode().IsRegular() || info.Size() > maxGitFileSize {
+				return d, ""
+			}
+			data, err := os.ReadFile(gitPath)
+			if err != nil {
+				return d, ""
+			}
+			gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+			if !ok {
+				return d, ""
+			}
+			gitdir = strings.TrimSpace(gitdir)
+			if !filepath.IsAbs(gitdir) {
+				gitdir = filepath.Join(d, gitdir)
+			}
+			if m, _, found := strings.Cut(filepath.ToSlash(gitdir), "/.git/worktrees/"); found {
+				return d, filepath.FromSlash(m)
+			}
+			return d, ""
+		}
+		if filepath.Dir(d) == d {
+			return "", ""
+		}
+	}
+}
+
+// maxGitFileSize bounds the .git file read for a worktree's gitdir line.
+const maxGitFileSize = 4 << 10
 
 func EnsureDirs(cfg *Config) error {
 	dirs := []string{

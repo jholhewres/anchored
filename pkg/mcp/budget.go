@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -52,6 +53,15 @@ const (
 func defaultCWD(cwd string) string {
 	if cwd == "" {
 		return "."
+	}
+	return cwd
+}
+
+// absCWD is cwd made absolute against the process's working directory, or cwd
+// as given when that fails.
+func absCWD(cwd string) string {
+	if abs, err := filepath.Abs(cwd); err == nil {
+		return abs
 	}
 	return cwd
 }

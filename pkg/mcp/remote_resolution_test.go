@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -326,5 +328,32 @@ func TestToolSearch_FailedSearchKeepsTheWriteHold(t *testing.T) {
 	}
 	if r := srv.resolveAutoRemoteWriteTarget(ctx, repo); !r.Held() || r.HeldStatus != http.StatusForbidden {
 		t.Fatalf("after a failed search: held=%v status=%d, want the 403 hold to stand", r.Held(), r.HeldStatus)
+	}
+}
+
+// A path the glob covers and one only the default reaches can route to the
+// same remote yet must not share a cached answer: the first asks only that
+// remote, the second probes every remote, and its answer must not steer the
+// first one's writes.
+func TestRemoteResolutionKey_SeparatesGlobAndDefaultRoutes(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "work", "api")
+	for _, dir := range []string{filepath.Join(repo, ".git"), filepath.Join(repo, "pkg"), filepath.Join(base, "elsewhere", "api")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults()
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"work":   {Name: "work", ServerURL: "https://w.example", APIKey: "k1", Default: true, Paths: []string{filepath.Join(base, "work") + "/*"}},
+		"shared": {Name: "shared", ServerURL: "https://s.example", APIKey: "k2"},
+	}
+	byGlob := remoteResolutionKey(cfg, repo, "canon", "legacy")
+	byDefault := remoteResolutionKey(cfg, filepath.Join(base, "elsewhere", "api"), "canon", "legacy")
+	if byGlob == byDefault {
+		t.Fatal("a glob-routed path and a default-routed path share a cache key")
+	}
+	if sub := remoteResolutionKey(cfg, filepath.Join(repo, "pkg"), "canon", "legacy"); sub != byGlob {
+		t.Error("a subdirectory of a glob-routed repository got a different cache key than the repository")
 	}
 }

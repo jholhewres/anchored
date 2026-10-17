@@ -986,7 +986,11 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 		var entry *config.RemoteEntry
 		projectID := ""
 		autoRouted := false
+		// The repo's remote is chosen from the directory the probe uses,
+		// so a glob that routes it also bounds the fallback below.
+		routeCWD := p.CWD
 		if selector == "" || selector == "_" || selector == "default" {
+			routeCWD = remoteCWD
 			// "the repo's remote": resolve exactly like sync routing does
 			// (git-origin probe across every configured remote), so a repo
 			// that syncs to a named server is searched THERE — not on the
@@ -996,7 +1000,7 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 			rcancel()
 			autoRouted = entry != nil
 			if entry == nil {
-				entry = s.resolveRemoteEntry(selector, p.CWD)
+				entry = s.resolveRemoteEntry(selector, routeCWD)
 			}
 		} else {
 			entry = s.resolveRemoteEntry(selector, p.CWD)
@@ -1012,7 +1016,7 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 				// Resolve the REMOTE project — the server only knows its own
 				// IDs. Same precedence as sync: git-origin remote_key first,
 				// linked project for non-repo contexts.
-				projectID, _ = s.resolveRemoteProjectID(ctx, client, *entry, p.CWD)
+				projectID, _ = s.resolveRemoteProjectID(ctx, client, *entry, routeCWD)
 			}
 			if projectID == "" {
 				remoteFallbackName = entry.Name
@@ -1360,7 +1364,9 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 				}
 				payload, err := json.Marshal(remoteOutboxEnvelope{
 					Kind: autoRouteOutboxKind,
-					CWD:  p.CWD,
+					// Absolute: the row may be delivered by a process that
+					// runs in another directory.
+					CWD: absCWD(p.CWD),
 					Memory: remotesync.RemoteMemory{
 						ID: m.ID, Category: m.Category, Content: content,
 						Source: "mcp",

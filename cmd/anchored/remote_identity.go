@@ -51,6 +51,21 @@ func buildNoProjectError(origin, canonicalKey, legacyKey string, remotes []strin
 	return b.String()
 }
 
+// registeredElsewhere names the first remote, other than skip, that lists a
+// project under one of the keys, or "". It only informs `remote status`;
+// routing never asks those remotes.
+func registeredElsewhere(ctx context.Context, cfg *config.Config, skip string, keys ...string) string {
+	for _, name := range cfg.RemoteNames() {
+		if name == skip {
+			continue
+		}
+		if pid, _ := sync.NewClientFromEntry(cfg.Remotes[name], "cli").ResolveProjectIDByRemoteKeys(ctx, keys...); pid != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // repoIdentityLines reports, for `remote status`, whether any configured
 // remote has a project registered for the repository at cwd — and, when the
 // routed remote carries exactly one linked project, whether that link points
@@ -62,9 +77,19 @@ func repoIdentityLines(ctx context.Context, cfg *config.Config, cwd, origin, can
 
 	var lines []string
 	target, projectID, matchedKey := sync.ResolveProjectAcrossRemotes(ctx, cfg, cwd, "cli", canonicalKey, legacyKey)
-	if target != nil && projectID != "" {
+	routed, pattern := cfg.ResolveRemoteWithPattern(cwd)
+	switch {
+	case target != nil && projectID != "":
 		lines = append(lines, fmt.Sprintf("  Identity:   match — project %s on %q (key %s)", projectID, target.Name, matchedKey))
-	} else {
+	case pattern != "":
+		// An explicit glob limits reads and writes to its remote, so a
+		// registration on another one is ignored: say so, it looks like a match.
+		lines = append(lines, fmt.Sprintf("  Identity:   %q, the remote its glob %s routes to, has no project for this repo", routed.Name, pattern))
+		if other := registeredElsewhere(ctx, cfg, routed.Name, canonicalKey, legacyKey); other != "" {
+			lines = append(lines, fmt.Sprintf("  Warning:    the repo is registered on %q, but its glob routes reads and writes to %q only", other, routed.Name))
+		}
+		lines = append(lines, fmt.Sprintf("              → create it on %q with Repository URL %s, or change the glob", routed.Name, origin))
+	default:
 		lines = append(lines, "  Identity:   no configured remote has a project for this repo")
 		lines = append(lines, fmt.Sprintf("              → create it in the dashboard with Repository URL %s, or: anchored remote link <slug> --remote <name>", origin))
 	}

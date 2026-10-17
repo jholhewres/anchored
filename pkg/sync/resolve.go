@@ -82,14 +82,15 @@ func (r ProjectResolution) HeldReason() string {
 // not-yet-rekeyed server is found.
 //
 // Precedence is deterministic: the path/default-resolved remote for cwd
-// first (so explicit routing always wins when its server knows the repo),
-// then the remaining remotes by name. The first remote is asked at once; the
-// others are asked too once it is late (remoteHedgeDelay) or answers without
-// the repository. The first remote in precedence order that knows a key wins,
-// so a known repository costs one request and an unknown one costs the
-// slowest remote instead of the sum of all of them. Each answer is bounded by
-// the interactive deadline; remotes that fail to answer are skipped —
-// best-effort. Returns (nil, "", "") when no remote knows any key.
+// first, then the remaining remotes by name. A path glob that matches cwd
+// limits the probe to its own remote (see remotesToAsk). The first remote is
+// asked at once; the others are asked too once it is late (remoteHedgeDelay)
+// or answers without the repository. The first remote in precedence order
+// that knows a key wins, so a known repository costs one request and an
+// unknown one costs the slowest remote instead of the sum of all of them.
+// Each answer is bounded by the interactive deadline; remotes that fail to
+// answer are skipped — best-effort. Returns (nil, "", "") when no remote
+// knows any key.
 func ResolveProjectAcrossRemotes(ctx context.Context, cfg *config.Config, cwd, clientID string, keys ...string) (*config.RemoteEntry, string, string) {
 	r := ResolveProjectAcrossRemotesDetailed(ctx, cfg, cwd, clientID, remoteProbeTimeout, keys...)
 	return r.Entry, r.ProjectID, r.MatchedKey
@@ -105,7 +106,7 @@ func ResolveProjectAcrossRemotesForWrite(ctx context.Context, cfg *config.Config
 	if cfg == nil || !anyKey(keys) {
 		return ProjectResolution{}
 	}
-	for _, e := range remotesInPrecedence(cfg, cwd) {
+	for _, e := range remotesToAsk(cfg, cwd) {
 		pctx, cancel := context.WithTimeout(ctx, remoteWriteProbeTimeout)
 		pid, matched, err := NewClientFromEntry(*e, clientID).lookupProjectIDByRemoteKeys(pctx, keys...)
 		cancel()
@@ -134,7 +135,7 @@ func ResolveProjectAcrossRemotesDetailed(ctx context.Context, cfg *config.Config
 	if cfg == nil || !anyKey(keys) {
 		return ProjectResolution{}
 	}
-	ordered := remotesInPrecedence(cfg, cwd)
+	ordered := remotesToAsk(cfg, cwd)
 
 	type probe struct {
 		pid, matched string
@@ -192,6 +193,19 @@ func ResolveProjectAcrossRemotesDetailed(ctx context.Context, cfg *config.Config
 		}
 	}
 	return ProjectResolution{Degraded: degraded}
+}
+
+// remotesToAsk is remotesInPrecedence cut to the routed remote when a path
+// glob matches cwd. An explicit glob names the repository's remote outright,
+// for reads and writes. Keys derive from the public origin URL, so another
+// server that lists a project under the same key must neither take the
+// writes nor answer for the repository.
+func remotesToAsk(cfg *config.Config, cwd string) []*config.RemoteEntry {
+	order := remotesInPrecedence(cfg, cwd)
+	if _, pattern := cfg.ResolveRemoteWithPattern(cwd); pattern != "" && len(order) > 0 {
+		return order[:1]
+	}
+	return order
 }
 
 // remotesInPrecedence lists the configured remotes in the order a repository

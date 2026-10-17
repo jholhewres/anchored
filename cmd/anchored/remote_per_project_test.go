@@ -80,6 +80,11 @@ func newFakeRemote(t *testing.T, name string) *fakeRemote {
 		defer f.mu.Unlock()
 		known := false
 		for _, p := range f.projects {
+			// A push by project_claim resolves the project by its key, as
+			// the server does.
+			if req.ProjectID == "" && req.ProjectClaim != nil && p.RemoteKey == req.ProjectClaim.RemoteKey {
+				req.ProjectID = p.ID
+			}
 			known = known || p.ID == req.ProjectID
 		}
 		if !known {
@@ -286,6 +291,46 @@ func TestRemoteSyncAll_UsesTheRemoteThatKnowsTheRepo(t *testing.T) {
 	if got := company.snapshot().pushed["acme-api"]; len(got) != 1 || got[0] != apiDecision {
 		t.Fatalf("company project got %v\n%s", got, out)
 	}
+}
+
+// An explicit glob names the repository's remote: a project another remote
+// lists under the same git-origin key does not take the memories. Repo-scoped
+// `remote sync` and `remote status` follow the same rule.
+func TestRemoteSync_ExplicitGlobWinsOverAKeyRegisteredElsewhere(t *testing.T) {
+	f := newSyncFixture(t)
+	work := newFakeRemote(t, "work")
+	shared := newFakeRemote(t, "shared")
+	shared.projects = []remotesync.RemoteProject{{ID: "claimed", Slug: "api", RemoteKey: f.apiKey}}
+	cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
+		"work":   {ServerURL: work.URL, APIKey: "<REDACTED>", Paths: []string{filepath.Join(f.base, "work") + "/*"}},
+		"shared": {ServerURL: shared.URL, APIKey: "<REDACTED>", Default: true},
+	})
+	saveDecisions(t, cfgPath, map[string]string{f.apiDir: apiDecision})
+
+	sub := filepath.Join(f.apiDir, "internal", "billing")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{f.apiDir, sub} {
+		out, code := runCLI(t, dir, "remote", "sync", "--config", cfgPath)
+		if code == 0 || len(shared.snapshot().pushed) != 0 {
+			t.Fatalf("remote sync from %s exited %d and pushed %v to shared, want a refusal and nothing on shared\n%s", dir, code, shared.snapshot().pushed, out)
+		}
+	}
+
+	out, code := runCLI(t, f.apiDir, "remote", "status", "--config", cfgPath)
+	if code != 0 || !strings.Contains(out, `registered on "shared"`) {
+		t.Errorf("remote status must say the repo is registered on another remote than its glob's (exit %d)\n%s", code, out)
+	}
+
+	out, code = runCLI(t, f.base, "remote", "sync", "--all", "--config", cfgPath)
+	if code != 0 {
+		t.Fatalf("remote sync --all exited %d\n%s", code, out)
+	}
+	if got := shared.snapshot().pushed; len(got) != 0 {
+		t.Fatalf("shared, which only claims the key, got %v\n%s", got, out)
+	}
+	wantOnlyProject(t, "sync --all", work, f.apiKey, apiDecision, out)
 }
 
 // When a remote that may own the repository does not answer, its memories

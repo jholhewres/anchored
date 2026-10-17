@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -702,5 +703,116 @@ func TestRemoteOutboxRefusalOutsideARepositoryIsNotHeld(t *testing.T) {
 	})
 	if result.Held || result.StatusCode != http.StatusForbidden {
 		t.Fatalf("refusal outside a repository: held=%v status=%d, want a 403 failure", result.Held, result.StatusCode)
+	}
+}
+
+// TestRemoteOutboxFollowsAnExplicitGlob locks the write rule for automatic
+// saves: a path glob names the repository's remote, so a remote that only
+// lists a project under the repository's key receives nothing.
+func TestRemoteOutboxFollowsAnExplicitGlob(t *testing.T) {
+	t.Run("from the repository root", func(t *testing.T) { testRemoteOutboxFollowsAnExplicitGlob(t, "") })
+	// The model may pass any directory inside the repository.
+	t.Run("from a subdirectory", func(t *testing.T) { testRemoteOutboxFollowsAnExplicitGlob(t, "internal/billing") })
+}
+
+func testRemoteOutboxFollowsAnExplicitGlob(t *testing.T, sub string) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	cwd := filepath.Join(repo, sub)
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+	work := fakeProjectsListing(t, "[]", nil)
+	var delivered atomic.Int32
+	shared := fakeProjectsListing(t, fmt.Sprintf(`[{"id":"claimed","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey), &delivered)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"work":   {Name: "work", ServerURL: work.URL, APIKey: "k1", Paths: []string{filepath.Dir(repo) + "/*"}},
+		"shared": {Name: "shared", ServerURL: shared.URL, APIKey: "k2", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+	// A read first, as a search would: its cached answer must not route the
+	// write past the glob.
+	if target, _ := srv.resolveAutoRemoteTarget(context.Background(), cwd); target != nil && target.Name != "work" {
+		t.Fatalf("glob-routed read resolved to %q", target.Name)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"content":  "decision: an explicit glob names the remote for automatic saves",
+		"category": "decision",
+		"cwd":      cwd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForNewestOutboxRow(t, svc, 5*time.Second, func(state string, attempts int, _ string) bool {
+		return state != "processing" && attempts >= 1
+	})
+	if n := delivered.Load(); n != 0 {
+		t.Fatalf("shared, which only lists the repository's key, received %d deliveries", n)
+	}
+}
+
+// fakeProjectsListing answers GET /v1/projects with listing and counts every
+// other request in delivered (when not nil), answering it with an empty
+// success.
+func fakeProjectsListing(t *testing.T, listing string, delivered *atomic.Int32) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/projects" {
+			if _, err := fmt.Fprint(w, listing); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+			return
+		}
+		if delivered != nil {
+			delivered.Add(1)
+		}
+		if _, err := fmt.Fprint(w, `{}`); err != nil {
+			t.Errorf("write reply: %v", err)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestRemoteOutboxStoresAnAbsoluteCWD locks where an automatic save is routed
+// from: a save with cwd omitted records the absolute directory, since the
+// process that delivers the row may run somewhere else.
+func TestRemoteOutboxStoresAnAbsoluteCWD(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	remote := fakeProjectsListing(t, "[]", nil)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+	t.Chdir(repo)
+
+	args, err := json.Marshal(map[string]any{
+		"content":  "decision: route an automatic save from where it was made",
+		"category": "decision",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	var payload []byte
+	if err := svc.StoreDB().QueryRow(`SELECT payload_snapshot FROM remote_outbox ORDER BY created_at DESC LIMIT 1`).Scan(&payload); err != nil {
+		t.Fatalf("read outbox row: %v", err)
+	}
+	var envelope remoteOutboxEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.CWD != repo {
+		t.Fatalf("outbox envelope cwd = %q, want %q", envelope.CWD, repo)
 	}
 }

@@ -413,3 +413,59 @@ func TestResolveProjectAcrossRemotesForWrite_SaysWhoHeldIt(t *testing.T) {
 		})
 	}
 }
+
+// An explicit path glob names the remote a repository writes to. Another
+// remote that lists a project under the repository's key (keys come from the
+// public origin URL, so anyone on a shared server can register one) does not
+// take its writes; it is not even asked. Without a glob the probe still finds
+// the remote that knows the repository.
+func TestResolveProjectAcrossRemotesForWrite_ExplicitGlobWins(t *testing.T) {
+	const key = "abc123key"
+	unaware := fakeProjectsServer(t, "")
+	var asked atomic.Int32
+	claimant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		if _, err := fmt.Fprintf(w, `[{"id":"claimed","name":"x","slug":"x","remote_key":%q}]`, key); err != nil {
+			t.Errorf("write projects: %v", err)
+		}
+	}))
+	t.Cleanup(claimant.Close)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+
+	resolve := func(work string, paths ...string) ProjectResolution {
+		cfg := config.Defaults()
+		cfg.Remotes = map[string]config.RemoteEntry{
+			"work":   {Name: "work", ServerURL: work, APIKey: "k1", Paths: paths},
+			"shared": {Name: "shared", ServerURL: claimant.URL, APIKey: "k2", Default: true},
+		}
+		return ResolveProjectAcrossRemotesForWrite(context.Background(), cfg, "/home/me/work/api", "test", key)
+	}
+
+	if r := resolve(unaware.URL, "/home/me/work/*"); r.Entry != nil || r.Held() {
+		t.Fatalf("glob-routed write went to %+v (held=%v), want nothing: the glob's remote does not know the repo yet", r.Entry, r.Held())
+	}
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("a remote the glob does not name was asked %d times", n)
+	}
+	if r := resolve(down.URL, "/home/me/work/*"); !r.Held() || r.HeldBy != "work" {
+		t.Fatalf("behind a silent glob remote: %+v, want held by work", r)
+	}
+	if r := resolve(unaware.URL); r.Entry == nil || r.Entry.Name != "shared" || r.ProjectID != "claimed" {
+		t.Fatalf("without a glob: %+v, want the probe to find shared", r)
+	}
+
+	// Reads follow the glob as well: the claimant's hits and skills never
+	// reach a repository the glob routes elsewhere.
+	asked.Store(0)
+	cfg := config.Defaults()
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"work":   {Name: "work", ServerURL: unaware.URL, APIKey: "k1", Paths: []string{"/home/me/work/*"}},
+		"shared": {Name: "shared", ServerURL: claimant.URL, APIKey: "k2", Default: true},
+	}
+	if entry, pid, _ := ResolveProjectAcrossRemotes(context.Background(), cfg, "/home/me/work/api", "test", key); entry != nil || pid != "" || asked.Load() != 0 {
+		t.Fatalf("glob-routed read found %+v %q and asked the claimant %d times, want nothing and 0", entry, pid, asked.Load())
+	}
+}
