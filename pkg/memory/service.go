@@ -18,6 +18,7 @@ import (
 type Service struct {
 	store           Store
 	searcher        *HybridSearcher
+	entityDetector  *EntityDetector
 	sanitizer       *Sanitizer
 	projDet         *project.Detector
 	embedder        EmbeddingProvider
@@ -118,6 +119,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	searchCfg.TemporalDecayHalfLifeDays = cfg.Search.TemporalDecayHalfLifeDays
 
 	entityDetector := NewEntityDetector(store.DB(), DefaultEntityDetectorConfig(), logger)
+	svc.entityDetector = entityDetector
 
 	topicChangeDetector := NewTopicChangeDetector(embedder, entityDetector)
 
@@ -874,6 +876,9 @@ func (s *Service) Close() {
 			close(s.shutdown)
 		}
 		s.wg.Wait()
+		if s.entityDetector != nil {
+			s.entityDetector.Close()
+		}
 		s.retireLegacyPipeline()
 		if s.embedder != nil {
 			s.embedder.Close()

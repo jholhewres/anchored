@@ -123,7 +123,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts ...Searc
 
 	var queryEntities []string
 	if h.entityDetector != nil {
-		queryEntities = h.entityDetector.Detect(query)
+		queryEntities = h.entityDetector.Detect(ctx, query)
 	}
 
 	vecResults, vecErr := h.searchVector(ctx, query, maxResults*4, queryEntities, searchOpts)

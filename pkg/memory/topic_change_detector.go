@@ -40,7 +40,7 @@ func (d *TopicChangeDetector) Check(ctx context.Context, currentQuery string) (c
 		return false, nil
 	}
 
-	currentEntities := d.extractEntities(currentQuery)
+	currentEntities := d.extractEntities(ctx, currentQuery)
 
 	overlap := entityOverlapRatio(lastEntities, currentEntities)
 	if overlap >= d.entityOverlapThresh {
@@ -77,11 +77,11 @@ func (d *TopicChangeDetector) Reset() {
 	d.mu.Unlock()
 }
 
-func (d *TopicChangeDetector) extractEntities(query string) map[string]bool {
+func (d *TopicChangeDetector) extractEntities(ctx context.Context, query string) map[string]bool {
 	if d.entityDetector == nil {
 		return nil
 	}
-	entities := d.entityDetector.Detect(query)
+	entities := d.entityDetector.Detect(ctx, query)
 	if len(entities) == 0 {
 		return nil
 	}

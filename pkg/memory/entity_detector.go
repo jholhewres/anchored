@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // entityTokenRe matches Unicode word tokens >= 3 chars (allows hyphens, underscores).
@@ -42,50 +43,82 @@ func (c EntityDetectorConfig) withDefaults() EntityDetectorConfig {
 	return c
 }
 
+// Loads past the first one read only the memories inserted since the last
+// load, plus the keywords of the newest ones, so their cost tracks new writes
+// instead of the corpus. Reading the newest rows again also covers a memory
+// that reused a freed rowid at the watermark. Keywords edited or deleted on
+// older memories stay in the lexicon until the process restarts; the lexicon
+// only nudges ranking, so that drift is harmless.
+const (
+	entityFullLoadTimeout        = time.Minute
+	entityIncrementalLoadTimeout = 5 * time.Second
+)
+
+// entityRecentLimit is how many of the newest memories every load reads again.
+var entityRecentLimit = 500
+
 type EntityDetector struct {
 	db     *sql.DB
 	cfg    EntityDetectorConfig
 	logger *slog.Logger
 
-	mu         sync.RWMutex
-	snapshot   map[string]struct{}
-	loadedAt   time.Time
-	refreshing bool
+	// loadSem admits one load at a time. Callers wait on the first load, up
+	// to their context's end, so search sees the same lexicon on every run;
+	// later refreshes run in the background, one at a time.
+	loadSem chan struct{}
+
+	// bgMu guards closed and the refreshes in bg, which run on bgCtx so
+	// Close can stop them and wait before the store is closed.
+	bgMu     sync.Mutex
+	closed   bool
+	bg       sync.WaitGroup
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+
+	mu sync.RWMutex
+	// keywords holds the keywords of every memory up to lastRowID.
+	keywords map[string]struct{}
+	// recent holds project names and the tokens of the newest memories,
+	// rebuilt on every load.
+	recent        map[string]struct{}
+	lastRowID     int64
+	loaded        bool
+	lastAttemptAt time.Time
 }
 
 func NewEntityDetector(db *sql.DB, cfg EntityDetectorConfig, logger *slog.Logger) *EntityDetector {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	return &EntityDetector{
 		db:       db,
 		cfg:      cfg.withDefaults(),
 		logger:   logger,
-		snapshot: make(map[string]struct{}),
+		loadSem:  make(chan struct{}, 1),
+		bgCtx:    bgCtx,
+		bgCancel: bgCancel,
+		keywords: make(map[string]struct{}),
+		recent:   make(map[string]struct{}),
 	}
 }
 
-func (d *EntityDetector) Detect(text string) []string {
-	if err := d.ensureSnapshot(context.Background()); err != nil {
-		d.mu.RLock()
-		empty := len(d.snapshot) == 0
-		d.mu.RUnlock()
-		if empty {
-			return nil
-		}
-	}
-
-	d.mu.RLock()
-	snap := d.snapshot
-	d.mu.RUnlock()
-
-	if len(snap) == 0 {
-		return nil
+// Detect returns the tokens of text that name a known entity. The first call
+// in a process waits for the lexicon's first load, bounded by ctx.
+func (d *EntityDetector) Detect(ctx context.Context, text string) []string {
+	if err := d.ensureLexicon(ctx); err != nil {
+		d.logger.Debug("entity detector: load failed", "err", err)
 	}
 
 	locs := entityTokenRe.FindAllStringIndex(text, -1)
 	var entities []string
 	seen := make(map[string]struct{})
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if len(d.keywords) == 0 && len(d.recent) == 0 {
+		return nil
+	}
 
 	tokenCount := 0
 	for _, loc := range locs {
@@ -105,7 +138,11 @@ func (d *EntityDetector) Detect(text string) []string {
 		if _, ok := seen[normalized]; ok {
 			continue
 		}
-		if _, ok := snap[normalized]; ok {
+		_, ok := d.keywords[normalized]
+		if !ok {
+			_, ok = d.recent[normalized]
+		}
+		if ok {
 			seen[normalized] = struct{}{}
 			entities = append(entities, raw)
 		}
@@ -114,120 +151,253 @@ func (d *EntityDetector) Detect(text string) []string {
 	return entities
 }
 
-func (d *EntityDetector) Refresh(ctx context.Context) error {
-	return d.loadSnapshot(ctx)
+// Close stops background refreshes and waits for one in flight.
+func (d *EntityDetector) Close() {
+	d.bgMu.Lock()
+	d.closed = true
+	d.bgMu.Unlock()
+	d.bgCancel()
+	d.bg.Wait()
 }
 
-func (d *EntityDetector) ensureSnapshot(ctx context.Context) error {
+func (d *EntityDetector) Refresh(ctx context.Context) error {
+	select {
+	case d.loadSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-d.loadSem }()
+	return d.loadLexicon(ctx)
+}
+
+func (d *EntityDetector) ensureLexicon(ctx context.Context) error {
+	if d.sinceLastLoadAttempt() < d.cfg.CacheTTL {
+		return nil
+	}
 	d.mu.RLock()
-	stale := time.Since(d.loadedAt) >= d.cfg.CacheTTL
-	refreshing := d.refreshing
+	loaded := d.loaded
+	d.mu.RUnlock()
+	if loaded {
+		// Refresh off the search's path: this search answers from the
+		// lexicon it has, and a refresh already running is not repeated.
+		select {
+		case d.loadSem <- struct{}{}:
+		default:
+			return nil
+		}
+		d.bgMu.Lock()
+		if d.closed {
+			d.bgMu.Unlock()
+			<-d.loadSem
+			return nil
+		}
+		d.bg.Add(1)
+		d.bgMu.Unlock()
+		go func() {
+			defer d.bg.Done()
+			defer func() { <-d.loadSem }()
+			if d.sinceLastLoadAttempt() < d.cfg.CacheTTL {
+				return
+			}
+			if err := d.loadLexicon(d.bgCtx); err != nil {
+				d.logger.Debug("entity detector: refresh failed", "err", err)
+			}
+		}()
+		return nil
+	}
+
+	select {
+	case d.loadSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-d.loadSem }()
+
+	if d.sinceLastLoadAttempt() < d.cfg.CacheTTL {
+		return nil
+	}
+	return d.loadLexicon(ctx)
+}
+
+// loadLexicon reads the keywords of memories past lastRowID and rebuilds the
+// recent set. Rows come in rowid order, so a load cut short keeps what it
+// read and the next one resumes after it. A failed load still stamps
+// lastAttemptAt: the next attempt waits a TTL instead of running on every search.
+func (d *EntityDetector) loadLexicon(ctx context.Context) error {
+	d.mu.RLock()
+	after := d.lastRowID
+	loaded := d.loaded
 	d.mu.RUnlock()
 
-	if !stale {
-		return nil
+	timeout := entityIncrementalLoadTimeout
+	if !loaded {
+		timeout = entityFullLoadTimeout
 	}
-	if refreshing {
-		return nil
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var l lexiconLoad
+	l.recent, l.recentKeywords, l.recentErr = d.loadRecent(tctx)
+	l.keywords, l.lastRowID, l.keywordsErr = d.loadKeywords(tctx, after)
+	// A load cut short because its caller gave up is not an attempt: the next
+	// search tries again instead of waiting out the TTL with what it read.
+	err := d.mergeLexicon(l, ctx.Err() == nil)
+	if after == 0 && l.lastRowID > 0 {
+		// The full read decoded every memory's keywords; hand those buffers
+		// back instead of keeping them as heap headroom.
+		releaseMemoryToOS()
 	}
-
-	d.mu.Lock()
-	if time.Since(d.loadedAt) < d.cfg.CacheTTL {
-		d.mu.Unlock()
-		return nil
-	}
-	if d.refreshing {
-		d.mu.Unlock()
-		return nil
-	}
-	d.refreshing = true
-	d.mu.Unlock()
-
-	err := d.loadSnapshot(ctx)
-
-	d.mu.Lock()
-	d.refreshing = false
-	d.mu.Unlock()
-
 	return err
 }
 
-func (d *EntityDetector) loadSnapshot(ctx context.Context) error {
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+// lexiconLoad is what one load read, kept even when a query failed part way.
+type lexiconLoad struct {
+	recent         map[string]struct{}
+	recentKeywords map[string]struct{}
+	recentErr      error
+	keywords       map[string]struct{}
+	lastRowID      int64
+	keywordsErr    error
+}
 
-	newSnap := make(map[string]struct{})
+// mergeLexicon folds one load into the lexicon and, when stamp is set, stamps
+// the attempt, failed or not.
+func (d *EntityDetector) mergeLexicon(l lexiconLoad, stamp bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.keywords) == 0 {
+		d.keywords = l.keywords
+	} else {
+		for kw := range l.keywords {
+			d.keywords[kw] = struct{}{}
+		}
+	}
+	for kw := range l.recentKeywords {
+		d.keywords[kw] = struct{}{}
+	}
+	if l.lastRowID > d.lastRowID {
+		d.lastRowID = l.lastRowID
+	}
+	if l.recentErr == nil {
+		d.recent = l.recent
+	}
+	if stamp {
+		d.lastAttemptAt = time.Now()
+	}
 
-	projRows, err := d.db.QueryContext(tctx, `SELECT name FROM projects`)
+	if l.recentErr != nil {
+		return l.recentErr
+	}
+	if l.keywordsErr != nil {
+		return l.keywordsErr
+	}
+	d.loaded = true
+	return nil
+}
+
+// loadRecent returns the tokens of project names and of the newest memories'
+// content, and the keywords of those memories.
+func (d *EntityDetector) loadRecent(ctx context.Context) (map[string]struct{}, map[string]struct{}, error) {
+	recent := make(map[string]struct{})
+	keywords := make(map[string]struct{})
+
+	projRows, err := d.db.QueryContext(ctx, `SELECT name FROM projects`)
 	if err != nil {
-		d.logger.Debug("entity detector: projects query failed", "err", err)
-		return err
+		return nil, nil, err
 	}
 	for projRows.Next() {
 		var name string
 		if err := projRows.Scan(&name); err != nil {
 			continue
 		}
-		addEntityTokens(newSnap, name)
+		addEntityTokens(recent, name)
 	}
+	err = projRows.Err()
 	projRows.Close()
-
-	kwRows, err := d.db.QueryContext(tctx, `SELECT keywords FROM memories WHERE keywords IS NOT NULL`)
 	if err != nil {
-		d.logger.Debug("entity detector: keywords query failed", "err", err)
-		return err
+		return nil, nil, err
 	}
-	for kwRows.Next() {
-		var kwJSON string
-		if err := kwRows.Scan(&kwJSON); err != nil {
-			continue
-		}
-		var kws []string
-		if err := json.Unmarshal([]byte(kwJSON), &kws); err != nil {
-			continue
-		}
-		for _, kw := range kws {
-			norm := normalizeEntity(kw)
-			if norm != "" && !stopWords[norm] {
-				newSnap[norm] = struct{}{}
-			}
-		}
-	}
-	kwRows.Close()
 
-	contentRows, err := d.db.QueryContext(tctx,
-		`SELECT content FROM memories ORDER BY updated_at DESC LIMIT 500`)
+	// Newest by insertion: ordering by updated_at would scan and sort the
+	// whole table on every refresh.
+	contentRows, err := d.db.QueryContext(ctx,
+		`SELECT content, keywords FROM memories ORDER BY rowid DESC LIMIT ?`, entityRecentLimit)
 	if err != nil {
-		d.logger.Debug("entity detector: content query failed", "err", err)
-		return err
+		return nil, nil, err
 	}
 	for contentRows.Next() {
 		var content string
-		if err := contentRows.Scan(&content); err != nil {
+		var kwJSON sql.NullString
+		if err := contentRows.Scan(&content, &kwJSON); err != nil {
 			continue
 		}
-		addEntityTokens(newSnap, content)
+		addEntityTokens(recent, content)
+		if kwJSON.Valid {
+			addKeywords(keywords, []byte(kwJSON.String))
+		}
 	}
+	err = contentRows.Err()
 	contentRows.Close()
-
-	d.mu.Lock()
-	d.snapshot = newSnap
-	d.loadedAt = time.Now()
-	d.mu.Unlock()
-
-	return nil
+	if err != nil {
+		return nil, nil, err
+	}
+	return recent, keywords, nil
 }
 
-func (d *EntityDetector) snapshotAge() time.Duration {
+// loadKeywords returns the keywords of memories with rowid > after and the
+// last rowid it read, which is accurate even when the scan stops early.
+func (d *EntityDetector) loadKeywords(ctx context.Context, after int64) (map[string]struct{}, int64, error) {
+	keywords := make(map[string]struct{})
+	lastRowID := after
+
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT rowid, keywords FROM memories WHERE rowid > ? AND keywords IS NOT NULL ORDER BY rowid`, after)
+	if err != nil {
+		return keywords, lastRowID, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rowID int64
+		// RawBytes skips copying each row's JSON; the decoded strings are
+		// fresh allocations, so the map keys never alias it.
+		var kwJSON sql.RawBytes
+		if err := rows.Scan(&rowID, &kwJSON); err != nil {
+			continue
+		}
+		lastRowID = rowID
+		addKeywords(keywords, kwJSON)
+	}
+	return keywords, lastRowID, rows.Err()
+}
+
+// addKeywords adds the normalized entries of a memory's keywords JSON to set,
+// skipping stop words; malformed JSON adds nothing.
+func addKeywords(set map[string]struct{}, kwJSON []byte) {
+	var kws []string
+	if err := json.Unmarshal(kwJSON, &kws); err != nil {
+		return
+	}
+	for _, kw := range kws {
+		norm := normalizeEntity(kw)
+		if norm != "" && !stopWords[norm] {
+			set[norm] = struct{}{}
+		}
+	}
+}
+
+func (d *EntityDetector) sinceLastLoadAttempt() time.Duration {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if d.loadedAt.IsZero() {
+	if d.lastAttemptAt.IsZero() {
 		return d.cfg.CacheTTL + 1
 	}
-	return time.Since(d.loadedAt)
+	return time.Since(d.lastAttemptAt)
 }
 
 func normalizeEntity(s string) string {
+	if isLowerASCII(s) {
+		return s
+	}
 	s = strings.ToLower(s)
 	var buf strings.Builder
 	buf.Grow(len(s))
@@ -239,7 +409,18 @@ func normalizeEntity(s string) string {
 	return buf.String()
 }
 
-func addEntityTokens(snap map[string]struct{}, text string) {
+// isLowerASCII reports whether normalizeEntity would return s unchanged
+// because it has no uppercase letters and no non-ASCII runes.
+func isLowerASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= utf8.RuneSelf || ('A' <= c && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+func addEntityTokens(set map[string]struct{}, text string) {
 	locs := entityTokenRe.FindAllStringIndex(text, -1)
 	for _, loc := range locs {
 		raw := text[loc[0]:loc[1]]
@@ -253,6 +434,10 @@ func addEntityTokens(snap map[string]struct{}, text string) {
 		if stopWords[norm] {
 			continue
 		}
-		snap[norm] = struct{}{}
+		if _, ok := set[norm]; !ok {
+			// norm may be a slice of text; a copy keeps the key from pinning
+			// the whole memory content.
+			set[strings.Clone(norm)] = struct{}{}
+		}
 	}
 }
