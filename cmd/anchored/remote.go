@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -52,7 +51,8 @@ func printRemoteUsage() {
 	fmt.Fprintln(os.Stderr, "  anchored remote status                              Show remote config + how the current repo routes (git origin)")
 	fmt.Fprintln(os.Stderr, "  anchored remote preview                             Preview which memories would sync (offline)")
 	fmt.Fprintln(os.Stderr, "  anchored remote sync [--remote NAME]                Sync the CURRENT repo by its git origin (--dry-run to preview)")
-	fmt.Fprintln(os.Stderr, "  anchored remote sync --all                          Sync every local project, each routed by its own git origin")
+	fmt.Fprintln(os.Stderr, "  anchored remote sync --all [--remote NAME]          Sync every local project to its own remote project (--dry-run to preview)")
+	fmt.Fprintln(os.Stderr, "  anchored remote sync-per-project [--min-memories N]  Same as --all, with a size threshold and a fallback project name")
 	fmt.Fprintln(os.Stderr, "  anchored remote sync --project-id <id>              Force all current-repo memories into a specific remote project")
 }
 
@@ -348,12 +348,7 @@ func runRemoteStatus(args []string) {
 	// own routing paths and per-server project links.
 	if len(cfg.Remotes) > 1 {
 		fmt.Println("\nConfigured remotes:")
-		names := make([]string, 0, len(cfg.Remotes))
-		for name := range cfg.Remotes {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
+		for _, name := range cfg.RemoteNames() {
 			e := cfg.Remotes[name]
 			marker := ""
 			if e.Default {
@@ -365,6 +360,10 @@ func runRemoteStatus(args []string) {
 			}
 			fmt.Printf("  %-12s   linked projects: %d\n", "", len(e.Projects))
 		}
+	}
+	if defaults := cfg.DefaultRemoteNames(); len(defaults) > 1 {
+		fmt.Printf("\nWarning: %d remotes are marked default (%s); routing uses %q, the first by name. Keep default on one of them.\n",
+			len(defaults), strings.Join(defaults, ", "), defaults[0])
 	}
 
 	// Show how the current repo would route, so the user can confirm the
@@ -379,13 +378,10 @@ func runRemoteStatus(args []string) {
 			fmt.Printf("  Remote key: %s\n", orEmpty(proj.RemoteKey, "(none)"))
 			// The conclusion users actually need: which server a sync/save
 			// from this repo would talk to (path match, then default).
-			if entry := cfg.ResolveRemote(cwd); entry != nil {
+			if entry, pattern := cfg.ResolveRemoteWithPattern(cwd); entry != nil {
 				how := "default remote"
-				for _, pattern := range entry.Paths {
-					if matched, _ := path.Match(pattern, cwd); matched {
-						how = "path match: " + pattern
-						break
-					}
+				if pattern != "" {
+					how = "path match: " + pattern
 				}
 				fmt.Printf("  Routes to:  %s (%s) — %s\n", entry.Name, entry.ServerURL, how)
 			} else {
@@ -525,8 +521,9 @@ func resolveLinkedTarget(proj *projectpkg.Project, linkedID string, fullStore bo
 //     resolves-or-creates the matching remote project by git origin.
 //   - --project-id <id>: force all (cwd-scoped) memories into a specific remote
 //     project (legacy/manual override).
-//   - --all: push every local project, each routed by its own git-origin
-//     remote_key (multi-project; see runRemoteSyncPerProject).
+//   - --all: push every local project to its own remote project, each to the
+//     remote that already knows the repository, else its path route, else the
+//     default remote (see syncPerProject).
 func runRemoteSync(args []string) {
 	fs := newFlagSet("remote sync")
 	configPath := fs.String("config", "", "path to config file")
@@ -534,13 +531,19 @@ func runRemoteSync(args []string) {
 	dryRun := fs.Bool("dry-run", false, "preview what would be pushed without making network calls")
 	projectID := fs.String("project-id", "", "force a specific remote project ID (overrides git-origin routing)")
 	remoteName := fs.String("remote", "", "use a specific named remote (default: resolve by project path, then the default remote)")
-	all := fs.Bool("all", false, "sync every local project (each routed by its own git origin), not just the current repo")
+	all := fs.Bool("all", false, "sync every local project, each to the remote that knows the repository, else its path route, else the default remote; takes --remote and --dry-run")
 	fullStore := fs.Bool("full-store", false, "with --project-id outside a repo: push the ENTIRE local store to that project (dangerous, off by default)")
 	force := fs.Bool("force", false, "push even when the target project is registered to a different repository")
 	fs.Parse(args)
 
 	if *all {
-		runRemoteSyncPerProject(args)
+		if *projectID != "" || *project != "" || *fullStore || *force {
+			fmt.Fprintln(os.Stderr, "--all syncs every local project, each to its own remote project: it takes only --config, --remote and --dry-run.")
+			os.Exit(2)
+		}
+		opts := defaultPerProjectOptions()
+		opts.configPath, opts.remote, opts.dryRun = *configPath, *remoteName, *dryRun
+		syncPerProject(opts)
 		return
 	}
 
@@ -570,13 +573,7 @@ func runRemoteSync(args []string) {
 	// different server (e.g. personal vs company) from one config.
 	var entry *config.RemoteEntry
 	if *remoteName != "" {
-		if e, ok := cfg.Remotes[*remoteName]; ok {
-			e.Name = *remoteName
-			entry = &e
-		} else {
-			fmt.Fprintf(os.Stderr, "remote %q not found in config (available: %s)\n", *remoteName, remoteNames(cfg))
-			os.Exit(1)
-		}
+		entry = namedRemoteOrExit(cfg, *remoteName)
 	} else {
 		entry = cfg.ResolveRemote(projectRoot)
 	}
@@ -847,6 +844,18 @@ func runRemoteSync(args []string) {
 			fmt.Println("KG sync: no local triples to push")
 		}
 	}
+}
+
+// namedRemoteOrExit is the remote --remote names, or exits listing the ones
+// configured.
+func namedRemoteOrExit(cfg *config.Config, name string) *config.RemoteEntry {
+	e, ok := cfg.Remotes[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "remote %q not found in config (available: %s)\n", name, remoteNames(cfg))
+		os.Exit(1)
+	}
+	e.Name = name
+	return &e
 }
 
 // remoteNames returns the configured remote names, comma-separated, for

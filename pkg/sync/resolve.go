@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
@@ -205,14 +204,10 @@ func remotesInPrecedence(cfg *config.Config, cwd string) []*config.RemoteEntry {
 		ordered = append(ordered, e)
 		seen[e.Name] = true
 	}
-	names := make([]string, 0, len(cfg.Remotes))
-	for name := range cfg.Remotes {
-		if !seen[name] {
-			names = append(names, name)
+	for _, name := range cfg.RemoteNames() {
+		if seen[name] {
+			continue
 		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
 		e := cfg.Remotes[name]
 		e.Name = name
 		ordered = append(ordered, &e)

@@ -25,12 +25,22 @@ func writeTestConfig(t *testing.T, path string, cfg *config.Config) {
 
 func newTestEnv(t *testing.T) string {
 	t.Helper()
+	return newTestEnvWith(t, nil)
+}
+
+// newTestEnvWith writes a config with its own database, changed by mutate
+// when it is not nil, and returns the config path.
+func newTestEnvWith(t *testing.T, mutate func(*config.Config)) string {
+	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	cfg := config.Defaults()
 	cfg.Memory.DatabasePath = dbPath
 	cfg.Embedding.Provider = "none"
 	cfg.Embedding.ModelDir = filepath.Join(dir, "onnx")
+	if mutate != nil {
+		mutate(cfg)
+	}
 	cfgPath := filepath.Join(dir, "config.yaml")
 	writeTestConfig(t, cfgPath, cfg)
 	return cfgPath

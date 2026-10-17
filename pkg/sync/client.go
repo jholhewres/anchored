@@ -735,17 +735,24 @@ func (c *Client) lookupProjectIDByRemoteKeys(ctx context.Context, keys ...string
 	if err != nil {
 		return "", "", err
 	}
+	projectID, matchedKey = MatchProjectByRemoteKeys(projects, keys...)
+	return projectID, matchedKey, nil
+}
+
+// MatchProjectByRemoteKeys finds the listed project registered under the first
+// of keys that any project carries, and says which key matched.
+func MatchProjectByRemoteKeys(projects []RemoteProject, keys ...string) (projectID, matchedKey string) {
 	for _, k := range keys {
 		if k == "" {
 			continue
 		}
 		for _, p := range projects {
 			if p.RemoteKey == k {
-				return p.ID, k, nil
+				return p.ID, k
 			}
 		}
 	}
-	return "", "", nil
+	return "", ""
 }
 
 func urlQueryEscape(s string) string {

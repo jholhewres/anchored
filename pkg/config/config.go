@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -483,22 +484,90 @@ func (c *Config) migrateRemotes() {
 	}
 }
 
+// ResolveRemote picks the remote a project path routes to: the remote whose
+// path glob matches, else the default remote. Ties resolve the same way on
+// every call. Between globs, the most specific wins: the one with the most
+// literal characters, then the remote's name. Between several defaults, the
+// first by name wins; DefaultRemoteNames lists them so `remote status` can
+// warn.
 func (c *Config) ResolveRemote(projectPath string) *RemoteEntry {
-	for name, entry := range c.Remotes {
+	entry, _ := c.ResolveRemoteWithPattern(projectPath)
+	return entry
+}
+
+// ResolveRemoteWithPattern is ResolveRemote that also returns the glob that
+// routed the path, or "" when the default remote did.
+func (c *Config) ResolveRemoteWithPattern(projectPath string) (*RemoteEntry, string) {
+	var best *RemoteEntry
+	bestPattern, bestScore := "", -1
+	for _, name := range c.RemoteNames() {
+		entry := c.Remotes[name]
 		for _, pattern := range entry.Paths {
-			if globMatch(pattern, projectPath) {
+			if score := globLiteralLen(pattern); score > bestScore && globMatch(pattern, projectPath) {
 				entry.Name = name
-				return &entry
+				best, bestPattern, bestScore = &entry, pattern, score
 			}
 		}
 	}
-	for name, entry := range c.Remotes {
-		if entry.Default {
-			entry.Name = name
-			return &entry
+	if best != nil {
+		return best, bestPattern
+	}
+	return c.DefaultRemote(), ""
+}
+
+// DefaultRemote is the remote a path no glob matches routes to: the first
+// remote marked default, by name, or nil.
+func (c *Config) DefaultRemote() *RemoteEntry {
+	names := c.DefaultRemoteNames()
+	if len(names) == 0 {
+		return nil
+	}
+	entry := c.Remotes[names[0]]
+	entry.Name = names[0]
+	return &entry
+}
+
+// DefaultRemoteNames lists, sorted, the remotes marked default. More than one
+// is a configuration mistake: ResolveRemote then uses the first.
+func (c *Config) DefaultRemoteNames() []string {
+	var names []string
+	for _, name := range c.RemoteNames() {
+		if c.Remotes[name].Default {
+			names = append(names, name)
 		}
 	}
-	return nil
+	return names
+}
+
+// RemoteNames lists the configured remotes, sorted by name.
+func (c *Config) RemoteNames() []string {
+	names := make([]string, 0, len(c.Remotes))
+	for name := range c.Remotes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// globLiteralLen counts a glob's literal characters. *, ? and a [...] class
+// match a choice of characters, so they make a pattern no more specific.
+func globLiteralLen(pattern string) int {
+	n := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '*', '?':
+		case '[':
+			for i < len(pattern) && pattern[i] != ']' {
+				i++
+			}
+		case '\\':
+			i++
+			n++
+		default:
+			n++
+		}
+	}
+	return n
 }
 
 func (e *RemoteEntry) AutoSyncEnabled() bool {

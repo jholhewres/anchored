@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"sort"
 	"sync"
 	"time"
 
@@ -154,12 +153,7 @@ func remoteResolutionKey(cfg *config.Config, cwd, canonicalKey, legacyKey string
 	if routed := cfg.ResolveRemote(cwd); routed != nil {
 		write("routed", routed.Name)
 	}
-	names := make([]string, 0, len(cfg.Remotes))
-	for name := range cfg.Remotes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range cfg.RemoteNames() {
 		entry := cfg.Remotes[name]
 		write("remote", name, entry.ServerURL, entry.APIKey)
 	}
