@@ -24,6 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secret or a local path outside the project stays local (`kg_add` says so,
   the sync commands count them), and a path inside the project is sent
   relative to it.
+- **A path beside the project no longer passes as inside it.** The safety
+  filter allowed any path that started with the project root, so
+  `/home/dev/proj-private/plan.txt` synced from `/home/dev/proj` (as
+  `.-private/plan.txt`), and `/home/dev/proj/../secrets` as `./../secrets`.
+  The root now has to end a path segment, the path is cleaned first, and a
+  sibling stays a blocked local path.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
   and any error body up to 64 KiB; a longer listing fails the lookup like a

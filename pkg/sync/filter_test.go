@@ -292,3 +292,47 @@ func TestSafeTriplesForRemote(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoteSafetyFilter_ProjectRootIsAPathBoundary locks the project root as
+// a whole path segment (attack h5 of 22/11: /home/dev/proj-private passed as
+// inside /home/dev/proj). A sibling that only shares the root's prefix stays
+// a blocked local path and is not rewritten, a path inside the root is sent
+// relative to it, a trailing separator on the root changes nothing, and the
+// filesystem root holds no project.
+func TestRemoteSafetyFilter_ProjectRootIsAPathBoundary(t *testing.T) {
+	const root = "/home/dev/proj"
+	if r := RemoteSafetyFilter("notes in /home/dev/proj-private/plan.txt", nil, root); !r.Blocked {
+		t.Fatalf("a path beside the project root passed as inside it and syncs as %q", r.Content)
+	}
+	for _, tc := range []struct{ content, root, want string }{
+		{"config at /home/dev/proj/config.yaml", root, "config at ./config.yaml"},
+		{"config at /home/dev/proj/config.yaml", root + "/", "config at ./config.yaml"},
+		{"the repository is /home/dev/proj.", root, "the repository is .."},
+		{"(see /home/dev/proj)", root, "(see .)"},
+		{"build in /srv/proj-old/bin, deploy from /srv/proj/bin", "/srv/proj", "build in /srv/proj-old/bin, deploy from ./bin"},
+		{`open C:\Users\dev\proj\main.go`, `C:\Users\dev\proj`, `open .\main.go`},
+	} {
+		r := RemoteSafetyFilter(tc.content, nil, tc.root)
+		if r.Blocked || r.Content != tc.want {
+			t.Errorf("RemoteSafetyFilter(%q, root %q) = %q blocked=%v, want %q", tc.content, tc.root, r.Content, r.Blocked, tc.want)
+		}
+	}
+	if r := RemoteSafetyFilter("notes in /home/dev/proj/plan.txt", nil, "/"); !r.Blocked {
+		t.Fatalf("the filesystem root as project root let a home path through as %q", r.Content)
+	}
+	if safe, withheld := SafeTriplesForRemote([]SyncTriple{{Subject: "plan", Predicate: "lives_in", Object: "/home/dev/proj-private/plan.txt"}}, root); withheld != 1 {
+		t.Fatalf("a triple naming a sibling of the project root was sent as %+v", safe)
+	}
+}
+
+// TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath locks the cleaning
+// before the boundary check: a path that starts inside the project and climbs
+// out of it with .. is a local path outside the project.
+func TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath(t *testing.T) {
+	if r := RemoteSafetyFilter("read /home/dev/proj/../secrets/db.env", nil, "/home/dev/proj"); !r.Blocked {
+		t.Fatalf("a path climbing out of the project passed as inside it and syncs as %q", r.Content)
+	}
+	if r := RemoteSafetyFilter("see /home/dev/proj/docs/../README.md", nil, "/home/dev/proj"); r.Blocked {
+		t.Fatalf("a path that stays inside the project was blocked: %+v", r.Violations)
+	}
+}

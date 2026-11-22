@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"path"
 	"regexp"
 	"strings"
 
@@ -123,11 +124,12 @@ func safeTriple(t SyncTriple, projectRoot string) (SyncTriple, bool) {
 
 func detectLocalPaths(content string, projectRoot string, violations []RemoteSafetyViolation) (string, []RemoteSafetyViolation) {
 	rewritten := content
+	projectRoot = trimRoot(projectRoot)
 
 	for _, re := range []*regexp.Regexp{linuxHomeRe, macOSHomeRe, winHomeRe, tildeHomeRe} {
 		matches := re.FindAllString(rewritten, -1)
 		for _, m := range matches {
-			if projectRoot != "" && strings.HasPrefix(m, projectRoot) {
+			if underRoot(m, projectRoot) {
 				continue
 			}
 			violations = append(violations, RemoteSafetyViolation{
@@ -150,14 +152,72 @@ func detectLocalPaths(content string, projectRoot string, violations []RemoteSaf
 	}
 
 	if projectRoot != "" {
-		newContent := strings.ReplaceAll(rewritten, projectRoot+"/", "./")
-		newContent = strings.ReplaceAll(newContent, projectRoot, ".")
-		if newContent != rewritten {
-			rewritten = newContent
-		}
+		rewritten = relativizeRoot(rewritten, projectRoot)
 	}
 
 	return rewritten, violations
+}
+
+// trimRoot drops a project root's trailing separators; a root that is only
+// separators (the filesystem root) counts as no root, so nothing is inside it.
+func trimRoot(root string) string {
+	return strings.TrimRight(root, `/\`)
+}
+
+// underRoot reports whether a path found in text is root or inside it. The
+// punctuation that ends a sentence is not part of the path, and a slash path
+// is cleaned first, so /home/dev/proj/../other is outside. A sibling that only
+// shares root's prefix, such as /home/dev/proj-private beside /home/dev/proj,
+// is outside too.
+func underRoot(p, root string) bool {
+	if root == "" {
+		return false
+	}
+	p = strings.TrimRight(p, ".,;:!?)]}>'\"`")
+	if strings.HasPrefix(p, "/") {
+		p = path.Clean(p)
+	}
+	if !strings.HasPrefix(p, root) {
+		return false
+	}
+	rest := p[len(root):]
+	return rest == "" || rest[0] == '/' || rest[0] == '\\'
+}
+
+// relativizeRoot rewrites root, where it ends a path segment, as "." so a path
+// inside the project is sent relative to it. A longer name that only starts
+// with root is a sibling and stays as written.
+func relativizeRoot(content, root string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(content, root)
+		if i < 0 {
+			b.WriteString(content)
+			return b.String()
+		}
+		b.WriteString(content[:i])
+		content = content[i+len(root):]
+		if continuesName(content) {
+			b.WriteString(root)
+		} else {
+			b.WriteString(".")
+		}
+	}
+}
+
+// continuesName reports whether rest carries on the path segment the root
+// ended in. A period does only when a name byte follows it: "proj.git" is
+// another name, "proj." ends a sentence.
+func continuesName(rest string) bool {
+	if rest == "" || !isPathNameByte(rest[0]) {
+		return false
+	}
+	return rest[0] != '.' || (len(rest) > 1 && isPathNameByte(rest[1]))
+}
+
+func isPathNameByte(c byte) bool {
+	return c == '.' || c == '-' || c == '_' ||
+		('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 func detectSecrets(content string) (string, []RemoteSafetyViolation) {
