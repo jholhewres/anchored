@@ -52,8 +52,21 @@ Anchored supports MCP-compatible AI coding tools. To add a new tool:
 
 1. **`cmd/anchored/init_cmd.go`** — add the tool to `parseToolFlag`, `isToolInstalled`, `getToolMCPPath`. If the tool uses a non-standard config format (e.g., TOML, different root key), add it to `getToolMCPConfig` and create a registration function.
 2. **`cmd/anchored/doctor.go`** — add a probe to `checkMCPRegistration` and any custom detection logic (e.g., `hasVSCodeAnchoredEntry`).
-3. **`README.md`** — add the tool to the setup table with its config file path.
+3. **`docs/setup.md`** — add the tool to the "Supported config locations" table with its config file path.
 4. **Importer** (optional) — if the tool stores local data, add an importer in `pkg/importer/`.
+
+## Releasing
+
+1. Bump `VERSION` and run `make sync-version`, which updates the plugin
+   manifests; `go run ./cmd/version-sync --check` must pass.
+2. Move the `[Unreleased]` entries of `CHANGELOG.md` under the new version
+   and its date.
+3. Commit and push, then wait for CI to pass on that commit on Linux and
+   macOS **before** tagging: a tag pushed while macOS was still running has
+   shipped red before.
+4. Tag `vX.Y.Z` on that commit and push the tag. The Release workflow checks
+   that the tag, `VERSION` and the manifests agree, runs the tests and the
+   eval gates again, then builds and publishes.
 
 ## Reporting Issues
 

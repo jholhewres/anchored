@@ -76,5 +76,6 @@ Every host, file and hook: [docs/setup.md](docs/setup.md).
 - [Remotes and team sync](docs/remotes.md) · [Anchored OSS](https://github.com/jholhewres/anchored_oss)
 - [Design](docs/design.md) · [Architecture](docs/architecture.md) · [Embedding model](docs/embedding-model.md)
 - [Import sources](docs/import-sources.md) · [MCP protocol](docs/mcp-protocol.md) · [Glossary](GLOSSARY.md)
+- Plans: [Team sync](docs/team-sync.md) · [Improvements roadmap](docs/improvements-roadmap.md) · [Memory lifecycle](docs/memory-lifecycle-roadmap.md)
 - [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 - [Licence: MIT](LICENSE)

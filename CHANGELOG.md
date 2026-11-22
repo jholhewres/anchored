@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A path glob written through a symlinked directory matches.** Routing
+  compares resolved paths, so on macOS, where `/var` is `/private/var`, a
+  glob written as `/var/.../*` never matched and the repository fell back to
+  the default remote. A glob is now also tried with its literal prefix
+  resolved, and the repository root is added resolved as well.
 - **`kg_add` no longer waits 5 s on every call behind a remote that hangs.**
   Against a remote that accepts the connection and never answers, the call's
   own deadline ran out before the remote lookup did, so the hold was dropped
@@ -58,9 +63,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to pass `--remote`.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
-  and any error body up to 64 KiB; a longer listing fails the lookup like a
-  remote that did not answer. Push and pull responses are still decoded as a
-  stream, without a cap.
+  and the error body of these calls up to 64 KiB; a longer listing fails the
+  lookup like a remote that did not answer. Push and pull responses are
+  still decoded as a stream, without a cap.
+
+### Changed
+
+- **A short README.** It keeps what Anchored is, what it does, how to install
+  it and how to connect a tool, in English and Portuguese (`README.pt-BR.md`).
+  Install and update, host setup, the full feature list, the CLI and MCP
+  tools, and remote routing moved to `docs/`; the release steps moved to
+  `CONTRIBUTING.md`.
+- **CI runs on release branches** (`feat/**`) and on demand, not only on
+  `main` and pull requests.
 
 ## [0.20.2] - 2026-10-17
 
