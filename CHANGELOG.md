@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   behind a remote that hangs.** The skill probe gave up before the remote
   lookup timed out, so the miss was never cached. Its deadline now covers the
   lookup, and only the first call waits.
+- **A remote can no longer make the client buffer an endless response.** The
+  project listing, save, search and triples responses are read up to 8 MiB,
+  and the body of a failed push or pull up to 64 KiB; a longer listing fails
+  the lookup like a remote that did not answer.
 
 ## [0.20.2] - 2026-10-17
 

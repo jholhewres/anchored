@@ -29,6 +29,13 @@ type Client struct {
 const (
 	maxProjectSkillsResponseBytes = 256 * 1024
 	maxProjectSkillResponseBytes  = 1024 * 1024
+	// maxRemoteResponseBytes caps every other JSON body read whole from a
+	// remote (project listing, save, search, triples): far above what a
+	// server sends, and low enough that a remote streaming an endless body
+	// cannot make the process buffer it all.
+	maxRemoteResponseBytes = 8 * 1024 * 1024
+	// maxRemoteErrorBodyBytes caps the body kept from a failed push or pull.
+	maxRemoteErrorBodyBytes = 64 * 1024
 )
 
 // NewClient creates a sync client from RemoteConfig.
@@ -212,7 +219,7 @@ func (c *Client) pushBatch(ctx context.Context, req SyncPushRequest) (*SyncPushR
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteErrorBodyBytes))
 		return nil, fmt.Errorf("push failed: %w", &HTTPError{Status: resp.StatusCode, Body: string(respBody)})
 	}
 
@@ -238,7 +245,7 @@ func (c *Client) Pull(ctx context.Context, req SyncPullRequest) (*SyncPullRespon
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteErrorBodyBytes))
 		return nil, fmt.Errorf("pull failed: %w", &HTTPError{Status: resp.StatusCode, Body: string(respBody)})
 	}
 
@@ -290,7 +297,10 @@ func (c *Client) saveRemote(ctx context.Context, mem RemoteMemory, operationID s
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read save response: %w", err)
+	}
 
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
 		return nil, remoteErrorFromResponse(resp, respBody, includeErrorMetadata)
@@ -560,7 +570,10 @@ func (c *Client) searchRemoteMode(ctx context.Context, projectID string, query s
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	if err != nil {
+		return metadata, fmt.Errorf("read search response: %w", err)
+	}
 	if effectiveMode := strings.TrimSpace(resp.Header.Get("X-Anchored-Effective-Mode")); effectiveMode != "" {
 		metadata.EffectiveMode = effectiveMode
 	}
@@ -638,7 +651,10 @@ func (c *Client) PushTriples(ctx context.Context, projectID string, triples []Sy
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read triples response: %w", err)
+	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
 		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
@@ -691,7 +707,10 @@ func (c *Client) ListProjects(ctx context.Context) ([]RemoteProject, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read projects response: %w", err)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, &RemoteError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
