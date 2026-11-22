@@ -4,8 +4,9 @@
     "recv": {
       "error": {
         "code": -32700,
-        "message": "parse request: invalid character 'h' in literal true (expecting 'r')"
+        "message": "parse error: invalid JSON"
       },
+      "id": null,
       "jsonrpc": "2.0"
     }
   },
@@ -17,9 +18,10 @@
     },
     "recv": {
       "error": {
-        "code": -32700,
-        "message": "unsupported jsonrpc version: 1.0"
+        "code": -32600,
+        "message": "invalid request: invalid message version tag \"1.0\"; expected \"2.0\""
       },
+      "id": 91,
       "jsonrpc": "2.0"
     }
   },
@@ -33,7 +35,7 @@
     "recv": {
       "error": {
         "code": -32601,
-        "message": "unknown method: no/such/method"
+        "message": "method not found: \"no/such/method\""
       },
       "id": 2,
       "jsonrpc": "2.0"
@@ -49,7 +51,7 @@
     "recv": {
       "error": {
         "code": -32602,
-        "message": "invalid params"
+        "message": "handling 'tools/call': invalid params: unmarshaling \"[]\" into a *mcp.CallToolParamsRaw: json: cannot unmarshal \"[]\" into Go value of type mcp.CallToolParamsRaw"
       },
       "id": 3,
       "jsonrpc": "2.0"
@@ -67,8 +69,8 @@
     },
     "recv": {
       "error": {
-        "code": -32603,
-        "message": "unknown tool: anchored_nope"
+        "code": -32602,
+        "message": "unknown tool \"anchored_nope\""
       },
       "id": 4,
       "jsonrpc": "2.0"
@@ -87,12 +89,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "content cannot be empty"
-      },
       "id": 5,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "content cannot be empty",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   },
   {
@@ -109,12 +116,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "unknown category \"opinion\": use one of fact, preference, decision, event, learning, plan, summary"
-      },
       "id": 6,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "unknown category \"opinion\": use one of fact, preference, decision, event, learning, plan, summary",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   },
   {
@@ -128,12 +140,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "parse args: json: cannot unmarshal string into Go value of type struct { Content string \"json:\\\"content\\\"\"; Category string \"json:\\\"category\\\"\"; CWD string \"json:\\\"cwd\\\"\"; Scope string \"json:\\\"scope\\\"\"; Remote *string \"json:\\\"remote\\\"\" }"
-      },
       "id": 7,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "parse args: json: cannot unmarshal string into Go value of type struct { Content string \"json:\\\"content\\\"\"; Category string \"json:\\\"category\\\"\"; CWD string \"json:\\\"cwd\\\"\"; Scope string \"json:\\\"scope\\\"\"; Remote *string \"json:\\\"remote\\\"\" }",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   },
   {
@@ -150,12 +167,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "memory <id> not found"
-      },
       "id": 8,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "memory <id> not found",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   },
   {
@@ -196,12 +218,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "provide either 'url' or 'requests'"
-      },
       "id": 10,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "provide either 'url' or 'requests'",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   },
   {
@@ -214,7 +241,7 @@
     "recv": {
       "error": {
         "code": -32602,
-        "message": "invalid params"
+        "message": "handling 'resources/read': invalid params: unmarshaling \"[]\" into a *mcp.ReadResourceParams: json: cannot unmarshal \"[]\" into Go value of type mcp.ReadResourceParams"
       },
       "id": 11,
       "jsonrpc": "2.0"

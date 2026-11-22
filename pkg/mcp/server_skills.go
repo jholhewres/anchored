@@ -27,7 +27,7 @@ func (s *Server) toolSkill(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	p.Action = strings.ToLower(strings.TrimSpace(p.Action))
-	p.CWD = defaultCWD(p.CWD)
+	p.CWD = s.sessionCWD(ctx, p.CWD)
 	if p.Action != "search" && p.Action != "load" {
 		return "", fmt.Errorf("skill action must be search or load")
 	}

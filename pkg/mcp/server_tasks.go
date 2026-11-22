@@ -31,7 +31,7 @@ func (s *Server) toolTask(ctx context.Context, args json.RawMessage) (string, er
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
-	p.CWD = defaultCWD(p.CWD)
+	p.CWD = s.sessionCWD(ctx, p.CWD)
 	projectID := s.mem.ResolveProject(p.CWD)
 	key := strings.ToUpper(strings.TrimSpace(p.Key))
 

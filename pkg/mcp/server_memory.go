@@ -28,7 +28,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	p.CWD = defaultCWD(p.CWD)
+	p.CWD = s.sessionCWD(ctx, p.CWD)
 	category, ok := memory.NormalizeCategory(p.Category)
 	if !ok {
 		return "", fmt.Errorf("unknown category %q: use one of %s", p.Category, strings.Join(memory.Categories, ", "))
@@ -178,8 +178,8 @@ func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	memories, err := s.mem.List(ctx, memory.ListOptions{

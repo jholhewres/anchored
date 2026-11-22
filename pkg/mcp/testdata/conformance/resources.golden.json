@@ -10,12 +10,13 @@
       "id": 2,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "resources": [
           {
-            "description": "Current memory database statistics",
-            "mimeType": "application/json",
-            "name": "Memory Statistics",
-            "uri": "anchored://memory/stats"
+            "description": "The user's identity file (~/.anchored/identity.md)",
+            "mimeType": "text/plain",
+            "name": "Identity",
+            "uri": "anchored://identity"
           },
           {
             "description": "Last 10 saved memories",
@@ -24,10 +25,10 @@
             "uri": "anchored://memory/recent"
           },
           {
-            "description": "The user's identity file (~/.anchored/identity.md)",
-            "mimeType": "text/plain",
-            "name": "Identity",
-            "uri": "anchored://identity"
+            "description": "Current memory database statistics",
+            "mimeType": "application/json",
+            "name": "Memory Statistics",
+            "uri": "anchored://memory/stats"
           },
           {
             "description": "List of all known projects",
@@ -35,7 +36,8 @@
             "name": "Projects",
             "uri": "anchored://projects"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   },
@@ -52,13 +54,15 @@
       "id": 3,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "contents": [
           {
             "mimeType": "text/plain",
             "text": "Total: 0\nCategories: map[]\nProjects: map[]",
             "uri": "anchored://memory/stats"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   },
@@ -75,13 +79,15 @@
       "id": 4,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "contents": [
           {
             "mimeType": "text/plain",
             "text": "No memories yet.",
             "uri": "anchored://memory/recent"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   },
@@ -98,13 +104,15 @@
       "id": 5,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "contents": [
           {
             "mimeType": "text/plain",
             "text": "No identity file configured. Use 'anchored identity edit' to create one.",
             "uri": "anchored://identity"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   },
@@ -121,13 +129,15 @@
       "id": 6,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "contents": [
           {
             "mimeType": "text/plain",
             "text": "No projects registered.",
             "uri": "anchored://projects"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   },
@@ -142,8 +152,11 @@
     },
     "recv": {
       "error": {
-        "code": -32601,
-        "message": "unknown resource: anchored://nope"
+        "code": -32602,
+        "data": {
+          "uri": "anchored://nope"
+        },
+        "message": "Resource not found"
       },
       "id": 7,
       "jsonrpc": "2.0"

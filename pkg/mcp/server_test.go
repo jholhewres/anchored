@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -54,24 +53,6 @@ func TestHeadTail(t *testing.T) {
 				t.Errorf("headTail(%q, %d, %d) = %q; want %q", tt.s, tt.head, tt.tail, result, tt.expected)
 			}
 		})
-	}
-}
-
-func TestMarshalResponse_ErrorPath(t *testing.T) {
-	// Force json.Marshal to fail by putting a non-marshalable value (channel) in Result.
-	// JSONRPCResponse.Result is `any`, so a chan triggers a marshal error, exercising the
-	// error branch that wraps the failure into an InternalError response.
-	resp := JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage("1"),
-		Result:  make(chan int), // channels cannot be JSON-marshaled
-	}
-	out := MarshalResponse(resp)
-	if len(out) == 0 {
-		t.Fatal("expected non-empty fallback response")
-	}
-	if !strings.Contains(string(out), "error") {
-		t.Errorf("expected error payload in fallback, got: %s", out)
 	}
 }
 

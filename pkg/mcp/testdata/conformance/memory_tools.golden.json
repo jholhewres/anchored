@@ -244,12 +244,17 @@
       }
     },
     "recv": {
-      "error": {
-        "code": -32603,
-        "message": "session not found: conformance-session"
-      },
       "id": 11,
-      "jsonrpc": "2.0"
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "session not found: conformance-session",
+            "type": "text"
+          }
+        ],
+        "isError": true
+      }
     }
   }
 ]

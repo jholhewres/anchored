@@ -101,8 +101,10 @@ func conformanceCases() []conformanceCase {
 		{Name: "kg_tools", Handshake: true, Steps: []conformanceStep{
 			{Method: "tools/call", Params: `{"name":"anchored_kg_add","arguments":{"subject":"conformance-api","predicate":"depends_on","object":"postgres","cwd":"{{repo}}"}}`},
 			{Method: "tools/call", Params: `{"name":"anchored_kg_query","arguments":{"entity":"conformance-api","cwd":"{{repo}}"}}`},
-			{Method: "tools/call", Params: `{"name":"kg_add","arguments":{"subject":"conformance-api","predicate":"deployed_on","object":"fly","cwd":"{{repo}}"}}`},
-			{Method: "tools/call", Params: `{"name":"kg_query","arguments":{"entity":"conformance-api","cwd":"{{repo}}"}}`},
+			// The aliases use their own entity: triples saved in the same second
+			// have no defined order.
+			{Method: "tools/call", Params: `{"name":"kg_add","arguments":{"subject":"conformance-worker","predicate":"deployed_on","object":"fly","cwd":"{{repo}}"}}`},
+			{Method: "tools/call", Params: `{"name":"kg_query","arguments":{"entity":"conformance-worker","cwd":"{{repo}}"}}`},
 		}},
 		{Name: "task_tools", Handshake: true, Steps: []conformanceStep{
 			{Method: "tools/call", Params: `{"name":"anchored_task","arguments":{"action":"start","key":"conf-1","session_id":"conformance-session","cwd":"{{repo}}"}}`},
@@ -198,12 +200,28 @@ type conformanceClient struct {
 
 func startConformanceClient(t *testing.T, s *Server) *conformanceClient {
 	t.Helper()
+	return startConformanceClientWith(t, func(ctx context.Context, in io.Reader, out io.Writer) error {
+		return s.ServeStdio(ctx, in, out)
+	})
+}
+
+// startConformanceClientAt serves a session whose root is root, wherever the
+// process's working directory is.
+func startConformanceClientAt(t *testing.T, s *Server, root string) *conformanceClient {
+	t.Helper()
+	return startConformanceClientWith(t, func(ctx context.Context, in io.Reader, out io.Writer) error {
+		return s.ServeIO(ctx, root, in, out)
+	})
+}
+
+func startConformanceClientWith(t *testing.T, serve func(ctx context.Context, in io.Reader, out io.Writer) error) *conformanceClient {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		err := s.ServeStdio(ctx, inR, outW)
+		err := serve(ctx, inR, outW)
 		_ = outW.Close()
 		done <- err
 	}()
@@ -238,8 +256,18 @@ func startConformanceClient(t *testing.T, s *Server) *conformanceClient {
 
 func (c *conformanceClient) send(line []byte) {
 	c.t.Helper()
-	if _, err := c.in.Write(append(line, '\n')); err != nil {
-		c.t.Fatalf("write: %v", err)
+	written := make(chan error, 1)
+	go func() {
+		_, err := c.in.Write(append(line, '\n'))
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			c.t.Fatalf("write: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		c.t.Fatal("write blocked: the server stopped reading its input")
 	}
 }
 

@@ -10,6 +10,7 @@
       "id": 2,
       "jsonrpc": "2.0",
       "result": {
+        "cacheScope": "public",
         "tools": [
           {
             "description": "Run multiple commands and answer multiple queries in ONE call, auto-indexing all output so only the search hits return (not raw output). Good for investigative work you'd otherwise chain across many Bash/Read/execute steps (git status + log + diff, ls + find + grep, build + test + lint, multi-endpoint API probes, codebase stats). Pass `concurrency` (1-8) to fan out I/O-bound batches; defaults to 1 (sequential), result order preserved. Batch all your questions into the queries array — follow-ups should reuse anchored_ctx_search against the same indexed corpus. Requires the context optimizer to be enabled.",
@@ -627,7 +628,8 @@
             },
             "name": "anchored_update"
           }
-        ]
+        ],
+        "ttlMs": 0
       }
     }
   }

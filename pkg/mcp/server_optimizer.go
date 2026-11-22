@@ -89,8 +89,8 @@ func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.Execute(ctx, p.Code, p.Language, p.Timeout, projectID)
@@ -157,13 +157,13 @@ func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	// Optimizer.ExecuteFile injects FILE_PATH and FILE_CONTENT preludes per
 	// language; we just forward the user's path and code as-is.
-	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, p.Path, p.Language, p.Code, p.Timeout, projectID)
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, s.sessionFile(ctx, p.CWD, p.Path), p.Language, p.Code, p.Timeout, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -204,8 +204,8 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	cmds := make([]OptimizerBatchCommand, len(p.Commands))
@@ -216,7 +216,7 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 			Language: c.Language,
 		}
 	}
-	s.resetSearchThrottle()
+	s.resetSearchThrottle(ctx)
 	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent, projectID, p.Concurrency)
 	if err != nil {
 		return "", err
@@ -253,8 +253,8 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	if p.Content != "" {
@@ -262,10 +262,11 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		if err != nil {
 			return "", err
 		}
-		s.resetSearchThrottle()
+		s.resetSearchThrottle(ctx)
 		return fmt.Sprintf("Indexed content from '%s' (id: %s)", p.Source, id), nil
 	}
 	if p.Path != "" {
+		p.Path = s.sessionFile(ctx, p.CWD, p.Path)
 		data, err := os.ReadFile(p.Path)
 		if err != nil {
 			return "", fmt.Errorf("read file: %w", err)
@@ -274,7 +275,7 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		if err != nil {
 			return "", err
 		}
-		s.resetSearchThrottle()
+		s.resetSearchThrottle(ctx)
 		return fmt.Sprintf("Indexed file '%s' as '%s' (id: %s)", p.Path, p.Source, id), nil
 	}
 	return "", fmt.Errorf("provide either 'content' or 'path'")
@@ -304,7 +305,7 @@ func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (strin
 	// Progressive throttling — encourages folding follow-ups into the next
 	// anchored_batch_execute / anchored_fetch_and_index call instead of fanning
 	// out one query per round-trip.
-	call := s.nextSearchCall()
+	call := s.nextSearchCall(ctx)
 	if call >= 9 {
 		return "anchored_ctx_search throttled: 9+ consecutive calls without re-indexing. Fold remaining questions into the queries array of anchored_batch_execute (or anchored_fetch_and_index) so output is captured and searched in one round-trip.", nil
 	}
@@ -316,8 +317,8 @@ func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
 	seen := make(map[string]bool)
@@ -372,11 +373,11 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 	}
 
 	var projectID string
-	if p.CWD != "" {
-		projectID = s.mem.ResolveProject(p.CWD)
+	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
+		projectID = s.mem.ResolveProject(cwd)
 	}
 
-	s.resetSearchThrottle()
+	s.resetSearchThrottle(ctx)
 
 	if len(p.Requests) > 0 {
 		reqs := make([]OptimizerFetchRequest, len(p.Requests))

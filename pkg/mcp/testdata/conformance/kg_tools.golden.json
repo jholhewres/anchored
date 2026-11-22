@@ -63,7 +63,7 @@
           "cwd": "<TMP>/repo",
           "object": "fly",
           "predicate": "deployed_on",
-          "subject": "conformance-api"
+          "subject": "conformance-worker"
         },
         "name": "kg_add"
       }
@@ -74,7 +74,7 @@
       "result": {
         "content": [
           {
-            "text": "Added relationship: conformance-api — deployed_on → fly (id: <id>)",
+            "text": "Added relationship: conformance-worker — deployed_on → fly (id: <id>)",
             "type": "text"
           }
         ]
@@ -89,7 +89,7 @@
       "params": {
         "arguments": {
           "cwd": "<TMP>/repo",
-          "entity": "conformance-api"
+          "entity": "conformance-worker"
         },
         "name": "kg_query"
       }
@@ -100,7 +100,7 @@
       "result": {
         "content": [
           {
-            "text": "• conformance-api — depends_on → postgres\n• conformance-api — deployed_on → fly",
+            "text": "• conformance-worker — deployed_on → fly",
             "type": "text"
           }
         ]

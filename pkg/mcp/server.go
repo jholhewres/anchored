@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
-	"time"
+	"sync"
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/debuglog"
@@ -26,24 +25,21 @@ type Server struct {
 	dlog      *debuglog.Logger
 	version   string
 
-	// searchCalls counts anchored_ctx_search invocations within the current
-	// indexing scope. Reset by anchored_batch_execute, anchored_index, and
-	// anchored_fetch_and_index. Drives progressive throttling:
-	//   1-3: normal results
-	//   4-8: limit=1 with a warning appended
-	//   9+:  blocked, redirected to anchored_batch_execute
-	searchCalls atomic.Int32
+	// noSession holds the state of calls made outside any MCP session.
+	noSession     *mcpSession
+	noSessionOnce sync.Once
 
 	remoteResolutions remoteResolutionCache
 }
 
 // resetSearchThrottle is called whenever a tool repopulates / extends the
-// indexed corpus, so a fresh round of follow-up searches starts at zero.
-func (s *Server) resetSearchThrottle() { s.searchCalls.Store(0) }
+// indexed corpus, so the session's next round of follow-up searches starts
+// at zero.
+func (s *Server) resetSearchThrottle(ctx context.Context) { s.session(ctx).searchCalls.Store(0) }
 
-// nextSearchCall returns the 1-based count for the current call and the
-// throttling decision derived from it.
-func (s *Server) nextSearchCall() int32 { return s.searchCalls.Add(1) }
+// nextSearchCall returns the 1-based count of the session's current call,
+// from which the throttling decision is derived.
+func (s *Server) nextSearchCall(ctx context.Context) int32 { return s.session(ctx).searchCalls.Add(1) }
 
 func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimizer OptimizerFacade, cfg *config.Config, version string, logger *slog.Logger) *Server {
 	if logger == nil {
@@ -64,56 +60,6 @@ func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimi
 // "did the model actually call anchored?" after the fact. Safe with nil.
 func (s *Server) SetDebugLogger(d *debuglog.Logger) {
 	s.dlog = d
-}
-
-func (s *Server) HandleMessage(ctx context.Context, data []byte) []byte {
-	req, err := ParseRequest(data)
-	if err != nil {
-		s.dlog.Event("mcp.parse_error", map[string]any{"error": err.Error(), "raw": debuglog.Content(string(data), 200)})
-		return MarshalResponse(NewErrorResponse(nil, NewError(-32700, err.Error())))
-	}
-
-	s.dlog.Event("mcp.message", map[string]any{"method": req.Method, "bytes": len(data)})
-
-	switch req.Method {
-	case "initialize":
-		return s.handleInitialize(req.ID, req.Params)
-	case "notifications/initialized":
-		return nil
-	case "tools/list":
-		return s.handleToolsList(ctx, req.ID)
-	case "tools/call":
-		return s.handleToolsCall(ctx, req.ID, req.Params)
-	case "resources/list":
-		return s.handleResourcesList(req.ID)
-	case "resources/read":
-		return s.handleResourcesRead(ctx, req.ID, req.Params)
-	case "ping":
-		return MarshalResponse(NewResponse(req.ID, map[string]string{}))
-	default:
-		return MarshalResponse(NewErrorResponse(req.ID, NewError(-32601, fmt.Sprintf("unknown method: %s", req.Method))))
-	}
-}
-
-func (s *Server) handleInitialize(id json.RawMessage, params json.RawMessage) []byte {
-	result := InitializeResult{
-		ProtocolVersion: MCPVersion,
-		ServerInfo: ServerInfo{
-			Name:    "anchored",
-			Version: s.version,
-		},
-		Instructions: AnchoredMCPInstructions,
-	}
-	result.Capabilities.Tools.ListChanged = false
-	result.Capabilities.Resources.Subscribe = false
-	result.Capabilities.Resources.ListChanged = false
-
-	return MarshalResponse(NewResponse(id, result))
-}
-
-func (s *Server) handleToolsList(ctx context.Context, id json.RawMessage) []byte {
-	tools := s.toolsForCWD(ctx, ".")
-	return MarshalResponse(NewResponse(id, map[string]any{"tools": tools}))
 }
 
 // toolsForCWD conditionally exposes anchored_skill only after this repository
@@ -152,47 +98,6 @@ func (s *Server) remoteSkillsAdvertisable(ctx context.Context, cwd string) bool 
 	return s.hasReachableRemoteRepositoryProject(probeCtx, cwd)
 }
 
-func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params json.RawMessage) []byte {
-	var p struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments,omitempty"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		s.dlog.Event("mcp.tool_call", map[string]any{"stage": "params_invalid", "error": err.Error()})
-		return MarshalResponse(NewErrorResponse(id, InvalidParams("invalid params")))
-	}
-
-	start := time.Now()
-	result, err := s.callTool(ctx, p.Name, p.Arguments)
-	latencyMs := time.Since(start).Milliseconds()
-
-	if err != nil {
-		s.dlog.Event("mcp.tool_call", map[string]any{
-			"stage":      "error",
-			"tool":       p.Name,
-			"latency_ms": latencyMs,
-			"args":       debuglog.Content(string(p.Arguments), 240),
-			"error":      err.Error(),
-		})
-		return MarshalResponse(NewErrorResponse(id, InternalError(err)))
-	}
-
-	s.dlog.Event("mcp.tool_call", map[string]any{
-		"stage":          "ok",
-		"tool":           p.Name,
-		"latency_ms":     latencyMs,
-		"args":           debuglog.Content(string(p.Arguments), 240),
-		"result_bytes":   len(result),
-		"result_preview": debuglog.Content(result, 200),
-	})
-
-	return MarshalResponse(NewResponse(id, map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": result},
-		},
-	}))
-}
-
 func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "anchored_context":
@@ -211,9 +116,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolUpdate(ctx, args)
 	case "anchored_stats":
 		return s.toolStats(ctx)
-	case "anchored_kg_query", "kg_query":
+	case "anchored_kg_query":
 		return s.toolKGQuery(ctx, args)
-	case "anchored_kg_add", "kg_add":
+	case "anchored_kg_add":
 		return s.toolKGAdd(ctx, args)
 	case "anchored_session_end":
 		return s.toolSessionEnd(ctx, args)

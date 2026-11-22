@@ -49,11 +49,9 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
-		p.CWD = "."
+		p.CWD = ""
 	}
-	if p.CWD == "" {
-		p.CWD = "."
-	}
+	p.CWD = s.sessionCWD(ctx, p.CWD)
 
 	if s.sessions != nil && p.SessionID != "" {
 		if err := s.sessions.RecordActivity(ctx, p.SessionID); err != nil {

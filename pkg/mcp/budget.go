@@ -45,11 +45,10 @@ const (
 	execErrTail = 512
 )
 
-// defaultCWD substitutes the server process's working directory for an
-// omitted cwd. Claude Code launches the MCP server in the project directory,
-// so "." is the right project for every automatic flow (remote merge, save
-// write-through, kg push) — an empty cwd must not silently mean "no team
-// memory". Explicit cwd always wins.
+// defaultCWD substitutes the process's working directory for an omitted cwd
+// in a call made outside any MCP session; a session resolves it against its
+// root instead (Server.sessionCWD). An empty cwd must not silently mean "no
+// team memory". Explicit cwd always wins.
 func defaultCWD(cwd string) string {
 	if cwd == "" {
 		return "."

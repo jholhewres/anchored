@@ -1,10 +1,11 @@
 package mcp
 
 import (
+	"slices"
+
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/memory"
@@ -171,19 +174,15 @@ func TestToolsList_AdvertisesSkillOnlyForReachableRemoteRepositoryProject(t *tes
 		t.Fatal("resolved remote project must advertise anchored_skill")
 	}
 
-	// The actual MCP tools/list call uses the server process's current repo.
-	t.Chdir(repo)
-	response := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	var payload struct {
-		Result struct {
-			Tools []Tool `json:"tools"`
-		} `json:"result"`
+	// The actual MCP tools/list call answers for the session's root, wherever
+	// the process's working directory is.
+	t.Chdir(t.TempDir())
+	listed, err := sdkClientSession(t, srv, repo).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
 	}
-	if err := json.Unmarshal(response, &payload); err != nil {
-		t.Fatalf("decode tools/list response: %v (%s)", err, response)
-	}
-	if !containsTool(payload.Result.Tools, "anchored_skill") {
-		t.Fatalf("tools/list omitted anchored_skill for resolved remote: %s", response)
+	if !slices.ContainsFunc(listed.Tools, func(tool *sdk.Tool) bool { return tool.Name == "anchored_skill" }) {
+		t.Fatal("tools/list omitted anchored_skill for resolved remote")
 	}
 
 	// A stale linked ID cannot activate the tool when no remote project matches
@@ -262,4 +261,23 @@ func TestRemoteSkillProbeCachesASilentRemote(t *testing.T) {
 	if n := asked.Load(); n != 1 {
 		t.Fatalf("the silent remote was asked %d times for three probes, want 1", n)
 	}
+}
+
+// sdkClientSession connects an SDK client to srv over an in-memory
+// transport, in a session rooted at root.
+func sdkClientSession(t *testing.T, srv *Server, root string) *sdk.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	clientTransport, serverTransport := sdk.NewInMemoryTransports()
+	serverSession, err := srv.newSDKServer(&mcpSession{root: root}).Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	clientSession, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+	return clientSession
 }
