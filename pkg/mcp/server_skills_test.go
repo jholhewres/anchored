@@ -12,7 +12,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/memory"
@@ -218,4 +220,44 @@ func containsTool(tools []Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestRemoteSkillProbeCachesASilentRemote locks the skill probe of tools/list
+// and anchored_context against a remote that accepts the connection and never
+// answers: its deadline outlasts the read probe, so the miss is cached and
+// only the first call waits on that remote.
+func TestRemoteSkillProbeCachesASilentRemote(t *testing.T) {
+	// At the production timeouts first: the deadline must outlast the whole
+	// read resolution, not only one remote's probe.
+	if got, bound := remoteSkillPriorityTimeout(), remotesync.ReadResolutionBound(remoteReadProbeTimeout); got <= bound {
+		t.Fatalf("skill probe deadline %s ends within the read resolver's bound %s", got, bound)
+	}
+	prev := remoteReadProbeTimeout
+	remoteReadProbeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { remoteReadProbeTimeout = prev })
+
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	var asked atomic.Int32
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(silent.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: silent.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		if srv.remoteSkillsAdvertisable(context.Background(), repo) {
+			t.Fatalf("probe %d advertised skills behind a silent remote", i)
+		}
+		if took := time.Since(start); i > 0 && took > remoteReadProbeTimeout/2 {
+			t.Fatalf("probe %d waited %s on a remote whose miss is cached", i, took)
+		}
+	}
+	if n := asked.Load(); n != 1 {
+		t.Fatalf("the silent remote was asked %d times for three probes, want 1", n)
+	}
 }

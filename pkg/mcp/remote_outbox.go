@@ -36,7 +36,7 @@ func (s *Server) saveRemoteIdempotent(
 	var envelope remoteOutboxEnvelope
 	if err := json.Unmarshal(item.Payload, &envelope); err == nil &&
 		envelope.Kind == autoRouteOutboxKind {
-		r := s.resolveAutoRemoteWriteTarget(ctx, envelope.CWD)
+		r := s.resolveAutoRemoteWriteTarget(ctx, envelope.CWD, 0)
 		if r.Held() {
 			return memory.RemoteOutboxDeliveryResult{Held: true, HeldReason: r.HeldReason()}
 		}

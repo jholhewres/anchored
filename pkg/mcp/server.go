@@ -315,9 +315,8 @@ const anchoredContextBudget = 4096
 // remoteSkillPriorityTimeout bounds the project-resolution probe performed by
 // anchored_context and tools/list. Priority is advertised only for a remote
 // project that is actually reachable/resolved, never merely because a server
-// exists in config. The deadline covers the read resolver's own bound, with a
-// margin: a shorter one ends the probe before a silent remote times out, so
-// the miss is never cached and every call waits on that remote again.
+// exists in config. It outlasts the read resolver's own bound
+// (remotesync.ReadResolutionBound) so the answer is cached.
 func remoteSkillPriorityTimeout() time.Duration {
 	return remotesync.ReadResolutionBound(remoteReadProbeTimeout) + 500*time.Millisecond
 }
@@ -1710,7 +1709,7 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// Triples are entity strings, not free text, so no safety classification.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
-			r := s.resolveAutoRemoteWriteTargetWithin(ctx, p.CWD, kgAddWriteBudget)
+			r := s.resolveAutoRemoteWriteTarget(ctx, p.CWD, kgAddWriteBudget)
 			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" && target.AutoSyncEnabled() {
 				go s.pushTripleTo(*target, pid, *triple)
 				result += fmt.Sprintf(" (auto-sync → %s)", target.Name)
@@ -1760,16 +1759,9 @@ func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*conf
 // resolveAutoRemoteWriteTarget is resolveAutoRemoteTarget for flows that send
 // data to the remote (outbox delivery, kg write-through), under strict
 // precedence: a held result is a write waiting on a higher-precedence remote
-// that is not answering, which it never passes over.
-func (s *Server) resolveAutoRemoteWriteTarget(ctx context.Context, cwd string) remotesync.ProjectResolution {
-	return s.autoRemoteTarget(ctx, cwd, true, 0)
-}
-
-// resolveAutoRemoteWriteTargetWithin is resolveAutoRemoteWriteTarget with the
-// resolution bounded by budget, for a write a person waits on (kg_add). A
-// remote that does not answer within it holds the write, and the hold is kept
-// so the next writes for the repository do not wait on that remote again.
-func (s *Server) resolveAutoRemoteWriteTargetWithin(ctx context.Context, cwd string, budget time.Duration) remotesync.ProjectResolution {
+// that is not answering, which it never passes over. budget bounds the lookup
+// for a write a person waits on (kg_add); zero for none.
+func (s *Server) resolveAutoRemoteWriteTarget(ctx context.Context, cwd string, budget time.Duration) remotesync.ProjectResolution {
 	return s.autoRemoteTarget(ctx, cwd, true, budget)
 }
 

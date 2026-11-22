@@ -495,12 +495,13 @@ func TestResolveProjectAcrossRemotesForWriteWithin_BudgetHoldsTheWrite(t *testin
 		t.Helper()
 		cfg := config.Defaults()
 		cfg.Remotes = remotes
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*budget)
+		defer cancel()
 		start := time.Now()
 		r := ResolveProjectAcrossRemotesForWriteWithin(ctx, cfg, "/some/repo", "test", budget, key)
 		took := time.Since(start)
 		if ctx.Err() != nil {
-			t.Fatal("the caller's context ended; the budget must not be the caller's")
+			t.Fatal("the caller's context ended; the budget must end the resolution first")
 		}
 		return r, took
 	}
@@ -529,4 +530,40 @@ func TestResolveProjectAcrossRemotesForWriteWithin_BudgetHoldsTheWrite(t *testin
 			t.Fatalf("the write waited %s, want the %s budget across both remotes", took, budget)
 		}
 	})
+}
+
+// TestReadResolutionBound_CoversSilentRemotes locks the bound callers derive
+// their deadlines from: with every remote silent, the read resolution ends
+// within ReadResolutionBound, the first remote's probe plus the others' asked
+// once the hedge opens.
+func TestReadResolutionBound_CoversSilentRemotes(t *testing.T) {
+	prevHedge := remoteHedgeDelay
+	remoteHedgeDelay = 100 * time.Millisecond
+	t.Cleanup(func() { remoteHedgeDelay = prevHedge })
+	const probe = 200 * time.Millisecond
+
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(silent.Close)
+	cfg := config.Defaults()
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"a": {Name: "a", ServerURL: silent.URL, APIKey: "k1", Default: true},
+		"b": {Name: "b", ServerURL: silent.URL, APIKey: "k2"},
+		"c": {Name: "c", ServerURL: silent.URL, APIKey: "k3"},
+	}
+
+	start := time.Now()
+	r := ResolveProjectAcrossRemotesDetailed(context.Background(), cfg, "/some/repo", "test", probe, "abc123key")
+	took := time.Since(start)
+	if r.Entry != nil || !r.Degraded {
+		t.Fatalf("with every remote silent: %+v, want a degraded miss", r)
+	}
+	bound := ReadResolutionBound(probe)
+	if took > bound+bound/2 {
+		t.Fatalf("the resolution took %s, past its bound %s", took, bound)
+	}
+	if took < probe {
+		t.Fatalf("the resolution took %s, under one probe (%s): the remotes were not waited for", took, probe)
+	}
 }

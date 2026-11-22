@@ -99,15 +99,14 @@ func (c *remoteResolutionCache) forget(key string) {
 
 // resolveProjectAcrossRemotes is remotesync's read resolver
 // (ResolveProjectAcrossRemotesDetailed) or write resolver
-// (ResolveProjectAcrossRemotesForWrite) behind the server's cache. The key covers the repository's keys, the remote
+// (ResolveProjectAcrossRemotesForWriteWithin) behind the server's cache. The key covers the repository's keys, the remote
 // the cwd routes to and every configured remote, so a configuration change
 // never answers from an entry made for another one. Reads probe under the
 // interactive deadline and may fall back past a remote that did not answer.
 // Writes never reuse such a degraded answer: they resolve under strict
 // precedence, and a held write is kept for remoteMissTTL so the writes queued
 // behind it do not probe the same remote again. writeBudget bounds a write's
-// whole resolution (zero for none); a caller bounds a write through it, never
-// through ctx, whose deadline would discard the hold. Reads ignore it.
+// whole resolution (zero for none); reads ignore it.
 func (s *Server) resolveProjectAcrossRemotes(ctx context.Context, cwd, canonicalKey, legacyKey string, write bool, writeBudget time.Duration) remotesync.ProjectResolution {
 	key := remoteResolutionKey(s.cfg, cwd, canonicalKey, legacyKey)
 	c := &s.remoteResolutions

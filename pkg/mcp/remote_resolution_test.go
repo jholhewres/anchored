@@ -162,7 +162,7 @@ func TestResolveAutoRemoteWriteTarget_IgnoresDegradedReadAnswer(t *testing.T) {
 		if target, _ := srv.resolveAutoRemoteTarget(context.Background(), repo); target == nil || target.Name != "other" {
 			t.Fatalf("read target = %+v, want other while team is slow", target)
 		}
-		if r := srv.resolveAutoRemoteWriteTarget(context.Background(), repo); r.Entry == nil || r.Entry.Name != "team" || r.ProjectID != "rp-team" || r.Held() {
+		if r := srv.resolveAutoRemoteWriteTarget(context.Background(), repo, 0); r.Entry == nil || r.Entry.Name != "team" || r.ProjectID != "rp-team" || r.Held() {
 			t.Fatalf("write target = %+v %q held=%v, want team", r.Entry, r.ProjectID, r.Held())
 		}
 	})
@@ -175,7 +175,7 @@ func TestResolveAutoRemoteWriteTarget_IgnoresDegradedReadAnswer(t *testing.T) {
 		if target, _ := srv.resolveAutoRemoteTarget(context.Background(), repo); target == nil || target.Name != "other" {
 			t.Fatalf("read target = %+v, want other while team is down", target)
 		}
-		if r := srv.resolveAutoRemoteWriteTarget(context.Background(), repo); r.Entry != nil || r.ProjectID != "" || !r.Held() {
+		if r := srv.resolveAutoRemoteWriteTarget(context.Background(), repo, 0); r.Entry != nil || r.ProjectID != "" || !r.Held() {
 			t.Fatalf("write target = %+v %q held=%v, want held while team is down", r.Entry, r.ProjectID, r.Held())
 		}
 	})
@@ -200,7 +200,7 @@ func TestResolveAutoRemoteWriteTarget_CachesHeldAnswer(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		if r := srv.resolveAutoRemoteWriteTarget(ctx, repo); !r.Held() {
+		if r := srv.resolveAutoRemoteWriteTarget(ctx, repo, 0); !r.Held() {
 			t.Fatalf("write %d: not held while team is down", i)
 		}
 	}
@@ -235,7 +235,7 @@ func TestResolveAutoRemoteTarget_ReadMissIsNotAWriteHold(t *testing.T) {
 	if n := asked.Load(); n != 1 {
 		t.Fatalf("three searches asked the failing remote %d times, want 1", n)
 	}
-	r := srv.resolveAutoRemoteWriteTarget(ctx, repo)
+	r := srv.resolveAutoRemoteWriteTarget(ctx, repo, 0)
 	if !r.Held() || r.HeldBy != "team" || r.HeldStatus != http.StatusUnauthorized || !strings.Contains(r.HeldReason(), "log in") {
 		t.Fatalf("write after the searches: held=%v by=%q status=%d reason=%q", r.Held(), r.HeldBy, r.HeldStatus, r.HeldReason())
 	}
@@ -326,7 +326,7 @@ func TestToolSearch_FailedSearchKeepsTheWriteHold(t *testing.T) {
 	if _, err := srv.toolSearch(ctx, args); err != nil {
 		t.Fatal(err)
 	}
-	if r := srv.resolveAutoRemoteWriteTarget(ctx, repo); !r.Held() || r.HeldStatus != http.StatusForbidden {
+	if r := srv.resolveAutoRemoteWriteTarget(ctx, repo, 0); !r.Held() || r.HeldStatus != http.StatusForbidden {
 		t.Fatalf("after a failed search: held=%v status=%d, want the 403 hold to stand", r.Held(), r.HeldStatus)
 	}
 }
