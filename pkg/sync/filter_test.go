@@ -276,7 +276,12 @@ func TestSafeTriplesForRemote(t *testing.T) {
 		{Subject: "build", Predicate: "writes", Object: "/home/dev/proj/bin/anchored"},
 	}
 	safe, withheld := filterTriples(in, root)
-	wantWithheld := []string{"triple 2 blocked: secret_pattern", "triple 3 blocked: secret_pattern", "triple 4 blocked: local_path", "triple 5 blocked: local_path"}
+	wantWithheld := []string{
+		"triple 2 (staging-db connects_with) blocked: secret_pattern",
+		"triple 3 (ci authenticates_with) blocked: secret_pattern",
+		"triple 4 (deploy reads) blocked: local_path",
+		"triple 5 ([withheld] describes) blocked: local_path",
+	}
 	if strings.Join(withheld, "|") != strings.Join(wantWithheld, "|") {
 		t.Fatalf("withheld %q, want %q; sent %+v", withheld, wantWithheld, safe)
 	}
@@ -351,5 +356,49 @@ func TestRemoteSafetyFilter_TmpPathsStartAPath(t *testing.T) {
 	}
 	if r := RemoteSafetyFilter("scratch in /tmp/other/notes", nil, "/tmp/ws/proj"); !r.Blocked {
 		t.Fatalf("a temporary path outside the project went out as %q", r.Content)
+	}
+}
+
+// TestRemoteSafetyFilter_PathEdges locks the path rules at their edges: a
+// home path joined to a project path in a list is checked on its own, a path
+// that reaches the project only once cleaned is outside it, /rootfs and
+// /tmpfs are not root's home or a temporary directory, and file:///tmp still
+// is one.
+func TestRemoteSafetyFilter_PathEdges(t *testing.T) {
+	const root = "/home/dev/proj"
+	for _, tc := range []struct {
+		content string
+		blocked bool
+	}{
+		{"PATH=/home/dev/proj/bin:/home/other/bin", true},
+		{"see /home/dev/proj/a,/home/other/b", true},
+		{"read /home/dev/./proj/notes.md", true},
+		{"mount /rootfs/etc and /tmpfs/cache", false},
+		{"open file:///tmp/report.html", true},
+		{"keys in /root/.ssh/id_ed25519", true},
+		{"build /home/dev/proj/bin:/home/dev/proj/tools", false},
+	} {
+		if r := RemoteSafetyFilter(tc.content, nil, root); r.Blocked != tc.blocked {
+			t.Errorf("RemoteSafetyFilter(%q) blocked=%v (%q), want %v", tc.content, r.Blocked, r.Content, tc.blocked)
+		}
+	}
+}
+
+// TestUseSecretPatterns locks the user's own sanitizer patterns in the remote
+// filter: a value only a custom pattern knows is blocked once the patterns
+// are loaded, and is not before.
+func TestUseSecretPatterns(t *testing.T) {
+	t.Cleanup(func() { UseSecretPatterns(nil) })
+	const value = "acme_0123456789abcdef01234567"
+	UseSecretPatterns(nil)
+	if r := RemoteSafetyFilter("billing uses "+value, nil, ""); r.Blocked {
+		t.Fatalf("the built-in rules alone blocked %q; pick a value only the custom pattern knows", value)
+	}
+	UseSecretPatterns([]string{`acme_[0-9a-f]{24}`})
+	if r := RemoteSafetyFilter("billing uses "+value, nil, ""); !r.Blocked {
+		t.Fatalf("a value matching the user's pattern went out as %q", r.Content)
+	}
+	if _, withheld := SafeTriplesForRemote([]SyncTriple{{Subject: "billing", Predicate: "authenticates_with", Object: value}}, ""); withheld != 1 {
+		t.Fatal("a triple matching the user's pattern was not held back")
 	}
 }

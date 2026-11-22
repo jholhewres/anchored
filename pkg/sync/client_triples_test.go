@@ -43,7 +43,7 @@ func TestPushTriples_SendsOnlyWhatTheSafetyFilterAllows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Accepted != 1 || len(resp.Withheld) != 1 || resp.Withheld[0] != "triple 1 blocked: local_path" {
+	if resp.Accepted != 1 || len(resp.Withheld) != 1 || resp.Withheld[0] != "triple 1 (staging-db connects_with) blocked: local_path" {
 		t.Fatalf("response %+v, want 1 accepted and triple 1 withheld for its local path", resp)
 	}
 	mu.Lock()

@@ -30,17 +30,19 @@ type RemoteSafetyResult struct {
 	Rewritten bool
 }
 
+// A path ends at whitespace or at a ':', ',' or ';', which join paths in a
+// list (PATH=/a:/b), so each path of a list is checked on its own.
 var (
-	linuxHomeRe = regexp.MustCompile(`/home/[^/\s]+(?:/[\S]*)?`)
-	macOSHomeRe = regexp.MustCompile(`/Users/[^/\s]+(?:/[\S]*)?`)
-	winHomeRe   = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\/\s]+(?:\\[^\s]*)?`)
-	tildeHomeRe = regexp.MustCompile(`~/[\S]+`)
-	// tmpPathsRe and rootHomeRe match only where a path starts (the start of
-	// the text, or after a character a path cannot hold), so a folder named
-	// tmp or root inside another path is not taken for them. The path is
-	// group 1.
-	tmpPathsRe     = regexp.MustCompile(`(?:^|[^\w./~-])((?:/tmp|/var/folders|/private/tmp)(?:/[\S]*)?)`)
-	rootHomeRe     = regexp.MustCompile(`(?:^|[^\w./~-])((?:/root|/var/root)(?:/[\S]*)?)`)
+	linuxHomeRe = regexp.MustCompile(`/home/[^/\s:,;]+(?:/[^\s:,;]*)?`)
+	macOSHomeRe = regexp.MustCompile(`/Users/[^/\s:,;]+(?:/[^\s:,;]*)?`)
+	winHomeRe   = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\/\s:,;]+(?:\\[^\s:,;]*)?`)
+	tildeHomeRe = regexp.MustCompile(`~/[^\s:,;]+`)
+	// tmpPathsRe and rootHomeRe match only a whole first segment where a path
+	// starts (the start of the text, a URL's "//", or a character a path
+	// cannot hold), so a folder named tmp or root inside another path, or
+	// /rootfs, is not taken for them. The path is group 1.
+	tmpPathsRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/tmp|/var/folders|/private/tmp)(?:/[^\s:,;]*)?)(?:$|[^\w.-])`)
+	rootHomeRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/root|/var/root)(?:/[^\s:,;]*)?)(?:$|[^\w.-])`)
 	awsAccessKeyRe = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
 	googleAPIKeyRe = regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`)
 	credURIRe      = regexp.MustCompile(`(?i)\b(mongodb|postgres|postgresql|mysql|redis)(\+srv)?:\/\/[^\s/@]*:[^\s/@]+@`)
@@ -125,12 +127,22 @@ func filterTriples(triples []SyncTriple, projectRoot string) ([]SyncTriple, []st
 	for i, t := range triples {
 		out, reason := SafeTriple(t, projectRoot)
 		if reason != "" {
-			withheld = append(withheld, fmt.Sprintf("triple %d blocked: %s", i+1, reason))
+			withheld = append(withheld, fmt.Sprintf("triple %d (%s %s) blocked: %s",
+				i+1, tripleLabel(t.Subject, projectRoot), tripleLabel(t.Predicate, projectRoot), reason))
 			continue
 		}
 		safe = append(safe, out)
 	}
 	return safe, withheld
+}
+
+// tripleLabel names a triple's field in the withheld list: as written when it
+// passes the filter alone, so no secret or path is echoed, and cut short.
+func tripleLabel(field, projectRoot string) string {
+	if RemoteSafetyFilter(field, nil, projectRoot).Blocked {
+		return "[withheld]"
+	}
+	return truncate(field, 40)
 }
 
 // SafeTriple is SafeTriplesForRemote for one triple: the triple to send, or
@@ -155,11 +167,16 @@ func SafeTriple(t SyncTriple, projectRoot string) (SyncTriple, string) {
 	return t, ""
 }
 
-// TriplesFromKG is the wire form of local knowledge-graph triples.
+// TripleFromKG is the wire form of a local knowledge-graph triple.
+func TripleFromKG(t kg.Triple) SyncTriple {
+	return SyncTriple{Subject: t.Subject, Predicate: t.Predicate, Object: t.Object, Confidence: t.Confidence}
+}
+
+// TriplesFromKG is TripleFromKG for a list.
 func TriplesFromKG(triples []kg.Triple) []SyncTriple {
 	out := make([]SyncTriple, len(triples))
 	for i, t := range triples {
-		out[i] = SyncTriple{Subject: t.Subject, Predicate: t.Predicate, Object: t.Object, Confidence: t.Confidence}
+		out[i] = TripleFromKG(t)
 	}
 	return out
 }
@@ -220,9 +237,15 @@ func underRoot(p, root string) bool {
 		return false
 	}
 	p = strings.TrimRight(p, ".,;:!?)]}>'\"`")
-	if strings.HasPrefix(p, "/") {
-		p = path.Clean(p)
+	// As written, so the rewrite to "./" finds the root in it...
+	if !startsWithRoot(p, root) {
+		return false
 	}
+	// ...and once cleaned, so it does not climb back out with "..".
+	return !strings.HasPrefix(p, "/") || startsWithRoot(path.Clean(p), root)
+}
+
+func startsWithRoot(p, root string) bool {
 	if !strings.HasPrefix(p, root) {
 		return false
 	}
