@@ -32,9 +32,10 @@ const (
 	// maxRemoteResponseBytes caps every other JSON body read whole from a
 	// remote (project listing, save, search, triples): far above what a
 	// server sends, and low enough that a remote streaming an endless body
-	// cannot make the process buffer it all.
+	// cannot make the process buffer it all. Push and pull responses are
+	// decoded as a stream and are not capped here.
 	maxRemoteResponseBytes = 8 * 1024 * 1024
-	// maxRemoteErrorBodyBytes caps the body kept from a failed push or pull.
+	// maxRemoteErrorBodyBytes caps the body kept from an error status.
 	maxRemoteErrorBodyBytes = 64 * 1024
 )
 
@@ -297,7 +298,7 @@ func (c *Client) saveRemote(ctx context.Context, mem RemoteMemory, operationID s
 	}
 	defer resp.Body.Close()
 
-	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	respBody, err := readRemoteBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("read save response: %w", err)
 	}
@@ -493,6 +494,19 @@ func (c *Client) LoadProjectSkill(ctx context.Context, projectID, slug string) (
 	return &skill, nil
 }
 
+// readRemoteBody reads a remote's answer for the JSON calls that read it
+// whole. A success is read up to maxRemoteResponseBytes and fails past it. An
+// error status keeps at most maxRemoteErrorBodyBytes and never fails on the
+// body: the status is what classifies the error (a refusal stays a refusal),
+// and a body cut short only loses detail.
+func readRemoteBody(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteErrorBodyBytes))
+		return body, nil
+	}
+	return readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+}
+
 func readRemoteResponseBody(r io.Reader, maxBytes int) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, int64(maxBytes)+1))
 	if err != nil {
@@ -570,7 +584,7 @@ func (c *Client) searchRemoteMode(ctx context.Context, projectID string, query s
 	}
 	defer resp.Body.Close()
 
-	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	respBody, err := readRemoteBody(resp)
 	if err != nil {
 		return metadata, fmt.Errorf("read search response: %w", err)
 	}
@@ -651,7 +665,7 @@ func (c *Client) PushTriples(ctx context.Context, projectID string, triples []Sy
 	}
 	defer resp.Body.Close()
 
-	respBody, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	respBody, err := readRemoteBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("read triples response: %w", err)
 	}
@@ -707,7 +721,7 @@ func (c *Client) ListProjects(ctx context.Context) ([]RemoteProject, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := readRemoteResponseBody(resp.Body, maxRemoteResponseBytes)
+	body, err := readRemoteBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("read projects response: %w", err)
 	}
