@@ -11,9 +11,11 @@ import (
 var linkRe = regexp.MustCompile(`\]\(([^)\s]+)\)|src="([^"]+)"`)
 
 // TestDocsLinksResolve locks the documentation's own links: every relative
-// link in the READMEs, CONTRIBUTING, the glossary and docs/*.md points at a
-// file that exists, and every page in docs/ is linked from the README, so a
-// page that moves or loses its last link is caught.
+// link in the READMEs, CONTRIBUTING, the glossary, the CHANGELOG and
+// docs/*.md points at a file inside the repository that exists, and every
+// page in docs/ is linked from the README, so a page that moves or loses its
+// last link is caught. A link out of the repository resolves only on a
+// machine that happens to hold the sibling checkout.
 func TestDocsLinksResolve(t *testing.T) {
 	pages, err := filepath.Glob("*.md")
 	if err != nil {
@@ -33,6 +35,10 @@ func TestDocsLinksResolve(t *testing.T) {
 			}
 			target, _, _ = strings.Cut(target, "#")
 			resolved := filepath.Clean(filepath.Join(filepath.Dir(file), target))
+			if strings.HasPrefix(resolved, "../..") {
+				t.Errorf("%s links to %s, outside the repository: broken for anyone reading it on GitHub", file, target)
+				continue
+			}
 			if _, err := os.Stat(resolved); err != nil {
 				t.Errorf("%s links to %s, which does not exist", file, target)
 			}

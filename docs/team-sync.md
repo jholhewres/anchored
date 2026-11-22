@@ -56,7 +56,7 @@ Dev A (Claude Code)              Dev B (Cursor)
 
 ## Two Projects
 
-### [`anchored_oss`](../../anchored_oss) (sibling repo, independent binary)
+### [`anchored_oss`](https://github.com/jholhewres/anchored_oss) (sibling repo, independent binary)
 
 Self-hosted/open team sync distribution that teams deploy on their own infrastructure. Acts as the central hub for organization-owned, project-scoped knowledge. Teams run it wherever they run their internal tools. The same protocol/model should be reusable by the future Anchored Cloud service.
 
