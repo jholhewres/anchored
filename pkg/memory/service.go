@@ -644,7 +644,6 @@ func (s *Service) PendingEmbeddings(ctx context.Context) (int, error) {
 	return s.store.CountWithoutEmbedding(ctx)
 }
 
-// ResolveProject returns the project ID for a given working directory, or empty string if none.
 // ProjectPath is the root of the project a memory was saved under, from the
 // project row the save detected: one query, no git call. "" when the memory
 // has no project.
@@ -662,6 +661,7 @@ func (s *Service) ProjectPath(ctx context.Context, projectID *string) string {
 	return path
 }
 
+// ResolveProject returns the project ID for a given working directory, or empty string if none.
 func (s *Service) ResolveProject(cwd string) string {
 	if cwd == "" || s.projDet == nil {
 		return ""
