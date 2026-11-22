@@ -13,6 +13,7 @@ import (
 
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/kg"
+	remotesync "github.com/jholhewres/anchored/pkg/sync"
 )
 
 // TestKGAddHonoursTheUsersCustomSecretPatterns is an exploit test: the remote
@@ -54,6 +55,7 @@ func TestKGAddHonoursTheUsersCustomSecretPatterns(t *testing.T) {
 	}))
 	t.Cleanup(remote.Close)
 	cfg.Sanitizer.Patterns = []string{`acme_[0-9a-f]{24}`}
+	t.Cleanup(func() { remotesync.UseSecretPatterns(nil) })
 	cfg.Remotes = map[string]config.RemoteEntry{
 		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
 	}

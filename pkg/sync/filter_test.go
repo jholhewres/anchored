@@ -383,6 +383,7 @@ func TestRemoteSafetyFilter_PathEdges(t *testing.T) {
 		{"build /home/dev/proj/bin:/home/dev/proj/tools", false},
 		{"scratch /tmp/a,/tmp/b", true},
 		{"from /home/dev/proj/sub/../../proj-other/x", true},
+		{"up to /home/dev/proj/..", true},
 	} {
 		if r := RemoteSafetyFilter(tc.content, nil, root); r.Blocked != tc.blocked {
 			t.Errorf("RemoteSafetyFilter(%q) blocked=%v (%q), want %v", tc.content, r.Blocked, r.Content, tc.blocked)
@@ -418,5 +419,17 @@ func TestRemoteSafetyFilter_SecondPathAfterAProjectPath(t *testing.T) {
 	}
 	if r := RemoteSafetyFilter("PATH=/tmp/ws/proj/bin:/root/bin", nil, "/tmp/ws/proj"); !r.Blocked {
 		t.Fatalf("root's home after a project path went out as %q", r.Content)
+	}
+}
+
+// TestRemoteSafetyFilter_WindowsDotDot locks ".." with backslashes: a Windows
+// path inside the project that climbs out is a local path outside it.
+func TestRemoteSafetyFilter_WindowsDotDot(t *testing.T) {
+	const root = `C:\Users\dev\proj`
+	if r := RemoteSafetyFilter(`open C:\Users\dev\proj\..\other\notes.txt`, nil, root); !r.Blocked {
+		t.Fatalf("a Windows path climbing out of the project went out as %q", r.Content)
+	}
+	if r := RemoteSafetyFilter(`open C:\Users\dev\proj\src\main.go`, nil, root); r.Blocked {
+		t.Fatalf("a Windows path inside the project was blocked: %+v", r.Violations)
 	}
 }

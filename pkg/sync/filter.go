@@ -252,14 +252,27 @@ func underRoot(p, root string) bool {
 	if root == "" {
 		return false
 	}
+	// With no ".." segment, whose names would come from outside the
+	// project, whatever the separator...
+	if hasDotDotSegment(p) {
+		return false
+	}
 	p = strings.TrimRight(p, ".,;:!?)]}>'\"`")
-	// As written, so the rewrite to "./" finds the root in it, and with no
-	// ".." segment, whose names would come from outside the project...
-	if !startsWithRoot(p, root) || strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") {
+	// ...as written, so the rewrite to "./" finds the root in it...
+	if !startsWithRoot(p, root) {
 		return false
 	}
 	// ...and once cleaned, so it does not climb back out with "..".
 	return !strings.HasPrefix(p, "/") || startsWithRoot(path.Clean(p), root)
+}
+
+func hasDotDotSegment(p string) bool {
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.TrimRight(seg, ",;:!?)]}>'\"`") == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func startsWithRoot(p, root string) bool {
