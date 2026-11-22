@@ -179,11 +179,11 @@ func TestKGAddKeepsAnUnsafeTripleLocal(t *testing.T) {
 	}
 }
 
-// TestRemoteFilterRoot locks the root the safety filter allows local paths
+// TestProjectFilterRoot locks the root the safety filter allows local paths
 // under: the repository's root from anywhere inside it, and none outside a
 // repository, so a cwd like the home directory never passes home paths as
 // project paths.
-func TestRemoteFilterRoot(t *testing.T) {
+func TestProjectFilterRoot(t *testing.T) {
 	repo, svc, cfg := newRemoteSearchFixture(t)
 	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
 	sub := filepath.Join(repo, "pkg", "deep")
@@ -194,13 +194,20 @@ func TestRemoteFilterRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rootFor := func(cwd string) string {
+		var pid *string
+		if id := svc.ResolveProject(cwd); id != "" {
+			pid = &id
+		}
+		return srv.projectFilterRoot(context.Background(), pid)
+	}
 	for _, cwd := range []string{repo, sub} {
-		got, err := filepath.EvalSymlinks(srv.remoteFilterRoot(cwd))
+		got, err := filepath.EvalSymlinks(rootFor(cwd))
 		if err != nil || got != want {
-			t.Errorf("remoteFilterRoot(%q) = %q (%v), want the repository root %q", cwd, got, err, want)
+			t.Errorf("projectFilterRoot from %q = %q (%v), want the repository root %q", cwd, got, err, want)
 		}
 	}
-	if got := srv.remoteFilterRoot(t.TempDir()); got != "" {
-		t.Errorf("remoteFilterRoot outside a repository = %q, want none", got)
+	if got := rootFor(t.TempDir()); got != "" {
+		t.Errorf("projectFilterRoot outside a repository = %q, want none", got)
 	}
 }

@@ -1365,7 +1365,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 				if !s.hasAutoSyncRemote() {
 					return nil, nil
 				}
-				content, ok := remoteSaveContent(m, s.remoteFilterRoot(p.CWD), true)
+				content, ok := remoteSaveContent(m, s.projectFilterRoot(ctx, m.ProjectID), true)
 				if !ok {
 					autoSyncSafetyBlocked = true
 					return nil, nil
@@ -1415,7 +1415,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 		case projectID == "":
 			result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
 		default:
-			content, ok := remoteSaveContent(*m, s.remoteFilterRoot(p.CWD), false)
+			content, ok := remoteSaveContent(*m, s.projectFilterRoot(ctx, m.ProjectID), false)
 			if !ok {
 				result += " (remote: blocked by safety policy, local save preserved)"
 				break
@@ -1713,8 +1713,8 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// blocks never asks a remote at all.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
-			root := s.remoteFilterRoot(p.CWD)
-			if _, reason := remotesync.SafeTriple(remotesync.TriplesFromKG([]kg.Triple{*triple})[0], root); reason != "" {
+			root := s.projectFilterRoot(ctx, projectID)
+			if _, reason := remotesync.SafeTriple(remotesync.TripleFromKG(*triple), root); reason != "" {
 				return result + " (local only — blocked by safety policy: " + reason + ")", nil
 			}
 			r := s.resolveAutoRemoteWriteTarget(ctx, p.CWD, kgAddWriteBudget)
@@ -1799,19 +1799,18 @@ func (s *Server) repositoryRemoteKeys(cwd string) (canonicalKey, legacyKey strin
 	return canonicalKey, legacyKey, true
 }
 
-// remoteFilterRoot is the project root the remote safety filter lets local
-// paths through under, for what a tool sends from cwd: the repository's root,
-// or none outside a repository. A cwd such as the home directory must never
-// make every home path look like a project path.
-func (s *Server) remoteFilterRoot(cwd string) string {
-	if s.mem == nil {
+// projectFilterRoot is the project root the remote safety filter lets local
+// paths through under, for what a tool sends: the root of the repository the
+// write was resolved to, or none outside a repository. A cwd such as the home
+// directory must never make every home path look like a project path. It
+// reads the project the save already detected, so it costs one query and no
+// git call on the save path.
+func (s *Server) projectFilterRoot(ctx context.Context, projectID *string) string {
+	if s.mem == nil || projectID == nil {
 		return ""
 	}
-	proj, err := s.mem.ResolveProjectInfo(cwd)
-	if err != nil || proj == nil || proj.RemoteKey == "" {
-		return ""
-	}
-	return proj.Path
+	_, path := s.lookupProjectMeta(ctx, *projectID)
+	return path
 }
 
 // forgetAutoRemoteTarget drops what the cache holds for cwd's repository.
@@ -1915,7 +1914,7 @@ func (s *Server) pushTripleTo(entry config.RemoteEntry, remoteProjID, projectRoo
 	defer cancel()
 
 	client := remotesync.NewClientFromEntry(entry, "mcp")
-	if _, err := client.PushTriples(ctx, remoteProjID, projectRoot, remotesync.TriplesFromKG([]kg.Triple{t})); err != nil {
+	if _, err := client.PushTriples(ctx, remoteProjID, projectRoot, []remotesync.SyncTriple{remotesync.TripleFromKG(t)}); err != nil {
 		s.logger.Warn("kg auto-sync push failed", "remote", entry.Name, "error", err)
 	}
 }
