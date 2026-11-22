@@ -32,7 +32,7 @@ func TestWithSaveScope_UserNarrowsAnyCategory(t *testing.T) {
 // value outside the enum: anything but project or team keeps the memory
 // personal, including look-alikes of "user".
 func TestWithSaveScope_UnknownScopeFailsClosed(t *testing.T) {
-	for _, scope := range []string{"private", "personal", "local", "user​", "ｕｓｅｒ"} {
+	for _, scope := range []string{"private", "personal", "local", "user\u200b", "ｕｓｅｒ"} {
 		if got := ParseMetadata(WithSaveScope(nil, "decision", scope)).Scope; got != ScopeUser {
 			t.Errorf("decision saved with scope %q: scope %q, want user", scope, got)
 		}
