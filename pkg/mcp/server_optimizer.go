@@ -213,7 +213,7 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 		cmds[i] = OptimizerBatchCommand{
 			Label:    c.Label,
 			Command:  c.Command,
-			Language: c.Language,
+			Language: batchLanguage(c.Language),
 		}
 	}
 	s.resetSearchThrottle(ctx)
@@ -426,4 +426,13 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 		cacheStatus = " (from cache)"
 	}
 	return fmt.Sprintf("Fetched and indexed '%s'%s at %s (%d bytes).\n\n%s\n\nUse anchored_ctx_search to find specific sections.", source, cacheStatus, fetchedAt, len(markdown), preview), nil
+}
+
+// batchLanguage is a batch command's language: shell when it names none, as
+// the schema says.
+func batchLanguage(language string) string {
+	if language == "" {
+		return "shell"
+	}
+	return language
 }

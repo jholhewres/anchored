@@ -165,7 +165,7 @@
       "result": {
         "content": [
           {
-            "text": "Batch executed 1 commands (0 bytes indexed).\n\nSearch results:\n1. [batch-output] conformance-batch\n\n\nCommand 1 failed (exit 1): unsupported language: ",
+            "text": "Batch executed 1 commands (18 bytes indexed).\n\nSearch results:\n1. [batch-output] conformance-batch\n",
             "type": "text"
           }
         ]

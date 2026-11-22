@@ -225,6 +225,23 @@ func TestSDK_ToolCallsResolveCWDAgainstTheSessionRoot(t *testing.T) {
 	}
 }
 
+func TestSDK_BatchExecuteRunsACommandWithoutLanguageAsShell(t *testing.T) {
+	fx := newConformanceFixture(t)
+	client := startConformanceClient(t, fx.server)
+	client.handshake()
+
+	res, msg := client.callTool("anchored_batch_execute", map[string]any{
+		"commands": []map[string]any{{"label": "greet", "command": "echo sdk-batch-shell"}},
+		"queries":  []string{"sdk-batch-shell"},
+	})
+	if msg.Error != nil || res.IsError || strings.Contains(res.text(), "unsupported language") {
+		t.Fatalf("batch without language: %+v %s", msg.Error, res.text())
+	}
+	if !strings.Contains(res.text(), "sdk-batch-shell") {
+		t.Fatalf("batch output missing the command's stdout:\n%s", res.text())
+	}
+}
+
 // concurrentFacts are distinct enough that none is a near-duplicate of
 // another, so each save adds a memory.
 var concurrentFacts = []string{
