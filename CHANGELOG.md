@@ -63,8 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to pass `--remote`.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
-  and the error body of these calls up to 64 KiB; a longer listing fails the
-  lookup like a remote that did not answer. Push and pull responses are
+  and any error body, push and pull included, up to 64 KiB; a longer listing
+  fails the lookup like a remote that did not answer. Push and pull responses are
   still decoded as a stream, without a cap.
 
 ### Changed

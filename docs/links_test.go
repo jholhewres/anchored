@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-var linkRe = regexp.MustCompile(`\]\(([^)\s]+)\)|src="([^"]+)"`)
+// linkRe captures a link's target: a Markdown link "](target)", or an HTML
+// src="target" or href="target" (the READMEs' badges and language switcher).
+var linkRe = regexp.MustCompile(`\]\(([^)\s]+)\)|src="([^"]+)"|href="([^"]+)"`)
 
 // TestDocsLinksResolve locks the documentation's own links: every relative
 // link in the READMEs, CONTRIBUTING, the glossary, the CHANGELOG and
@@ -29,7 +31,7 @@ func TestDocsLinksResolve(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, m := range linkRe.FindAllStringSubmatch(string(data), -1) {
-			target := m[1] + m[2]
+			target := m[1] + m[2] + m[3]
 			if strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") || strings.HasPrefix(target, "#") {
 				continue
 			}
@@ -51,5 +53,34 @@ func TestDocsLinksResolve(t *testing.T) {
 		if !linked[filepath.Clean(filepath.Join("..", "docs", page))] {
 			t.Errorf("docs/%s is not linked from README.md", page)
 		}
+	}
+}
+
+// TestContributingCarriesTheReleaseSteps locks what the README cut moved into
+// CONTRIBUTING.md: the release steps, with the wait for CI on Linux and macOS
+// before tagging, and the pointer to docs/setup.md for a new tool.
+func TestContributingCarriesTheReleaseSteps(t *testing.T) {
+	data, err := os.ReadFile("../CONTRIBUTING.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	_, releasing, ok := strings.Cut(text, "\n## Releasing\n")
+	if !ok {
+		t.Fatal("CONTRIBUTING.md has no Releasing section")
+	}
+	releasing, _, _ = strings.Cut(releasing, "\n## ")
+	for _, want := range []string{"VERSION", "make sync-version", "CHANGELOG.md", "Linux", "macOS", "before", "tag"} {
+		if !strings.Contains(releasing, want) {
+			t.Errorf("the Releasing section does not mention %q", want)
+		}
+	}
+	_, tools, ok := strings.Cut(text, "\n## Adding Tool Support\n")
+	if !ok {
+		t.Fatal("CONTRIBUTING.md has no Adding Tool Support section")
+	}
+	tools, _, _ = strings.Cut(tools, "\n## ")
+	if !strings.Contains(tools, "docs/setup.md") || strings.Contains(tools, "README.md") {
+		t.Error("Adding Tool Support must send tool authors to docs/setup.md, not the README")
 	}
 }
