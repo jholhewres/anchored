@@ -64,18 +64,27 @@ func (d *Detector) Detect(cwd string) (*Project, error) {
 	}
 
 	name := filepath.Base(gitRoot)
-	id := newID()
 	rk := deriveRemoteKey(gitRoot)
 
+	// Concurrent first detections of one repository race to insert it. The
+	// path is unique, so the losers insert nothing and read the winner's row:
+	// every caller gets the same project, none an error.
 	_, err = d.db.Exec(
-		"INSERT INTO projects (id, name, path, remote_key) VALUES (?, ?, ?, ?)",
-		id, name, gitRoot, rk,
+		"INSERT INTO projects (id, name, path, remote_key) VALUES (?, ?, ?, ?) ON CONFLICT(path) DO NOTHING",
+		newID(), name, gitRoot, rk,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	return &Project{ID: id, Name: name, Path: gitRoot, RemoteKey: rk}, nil
+	var created Project
+	err = d.db.QueryRow(
+		"SELECT id, name, path, source_tool, COALESCE(remote_key, '') FROM projects WHERE path = ?",
+		gitRoot,
+	).Scan(&created.ID, &created.Name, &created.Path, &created.SourceTool, &created.RemoteKey)
+	if err != nil {
+		return nil, err
+	}
+	return &created, nil
 }
 
 func (d *Detector) Resolve(id string) (*Project, error) {

@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -531,5 +533,74 @@ func TestDetect_SubmoduleKeepsItsWorkingTree(t *testing.T) {
 	}
 	if p.ID == superProject.ID {
 		t.Error("submodule collapsed into the superproject")
+	}
+}
+
+// TestDetect_ConcurrentFirstDetectionsAgreeOnOneProject covers a repository
+// detected for the first time by several calls at once, as concurrent MCP
+// requests do. The losers of the INSERT race used to get an error, and the
+// memory they were saving went in with no project.
+func TestDetect_ConcurrentFirstDetectionsAgreeOnOneProject(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "init", "-q")
+	runGit(t, repo, "remote", "add", "origin", "https://github.com/test/concurrent-detect.git")
+
+	db, err := sql.Open("sqlite3", "file:"+filepath.Join(dir, "projects.db")+"?_busy_timeout=5000&_journal_mode=WAL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE projects (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		path TEXT UNIQUE NOT NULL,
+		source_tool TEXT,
+		remote_key TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	d := NewDetector(db)
+
+	const callers = 16
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			p, err := d.Detect(repo)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if p == nil {
+				errs <- fmt.Errorf("Detect returned no project for a git repository")
+				return
+			}
+			ids <- p.ID
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Detect: %v", err)
+	}
+	seen := map[string]bool{}
+	for id := range ids {
+		seen[id] = true
+	}
+	if len(seen) != 1 {
+		t.Fatalf("concurrent Detect returned %d project ids, want 1: %v", len(seen), seen)
 	}
 }
