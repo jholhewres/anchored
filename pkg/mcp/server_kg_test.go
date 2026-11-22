@@ -59,7 +59,9 @@ func TestKGAddHoldsTheTripleBehindADownRemote(t *testing.T) {
 // so the next calls neither wait nor ask that remote again.
 func TestKGAddHoldsBehindASilentRemoteOnce(t *testing.T) {
 	prev := kgAddWriteBudget
-	kgAddWriteBudget = 300 * time.Millisecond
+	// Large enough that the later calls' own work (a git call to detect the
+	// project, a write) stays well under half of it on a slow CI runner.
+	kgAddWriteBudget = 1500 * time.Millisecond
 	t.Cleanup(func() { kgAddWriteBudget = prev })
 
 	repo, svc, cfg := newRemoteSearchFixture(t)

@@ -233,7 +233,9 @@ func TestRemoteSkillProbeCachesASilentRemote(t *testing.T) {
 		t.Fatalf("skill probe deadline %s ends within the read resolver's bound %s", got, bound)
 	}
 	prev := remoteReadProbeTimeout
-	remoteReadProbeTimeout = 200 * time.Millisecond
+	// Large enough that a probe's own work (a git call to detect the
+	// project) stays well under half of it on a slow CI runner.
+	remoteReadProbeTimeout = 1500 * time.Millisecond
 	t.Cleanup(func() { remoteReadProbeTimeout = prev })
 
 	repo, svc, cfg := newRemoteSearchFixture(t)
