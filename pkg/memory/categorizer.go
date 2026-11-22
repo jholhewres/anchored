@@ -1,6 +1,9 @@
 package memory
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 type categoryPattern struct {
 	re       *regexp.Regexp
@@ -81,6 +84,25 @@ func init() {
 			category: p.category,
 		})
 	}
+}
+
+// Categories are the categories a save may be given.
+var Categories = []string{"fact", "preference", "decision", "event", "learning", "plan", "summary"}
+
+// NormalizeCategory folds a category a caller gave (a tool argument, a CLI
+// flag) to its canonical spelling: ok is false for one outside Categories.
+// An empty category stays empty, for Categorize to pick.
+func NormalizeCategory(category string) (string, bool) {
+	c := strings.ToLower(strings.TrimSpace(category))
+	if c == "" {
+		return "", true
+	}
+	for _, known := range Categories {
+		if c == known {
+			return c, true
+		}
+	}
+	return category, false
 }
 
 func Categorize(content string) string {

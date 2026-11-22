@@ -359,19 +359,6 @@ func TestRemoteOutboxDestinationSurvivesConfigRename(t *testing.T) {
 	}
 }
 
-func TestRemoteSaveContentRedactsProjectRootBeforeSnapshot(t *testing.T) {
-	content, _, ok := remotesync.ClassifyForRemote(memory.Memory{
-		Category: "decision",
-		Content:  "use /home/test/work/repo/config.yaml for the local fixture",
-	}, "/home/test/work/repo")
-	if !ok {
-		t.Fatal("project-local path was unexpectedly blocked")
-	}
-	if strings.Contains(content, "/home/test/work/repo") || !strings.Contains(content, "./config.yaml") {
-		t.Fatalf("redacted content = %q", content)
-	}
-}
-
 func TestRemoteOutboxReconcilesAfterServiceRestart(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "restart-outbox.db")
@@ -853,7 +840,9 @@ func TestToolSaveExplicitRemoteRunsTheClassifier(t *testing.T) {
 
 	var mu sync.Mutex
 	var sent []string
+	var requests atomic.Int32
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		switch r.URL.Path {
 		case "/v1/projects":
 			if _, err := fmt.Fprintf(w, `[{"id":"remote-project","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
@@ -903,17 +892,51 @@ func TestToolSaveExplicitRemoteRunsTheClassifier(t *testing.T) {
 		{"user scope outside a repository", map[string]any{"content": "the staging cluster restarts every night at three", "category": "fact", "cwd": scratch}, "user_scope_blocked"},
 		{"secret", map[string]any{"content": "the deploy bot uses ghp_" + strings.Repeat("a", 36), "category": "decision", "cwd": repo}, "secret_pattern"},
 	} {
+		before := requests.Load()
 		if out := save(tc.fields); !strings.Contains(out, "remote: blocked by safety policy: "+tc.reason) {
 			t.Errorf("%s: save output = %q, want it blocked as %s", tc.name, out, tc.reason)
 		}
+		if n := requests.Load() - before; n != 0 {
+			t.Errorf("%s: a save the classifier blocks made %d requests to the remote", tc.name, n)
+		}
 	}
-	const decision = "decision: explicit remote saves run the auto-sync classifier"
-	if out := save(map[string]any{"content": decision, "category": "decision", "cwd": repo}); !strings.Contains(out, "(remote: saved to team)") {
-		t.Fatalf("project decision: save output = %q, want it sent", out)
+
+	// A save that names its remote skips only the quality gates: a short
+	// decision goes, and a project path in it goes relative.
+	const short = "Settled on Postgres for the queue"
+	configAt := "decision: the queue reads its settings from " + filepath.Join(proj.Path, "config", "queue.yaml")
+	for _, content := range []string{short, configAt} {
+		if out := save(map[string]any{"content": content, "category": "decision", "cwd": repo}); !strings.Contains(out, "(remote: saved to team)") {
+			t.Fatalf("project decision %q: save output = %q, want it sent", content, out)
+		}
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	if len(sent) != 1 || sent[0] != decision {
-		t.Fatalf("the remote received %q, want only the project decision", sent)
+	got := append([]string(nil), sent...)
+	mu.Unlock()
+	want := []string{short, "decision: the queue reads its settings from ./config/queue.yaml"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("the remote received %q, want %q", got, want)
+	}
+
+	// Without `remote`, auto-sync keeps a scope=user memory local too.
+	args, err := json.Marshal(map[string]any{"content": "Decided that my review notes on the payment migration stay with me", "category": "decision", "scope": "user", "cwd": repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := srv.toolSave(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "local only — blocked by safety policy") {
+		t.Fatalf("auto-sync save with scope user: output = %q, want it kept local", out)
+	}
+
+	// A category outside the known ones is refused before anything is saved.
+	args, err = json.Marshal(map[string]any{"content": "a note about the dentist", "category": "note", "cwd": repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.toolSave(context.Background(), args); err == nil || !strings.Contains(err.Error(), "unknown category") {
+		t.Fatalf("save with category note: err = %v, want unknown category", err)
 	}
 }

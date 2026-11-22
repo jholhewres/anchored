@@ -1,14 +1,9 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/jholhewres/anchored/pkg/config"
@@ -16,46 +11,29 @@ import (
 )
 
 // TestSaveRemote_RunsTheClassifier locks `anchored save --remote` to the
-// auto-sync classifier: a memory saved outside a repository (user scope) or
-// carrying a secret stays local with a warning that names the reason, and a
-// project decision is still sent.
+// auto-sync classifier, without its quality gates: a memory saved outside a
+// repository (user scope) or carrying a secret stays local with a warning
+// that names the reason, and the remote is not even contacted; a project
+// decision is sent, a short one too, with a path in the project made
+// relative.
 func TestSaveRemote_RunsTheClassifier(t *testing.T) {
 	base := t.TempDir()
 	repo := filepath.Join(base, "repo")
 	key := gitRepo(t, repo, "https://github.com/acme/classifier.git")
+	realRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scratch := filepath.Join(base, "scratch")
-
-	var mu sync.Mutex
-	var sent []string
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/projects":
-			if _, err := fmt.Fprintf(w, `[{"id":"rp-1","name":"x","slug":"x","remote_key":%q}]`, key); err != nil {
-				t.Errorf("write projects: %v", err)
-			}
-		case "/v1/memories":
-			var m remotesync.RemoteMemory
-			if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-				t.Errorf("decode memory: %v", err)
-			}
-			mu.Lock()
-			sent = append(sent, m.Content)
-			mu.Unlock()
-			w.WriteHeader(http.StatusCreated)
-			if _, err := w.Write([]byte(`{"id":"r1","created":true}`)); err != nil {
-				t.Errorf("write: %v", err)
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(remote.Close)
-	cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
-		"default": {ServerURL: remote.URL, APIKey: "<REDACTED>", Default: true, Projects: []string{"rp-1"}},
-	})
 	if err := os.MkdirAll(scratch, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	remote := newFakeRemote(t, "team")
+	remote.projects = []remotesync.RemoteProject{{ID: "rp-1", Slug: "classifier", RemoteKey: key}}
+	cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
+		"default": {ServerURL: remote.URL, APIKey: "<REDACTED>", Default: true, Projects: []string{"rp-1"}},
+	})
 
 	for _, tc := range []struct {
 		dir, content, category, reason string
@@ -63,19 +41,31 @@ func TestSaveRemote_RunsTheClassifier(t *testing.T) {
 		{scratch, "personal note: the staging cluster restarts every night at three", "fact", "user_scope_blocked"},
 		{repo, "the deploy bot authenticates with ghp_" + strings.Repeat("a", 36), "decision", "secret_pattern"},
 	} {
+		before := remote.snapshot().requests
 		out, code := runCLI(t, tc.dir, "save", tc.content, "--category", tc.category, "--remote=default", "--config", cfgPath)
 		if code != 0 || !strings.Contains(out, "blocked by the safety policy ("+tc.reason+")") {
 			t.Errorf("save %q exited %d, want a warning naming %s\n%s", tc.content, code, tc.reason, out)
 		}
+		if n := remote.snapshot().requests - before; n != 0 {
+			t.Errorf("save %q made %d requests to the remote it blocked", tc.content, n)
+		}
 	}
-	const decision = "Decided that remote saves named on the command line run the same classifier as auto-sync"
-	out, code := runCLI(t, repo, "save", decision, "--category", "decision", "--remote=default", "--config", cfgPath)
-	if code != 0 || !strings.Contains(out, "Saved to remote default") {
-		t.Fatalf("project decision: exited %d, want it sent\n%s", code, out)
+
+	const short = "Settled on Postgres for the queue"
+	inRepo := "Decided that the queue reads " + filepath.Join(realRepo, "config", "queue.yaml") + " at startup"
+	for _, content := range []string{short, inRepo} {
+		out, code := runCLI(t, repo, "save", content, "--category", "decision", "--remote=default", "--config", cfgPath)
+		if code != 0 || !strings.Contains(out, "Saved to remote default") {
+			t.Fatalf("project decision %q: exited %d, want it sent\n%s", content, code, out)
+		}
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(sent) != 1 || sent[0] != decision {
-		t.Fatalf("the remote received %q, want only the project decision", sent)
+	got := remote.snapshot().pushed["rp-1"]
+	want := []string{short, "Decided that the queue reads ./config/queue.yaml at startup"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("the remote received %q, want %q", got, want)
+	}
+
+	if out, code := runCLI(t, repo, "save", "a note about the dentist", "--category", "note", "--config", cfgPath); code == 0 || !strings.Contains(out, "unknown category") {
+		t.Fatalf("save --category note exited %d, want a refusal\n%s", code, out)
 	}
 }

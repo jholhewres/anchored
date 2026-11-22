@@ -187,17 +187,17 @@ func TestMemoryMetadata_ToAny_NonEmpty(t *testing.T) {
 	}
 }
 
-func TestWithPreferenceScope_DefaultsPreferenceToUser(t *testing.T) {
-	metadata := WithPreferenceScope(nil, "preference", "")
+func TestWithSaveScope_DefaultsPreferenceToUser(t *testing.T) {
+	metadata := WithSaveScope(nil, "preference", "")
 	m := ParseMetadata(metadata)
 	if m.PreferenceScope != PreferenceScopeUser {
 		t.Fatalf("expected default preference scope %q, got %q", PreferenceScopeUser, m.PreferenceScope)
 	}
 }
 
-func TestWithPreferenceScope_ExplicitScopes(t *testing.T) {
+func TestWithSaveScope_ExplicitScopes(t *testing.T) {
 	for _, scope := range []string{PreferenceScopeUser, PreferenceScopeProject, PreferenceScopeTeam} {
-		metadata := WithPreferenceScope(nil, "preference", scope)
+		metadata := WithSaveScope(nil, "preference", scope)
 		m := ParseMetadata(metadata)
 		if m.PreferenceScope != scope {
 			t.Fatalf("expected preference scope %q, got %q", scope, m.PreferenceScope)
@@ -205,15 +205,15 @@ func TestWithPreferenceScope_ExplicitScopes(t *testing.T) {
 	}
 }
 
-func TestWithPreferenceScope_IgnoresNonPreference(t *testing.T) {
-	metadata := WithPreferenceScope(nil, "decision", PreferenceScopeTeam)
+func TestWithSaveScope_IgnoresNonPreference(t *testing.T) {
+	metadata := WithSaveScope(nil, "decision", PreferenceScopeTeam)
 	if metadata != nil {
 		t.Fatalf("expected non-preference metadata to remain nil, got %#v", metadata)
 	}
 }
 
-func TestWithPreferenceScope_ClearsStalePreferenceScopeForNonPreference(t *testing.T) {
-	metadata := WithPreferenceScope(MemoryMetadata{
+func TestWithSaveScope_ClearsStalePreferenceScopeForNonPreference(t *testing.T) {
+	metadata := WithSaveScope(MemoryMetadata{
 		Source:          "import",
 		PreferenceScope: PreferenceScopeTeam,
 	}.ToAny(), "decision", "")

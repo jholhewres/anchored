@@ -1,6 +1,8 @@
 package sync
 
 import (
+	"strings"
+
 	"github.com/jholhewres/anchored/pkg/memory"
 )
 
@@ -10,75 +12,7 @@ func ClassifyForPreview(memories []Memory, projectRoot string) PreviewResult {
 	}
 
 	for i := range memories {
-		m := &memories[i]
-		item := PreviewItem{Memory: *m}
-
-		meta := toMap(m.Metadata)
-		filterResult := RemoteSafetyFilter(m.Content, meta, projectRoot)
-		item.Memory.Content = filterResult.Content
-
-		scope := m.PreferenceScope
-		if scope == "" {
-			scope = preferenceScope(meta)
-		}
-
-		lifecycle := memory.ParseMetadata(m.Metadata)
-
-		switch {
-		case filterResult.Blocked:
-			item.Classification = ClassificationBlocked
-			item.Reason = violationReason(filterResult.Violations)
-
-		case m.SyncOrigin != "" && m.SyncOrigin != "local":
-			item.Classification = ClassificationNeedsReview
-			item.Reason = "already_synced"
-
-		case m.SyncDirty:
-			item.Classification = ClassificationNeedsReview
-			item.Reason = "pending_changes"
-
-		case lifecycle.MemoryType == memory.MemoryTypeEpisodic:
-			item.Classification = ClassificationBlocked
-			item.Reason = "episodic_local_only"
-		case lifecycle.Kind == "precompact":
-			item.Classification = ClassificationBlocked
-			item.Reason = "precompact_local_only"
-		case lifecycle.Origin == memory.OriginPrecompact:
-			item.Classification = ClassificationBlocked
-			item.Reason = "precompact_origin"
-		case lifecycle.MemoryType == memory.MemoryTypeOperational && lifecycle.Kind != "handoff":
-			item.Classification = ClassificationBlocked
-			item.Reason = "operational_local_only"
-
-		case lifecycle.Scope == memory.ScopeUser:
-			item.Classification = ClassificationBlocked
-			item.Reason = "user_scope_blocked"
-
-		case lifecycle.CurationStatus == memory.CurationStatusLowSignal:
-			item.Classification = ClassificationBlocked
-			item.Reason = "low_signal"
-
-		case lifecycle.QualityScore > 0 && lifecycle.QualityScore < memory.RemoteQualityThreshold && !lifecycle.Pinned:
-			item.Classification = ClassificationBlocked
-			item.Reason = "low_quality"
-
-		case scope == "user":
-			item.Classification = ClassificationBlocked
-			item.Reason = "personal_preference"
-
-		case m.Category == "event" || m.Category == "preference":
-			item.Classification = ClassificationBlocked
-			item.Reason = "category_remote_blocked"
-
-		case lifecycle.IsRemoteSyncCandidate():
-			item.Classification = ClassificationSyncable
-			item.Reason = ""
-
-		default:
-			item.Classification = ClassificationSyncable
-			item.Reason = ""
-		}
-
+		item := classifyMemory(memories[i], projectRoot, true)
 		switch item.Classification {
 		case ClassificationSyncable:
 			result.Syncable++
@@ -87,11 +21,86 @@ func ClassifyForPreview(memories []Memory, projectRoot string) PreviewResult {
 		case ClassificationNeedsReview:
 			result.NeedsReview++
 		}
-
 		result.Items = append(result.Items, item)
 	}
 
 	return result
+}
+
+// classifyMemory is one memory's classification. quality says whether the
+// quality gates (low_signal, low_quality) apply; every privacy rule always
+// does.
+func classifyMemory(mem Memory, projectRoot string, quality bool) PreviewItem {
+	m := &mem
+	item := PreviewItem{Memory: *m}
+
+	meta := toMap(m.Metadata)
+	filterResult := RemoteSafetyFilter(m.Content, meta, projectRoot)
+	item.Memory.Content = filterResult.Content
+
+	scope := m.PreferenceScope
+	if scope == "" {
+		scope = preferenceScope(meta)
+	}
+
+	lifecycle := memory.ParseMetadata(m.Metadata)
+
+	switch {
+	case filterResult.Blocked:
+		item.Classification = ClassificationBlocked
+		item.Reason = violationReason(filterResult.Violations)
+
+	case m.SyncOrigin != "" && m.SyncOrigin != "local":
+		item.Classification = ClassificationNeedsReview
+		item.Reason = "already_synced"
+
+	case m.SyncDirty:
+		item.Classification = ClassificationNeedsReview
+		item.Reason = "pending_changes"
+
+	case lifecycle.MemoryType == memory.MemoryTypeEpisodic:
+		item.Classification = ClassificationBlocked
+		item.Reason = "episodic_local_only"
+	case lifecycle.Kind == "precompact":
+		item.Classification = ClassificationBlocked
+		item.Reason = "precompact_local_only"
+	case lifecycle.Origin == memory.OriginPrecompact:
+		item.Classification = ClassificationBlocked
+		item.Reason = "precompact_origin"
+	case lifecycle.MemoryType == memory.MemoryTypeOperational && lifecycle.Kind != "handoff":
+		item.Classification = ClassificationBlocked
+		item.Reason = "operational_local_only"
+
+	case lifecycle.Scope == memory.ScopeUser:
+		item.Classification = ClassificationBlocked
+		item.Reason = "user_scope_blocked"
+
+	case quality && lifecycle.CurationStatus == memory.CurationStatusLowSignal:
+		item.Classification = ClassificationBlocked
+		item.Reason = "low_signal"
+
+	case quality && lifecycle.QualityScore > 0 && lifecycle.QualityScore < memory.RemoteQualityThreshold && !lifecycle.Pinned:
+		item.Classification = ClassificationBlocked
+		item.Reason = "low_quality"
+
+	case scope == "user":
+		item.Classification = ClassificationBlocked
+		item.Reason = "personal_preference"
+
+	case strings.EqualFold(m.Category, "event") || strings.EqualFold(m.Category, "preference"):
+		item.Classification = ClassificationBlocked
+		item.Reason = "category_remote_blocked"
+
+	case lifecycle.IsRemoteSyncCandidate():
+		item.Classification = ClassificationSyncable
+		item.Reason = ""
+
+	default:
+		item.Classification = ClassificationSyncable
+		item.Reason = ""
+	}
+
+	return item
 }
 
 func toMap(v any) map[string]any {

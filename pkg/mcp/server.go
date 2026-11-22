@@ -1338,6 +1338,11 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	p.CWD = defaultCWD(p.CWD)
+	category, ok := memory.NormalizeCategory(p.Category)
+	if !ok {
+		return "", fmt.Errorf("unknown category %q: use one of %s", p.Category, strings.Join(memory.Categories, ", "))
+	}
+	p.Category = category
 
 	var (
 		target    *config.RemoteEntry
@@ -1404,22 +1409,21 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 	if p.Remote != nil && s.cfg != nil {
 		// Preserve the local-first contract for explicit remote saves: the
 		// SQLite commit above must complete before any network lookup can
-		// block, fail, or observe cancellation.
-		if target != nil {
+		// block, fail, or observe cancellation. The classifier runs first,
+		// so a memory it keeps local makes no network call at all.
+		content, reason, sendable := remotesync.ClassifyForNamedRemote(*m, s.projectFilterRoot(ctx, m.ProjectID))
+		if sendable && target != nil {
 			client := remotesync.NewClientFromEntry(*target, "mcp")
 			projectID, _ = s.resolveRemoteProjectID(ctx, client, *target, p.CWD)
 		}
 		switch {
+		case !sendable:
+			result += fmt.Sprintf(" (remote: blocked by safety policy: %s, local save preserved)", reason)
 		case target == nil:
 			result += " (remote: no remote configured, skipped)"
 		case projectID == "":
 			result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
 		default:
-			content, reason, ok := remotesync.ClassifyForRemote(*m, s.projectFilterRoot(ctx, m.ProjectID))
-			if !ok {
-				result += fmt.Sprintf(" (remote: blocked by safety policy: %s, local save preserved)", reason)
-				break
-			}
 			remoteMemory := remotesync.RemoteMemory{
 				ID: m.ID, Category: m.Category, Content: content,
 				Source: "mcp", ProjectID: projectID,
@@ -1792,11 +1796,10 @@ func (s *Server) repositoryRemoteKeys(cwd string) (canonicalKey, legacyKey strin
 // reads the project the save already detected, so it costs one query and no
 // git call on the save path.
 func (s *Server) projectFilterRoot(ctx context.Context, projectID *string) string {
-	if s.mem == nil || projectID == nil {
+	if s.mem == nil {
 		return ""
 	}
-	_, path := s.lookupProjectMeta(ctx, *projectID)
-	return path
+	return s.mem.ProjectPath(ctx, projectID)
 }
 
 // forgetAutoRemoteTarget drops what the cache holds for cwd's repository.

@@ -47,10 +47,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `anchored_save` with `remote` and `anchored save --remote` only blocked
   events and preferences (the CLI not even that, nor secrets), so a memory in
   your personal scope went to the team server. Both now run the same
-  classifier as auto-sync and the preview, and say why a memory stayed
-  local. `scope: user` on any category now keeps the memory in your personal
-  scope; before, it counted only for preferences and was dropped. The
-  `/anchored:save` command no longer tells agents to pass `--remote`.
+  privacy rules as auto-sync and the preview, before the remote is even
+  contacted, and say why a memory stayed local; naming the remote skips only
+  the quality gates, so a short decision still goes. `scope: user` on any
+  category now keeps the memory in your personal scope (before, it counted
+  only for preferences and was dropped), and so does any scope other than
+  `project` or `team`. A category outside the seven is refused instead of
+  saved without a scope. `anchored save` auto-sync also checks paths against
+  the repository's root. The `/anchored:save` command no longer tells agents
+  to pass `--remote`.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
   and any error body up to 64 KiB; a longer listing fails the lookup like a

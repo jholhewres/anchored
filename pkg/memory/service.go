@@ -177,7 +177,7 @@ func (s *Service) saveWithOptions(
 	if opts.Metadata != nil {
 		metadata = opts.Metadata
 	} else {
-		metadata = WithPreferenceScope(nil, opts.Category, opts.PreferenceScope)
+		metadata = WithSaveScope(nil, opts.Category, opts.PreferenceScope)
 	}
 
 	var projectID *string
@@ -203,7 +203,7 @@ func (s *Service) saveWithOptions(
 		existing = s.findNearDuplicate(ctx, opts.Content, projectID)
 	}
 	if existing != nil {
-		metadata = WithPreferenceScope(existing.Metadata, opts.Category, opts.PreferenceScope)
+		metadata = WithSaveScope(existing.Metadata, opts.Category, opts.PreferenceScope)
 		metadata = ApplyQualityMetadata(metadata, opts.Content, opts.Category, hasProject)
 		upd := Memory{
 			ID:          existing.ID,
@@ -645,6 +645,23 @@ func (s *Service) PendingEmbeddings(ctx context.Context) (int, error) {
 }
 
 // ResolveProject returns the project ID for a given working directory, or empty string if none.
+// ProjectPath is the root of the project a memory was saved under, from the
+// project row the save detected: one query, no git call. "" when the memory
+// has no project.
+func (s *Service) ProjectPath(ctx context.Context, projectID *string) string {
+	if projectID == nil || *projectID == "" || s.StoreDB() == nil {
+		return ""
+	}
+	var path string
+	if err := s.StoreDB().QueryRowContext(ctx, "SELECT path FROM projects WHERE id = ?", *projectID).Scan(&path); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			s.logger.Warn("project path lookup failed", "project_id", *projectID, "error", err)
+		}
+		return ""
+	}
+	return path
+}
+
 func (s *Service) ResolveProject(cwd string) string {
 	if cwd == "" || s.projDet == nil {
 		return ""

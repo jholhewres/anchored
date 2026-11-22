@@ -28,6 +28,12 @@ func runSave(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: anchored save <content> [--category] [--project] [--remote]")
 		os.Exit(1)
 	}
+	normalized, ok := memory.NormalizeCategory(*category)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown category %q: use one of %s\n", *category, strings.Join(memory.Categories, ", "))
+		os.Exit(1)
+	}
+	*category = normalized
 
 	cfg, _, svc, err := initService(*configPath)
 	if err != nil {
@@ -70,7 +76,7 @@ func autoSyncRemote(ctx context.Context, cfg *config.Config, svc *memory.Service
 	if entry == nil || !entry.AutoSyncEnabled() {
 		return
 	}
-	redacted, ok := sync.ClassifyForAutoSync(*m, remoteFilterRoot(svc, cwd))
+	redacted, _, ok := sync.ClassifyForRemote(*m, svc.ProjectPath(ctx, m.ProjectID))
 	if !ok {
 		return
 	}
@@ -115,6 +121,15 @@ func autoSyncRemote(ctx context.Context, cfg *config.Config, svc *memory.Service
 }
 
 func pushRemote(ctx context.Context, cfg *config.Config, svc *memory.Service, m *memory.Memory, remoteName, projectOverride string) {
+	// Naming the remote loosens no privacy rule: the memory passes the same
+	// classifier as auto-sync (without its quality gates) before any remote
+	// is contacted, and only its redacted content is sent.
+	content, reason, ok := sync.ClassifyForNamedRemote(*m, svc.ProjectPath(ctx, m.ProjectID))
+	if !ok {
+		fmt.Fprintf(os.Stderr, "warning: remote save skipped: blocked by the safety policy (%s); the local save is kept\n", reason)
+		return
+	}
+
 	var entry *config.RemoteEntry
 	if remoteName != "" {
 		r, ok := cfg.Remotes[remoteName]
@@ -157,14 +172,6 @@ func pushRemote(ctx context.Context, cfg *config.Config, svc *memory.Service, m 
 		return
 	}
 
-	// Naming the remote loosens nothing: the memory passes the same
-	// classifier as auto-sync, and only its redacted content is sent.
-	cwd, _ := os.Getwd()
-	content, reason, ok := sync.ClassifyForRemote(*m, remoteFilterRoot(svc, cwd))
-	if !ok {
-		fmt.Fprintf(os.Stderr, "warning: remote save skipped: blocked by the safety policy (%s); the local save is kept\n", reason)
-		return
-	}
 	mem := sync.RemoteMemory{
 		ID:        m.ID,
 		Category:  m.Category,
@@ -184,17 +191,6 @@ func pushRemote(ctx context.Context, cfg *config.Config, svc *memory.Service, m 
 	}
 
 	fmt.Printf("Saved to remote %s [%s]\n", entry.Name, resp.ID)
-}
-
-// remoteFilterRoot is the project root the remote safety filter lets local
-// paths through under: the repository's root, or none outside a repository,
-// as the MCP server does.
-func remoteFilterRoot(svc *memory.Service, cwd string) string {
-	proj, err := svc.ResolveProjectInfo(cwd)
-	if err != nil || proj == nil || proj.RemoteKey == "" {
-		return ""
-	}
-	return proj.Path
 }
 
 func hasExplicitFlag(args []string, name string) bool {

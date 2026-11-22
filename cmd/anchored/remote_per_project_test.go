@@ -98,6 +98,18 @@ func newFakeRemote(t *testing.T, name string) *fakeRemote {
 		}
 		reply(w, remotesync.SyncPushResponse{Accepted: len(req.Memories), ProjectID: req.ProjectID})
 	})
+	mux.HandleFunc("POST /v1/memories", func(w http.ResponseWriter, r *http.Request) {
+		var m remotesync.RemoteMemory
+		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.pushed[m.ProjectID] = append(f.pushed[m.ProjectID], m.Content)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		reply(w, remotesync.SaveRemoteResponse{ID: "r-" + m.ID, Created: true})
+	})
 	mux.HandleFunc("POST /v1/projects/{id}/triples", func(w http.ResponseWriter, r *http.Request) {
 		var req remotesync.SyncTripleRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -95,7 +95,7 @@ type SaveOptions struct {
 	// Empty defaults to "user" so inferred preferences remain local/personal by default.
 	PreferenceScope string
 	// Metadata overrides the auto-generated metadata for this save.
-	// When non-nil, takes precedence over WithPreferenceScope logic.
+	// When non-nil, takes precedence over WithSaveScope logic.
 	// Callers should construct MemoryMetadata and call ToAny(), or use
 	// the HandoffMetadata helper for handoff snapshots.
 	Metadata any

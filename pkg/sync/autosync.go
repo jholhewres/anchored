@@ -2,29 +2,27 @@ package sync
 
 import "github.com/jholhewres/anchored/pkg/memory"
 
-// ClassifyForAutoSync decides whether a single memory may leave the machine for
-// the auto write-through path. It runs the same classification as the
-// preview/sync path (secrets, local paths, user scope, episodic/precompact, low
-// quality, blocked categories). When syncable it returns the REDACTED content
-// (home paths rewritten to <user-home>, etc.) — callers MUST push this, never
-// the original, so redactions aren't bypassed. ok is false for anything not
-// classified Syncable.
-func ClassifyForAutoSync(m memory.Memory, projectRoot string) (content string, ok bool) {
-	content, _, ok = ClassifyForRemote(m, projectRoot)
-	return content, ok
+// ClassifyForRemote decides whether a memory may leave the machine on the
+// automatic paths (auto-sync, the outbox), with the same classification as
+// the preview and `remote sync`: secrets, local paths, user scope,
+// episodic/operational/precompact, low quality, blocked categories. When it
+// may, content is the REDACTED form (project paths made relative, secrets
+// redacted): callers MUST send that, never the original. reason is the
+// preview's reason for one it blocks ("user_scope_blocked",
+// "secret_pattern", ...).
+func ClassifyForRemote(m memory.Memory, projectRoot string) (content, reason string, ok bool) {
+	return classifyForRemote(m, projectRoot, true)
 }
 
-// ClassifyForRemote is ClassifyForAutoSync for any save that sends a memory to
-// a remote, automatic or asked for by name: a save that names its remote
-// gets no looser rules, so a user-scope or personal memory never leaves the
-// machine either way. reason is the preview's reason for a memory it blocks
-// ("user_scope_blocked", "secret_pattern", ...).
-func ClassifyForRemote(m memory.Memory, projectRoot string) (content, reason string, ok bool) {
-	res := ClassifyForPreview([]Memory{ToSyncMemory(m)}, projectRoot)
-	if len(res.Items) != 1 {
-		return "", "unclassified", false
-	}
-	item := res.Items[0]
+// ClassifyForNamedRemote is ClassifyForRemote for a save that names its
+// remote: every privacy rule applies, but not the quality gates (low_signal,
+// low_quality), since the person asked for this memory to go.
+func ClassifyForNamedRemote(m memory.Memory, projectRoot string) (content, reason string, ok bool) {
+	return classifyForRemote(m, projectRoot, false)
+}
+
+func classifyForRemote(m memory.Memory, projectRoot string, quality bool) (content, reason string, ok bool) {
+	item := classifyMemory(ToSyncMemory(m), projectRoot, quality)
 	if item.Classification != ClassificationSyncable {
 		return "", item.Reason, false
 	}

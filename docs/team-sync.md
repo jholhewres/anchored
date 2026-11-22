@@ -122,7 +122,7 @@ Automatic project creation must use a stable, non-personal identifier such as a 
 
 When the configured remote has `auto_sync` enabled (the default when a remote is configured), `anchored_save` (MCP **and** CLI) pushes each newly-saved memory to the linked remote project automatically — no manual `anchored remote sync` needed. It is **local-first**: the local save always completes synchronously and the remote push is best-effort/async, so a server outage never blocks or fails a save.
 
-Eligibility is decided by the same classification as `remote sync` (`ClassifyForAutoSync`): only `Syncable` memories leave the machine, and the content is the **redacted** form (home paths → `<user-home>`). User-scoped/personal/secret memories are never pushed. The target is the linked remote project (`remote.projects[0]`), not the local project id.
+Eligibility is decided by the same classification as `remote sync` (`ClassifyForRemote`): only `Syncable` memories leave the machine, and the content is the **redacted** form (home paths → `<user-home>`). User-scoped/personal/secret memories are never pushed. The target is the linked remote project (`remote.projects[0]`), not the local project id.
 
 Configure it in `~/.anchored/config.yaml`:
 
