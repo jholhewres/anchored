@@ -1,0 +1,152 @@
+[
+  {
+    "send": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "resources/list",
+      "params": {}
+    },
+    "recv": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "resources": [
+          {
+            "description": "Current memory database statistics",
+            "mimeType": "application/json",
+            "name": "Memory Statistics",
+            "uri": "anchored://memory/stats"
+          },
+          {
+            "description": "Last 10 saved memories",
+            "mimeType": "application/json",
+            "name": "Recent Memories",
+            "uri": "anchored://memory/recent"
+          },
+          {
+            "description": "The user's identity file (~/.anchored/identity.md)",
+            "mimeType": "text/plain",
+            "name": "Identity",
+            "uri": "anchored://identity"
+          },
+          {
+            "description": "List of all known projects",
+            "mimeType": "text/plain",
+            "name": "Projects",
+            "uri": "anchored://projects"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": {
+        "uri": "anchored://memory/stats"
+      }
+    },
+    "recv": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": [
+          {
+            "mimeType": "text/plain",
+            "text": "Total: 0\nCategories: map[]\nProjects: map[]",
+            "uri": "anchored://memory/stats"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": {
+        "uri": "anchored://memory/recent"
+      }
+    },
+    "recv": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": [
+          {
+            "mimeType": "text/plain",
+            "text": "No memories yet.",
+            "uri": "anchored://memory/recent"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": {
+        "uri": "anchored://identity"
+      }
+    },
+    "recv": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": [
+          {
+            "mimeType": "text/plain",
+            "text": "No identity file configured. Use 'anchored identity edit' to create one.",
+            "uri": "anchored://identity"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": {
+        "uri": "anchored://projects"
+      }
+    },
+    "recv": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": [
+          {
+            "mimeType": "text/plain",
+            "text": "No projects registered.",
+            "uri": "anchored://projects"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": {
+        "uri": "anchored://nope"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32601,
+        "message": "unknown resource: anchored://nope"
+      },
+      "id": 7,
+      "jsonrpc": "2.0"
+    }
+  }
+]

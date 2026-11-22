@@ -1,0 +1,140 @@
+[
+  {
+    "send": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "start",
+          "cwd": "<TMP>/repo",
+          "key": "conf-1",
+          "session_id": "conformance-session"
+        },
+        "name": "anchored_task"
+      }
+    },
+    "recv": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Started/updated task: **CONF-1** [active]\nprojects: 1 · sessions: 1 · journal: 0",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "note",
+          "cwd": "<TMP>/repo",
+          "key": "conf-1",
+          "note": "Golden transcript recorded.",
+          "session_id": "conformance-session"
+        },
+        "name": "anchored_task"
+      }
+    },
+    "recv": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Journal note added: **CONF-1** [active]\nprojects: 1 · sessions: 1 · journal: 1\nlatest note: Golden transcript recorded.",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "status",
+          "cwd": "<TMP>/repo",
+          "key": "conf-1",
+          "status": "paused"
+        },
+        "name": "anchored_task"
+      }
+    },
+    "recv": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Status updated: **CONF-1** [paused]\nprojects: 1 · sessions: 1 · journal: 1\nlatest note: Golden transcript recorded.",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "get",
+          "cwd": "<TMP>/repo",
+          "key": "conf-1"
+        },
+        "name": "anchored_task"
+      }
+    },
+    "recv": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Task: **CONF-1** [paused]\nprojects: 1 · sessions: 1 · journal: 1\nlatest note: Golden transcript recorded.",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "list",
+          "cwd": "<TMP>/repo"
+        },
+        "name": "anchored_task"
+      }
+    },
+    "recv": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "1 task thread(s):\n- CONF-1 [paused] — Golden transcript recorded.\n",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  }
+]

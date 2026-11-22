@@ -1,0 +1,175 @@
+[
+  {
+    "send": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "code": "echo conformance-execute",
+          "language": "shell"
+        },
+        "name": "anchored_execute"
+      }
+    },
+    "recv": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "```\nconformance-execute\n\n```\nExit: 0 (<dur>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "code": "wc -l < \"$FILE_PATH\" | tr -d ' '",
+          "language": "shell",
+          "path": "<TMP>/repo/notes.md"
+        },
+        "name": "anchored_execute_file"
+      }
+    },
+    "recv": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "```\n3\n\n```\nExit: 0 (<dur>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "content": "# Deploy\n\nThe conformance deploy runs blue-green on Fridays.\n\n# Rollback\n\nRoll back with the previous image tag.",
+          "source": "conformance-notes"
+        },
+        "name": "anchored_index"
+      }
+    },
+    "recv": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Indexed content from 'conformance-notes' (id: <id>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "queries": [
+            "blue-green deploy"
+          ]
+        },
+        "name": "anchored_ctx_search"
+      }
+    },
+    "recv": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "[conformance-notes] 1.000 — The conformance deploy runs blue-green on Fridays.",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "commands": [
+            {
+              "command": "echo conformance-batch",
+              "label": "greet",
+              "language": "shell"
+            }
+          ],
+          "queries": [
+            "conformance-batch"
+          ]
+        },
+        "name": "anchored_batch_execute"
+      }
+    },
+    "recv": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Batch executed 1 commands (18 bytes indexed).\n\nSearch results:\n1. [batch-output] conformance-batch\n",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "commands": [
+            {
+              "command": "echo conformance-batch",
+              "label": "greet"
+            }
+          ],
+          "queries": [
+            "conformance-batch"
+          ]
+        },
+        "name": "anchored_batch_execute"
+      }
+    },
+    "recv": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Batch executed 1 commands (0 bytes indexed).\n\nSearch results:\n1. [batch-output] conformance-batch\n\n\nCommand 1 failed (exit 1): unsupported language: ",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  }
+]

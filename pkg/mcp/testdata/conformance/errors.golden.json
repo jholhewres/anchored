@@ -1,0 +1,223 @@
+[
+  {
+    "send": "this is not json",
+    "recv": {
+      "error": {
+        "code": -32700,
+        "message": "parse request: invalid character 'h' in literal true (expecting 'r')"
+      },
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 91,
+      "jsonrpc": "1.0",
+      "method": "ping"
+    },
+    "recv": {
+      "error": {
+        "code": -32700,
+        "message": "unsupported jsonrpc version: 1.0"
+      },
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "no/such/method",
+      "params": {}
+    },
+    "recv": {
+      "error": {
+        "code": -32601,
+        "message": "unknown method: no/such/method"
+      },
+      "id": 2,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": []
+    },
+    "recv": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params"
+      },
+      "id": 3,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {},
+        "name": "anchored_nope"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "unknown tool: anchored_nope"
+      },
+      "id": 4,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "category": "fact"
+        },
+        "name": "anchored_save"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "content cannot be empty"
+      },
+      "id": 5,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "category": "opinion",
+          "content": "x"
+        },
+        "name": "anchored_save"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "unknown category \"opinion\": use one of fact, preference, decision, event, learning, plan, summary"
+      },
+      "id": 6,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": "not an object",
+        "name": "anchored_save"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "parse args: json: cannot unmarshal string into Go value of type struct { Content string \"json:\\\"content\\\"\"; Category string \"json:\\\"category\\\"\"; CWD string \"json:\\\"cwd\\\"\"; Scope string \"json:\\\"scope\\\"\"; Remote *string \"json:\\\"remote\\\"\" }"
+      },
+      "id": 7,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "content": "x",
+          "id": "<id>"
+        },
+        "name": "anchored_update"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "memory <id> not found"
+      },
+      "id": 8,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "action": "search",
+          "cwd": "<TMP>/repo",
+          "intent": "deploy"
+        },
+        "name": "anchored_skill"
+      }
+    },
+    "recv": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "<anchored_skill status=\"unavailable\" reason=\"no_remote_project\">No remote project is resolved for this repository; skills remain unavailable until the project is linked or synced.</anchored_skill>",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 10,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {},
+        "name": "anchored_fetch_and_index"
+      }
+    },
+    "recv": {
+      "error": {
+        "code": -32603,
+        "message": "provide either 'url' or 'requests'"
+      },
+      "id": 10,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "send": {
+      "id": 11,
+      "jsonrpc": "2.0",
+      "method": "resources/read",
+      "params": []
+    },
+    "recv": {
+      "error": {
+        "code": -32602,
+        "message": "invalid params"
+      },
+      "id": 11,
+      "jsonrpc": "2.0"
+    }
+  }
+]

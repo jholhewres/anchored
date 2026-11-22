@@ -1,0 +1,110 @@
+[
+  {
+    "send": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "cwd": "<TMP>/repo",
+          "object": "postgres",
+          "predicate": "depends_on",
+          "subject": "conformance-api"
+        },
+        "name": "anchored_kg_add"
+      }
+    },
+    "recv": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Added relationship: conformance-api — depends_on → postgres (id: <id>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "cwd": "<TMP>/repo",
+          "entity": "conformance-api"
+        },
+        "name": "anchored_kg_query"
+      }
+    },
+    "recv": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "• conformance-api — depends_on → postgres",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "cwd": "<TMP>/repo",
+          "object": "fly",
+          "predicate": "deployed_on",
+          "subject": "conformance-api"
+        },
+        "name": "kg_add"
+      }
+    },
+    "recv": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Added relationship: conformance-api — deployed_on → fly (id: <id>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "cwd": "<TMP>/repo",
+          "entity": "conformance-api"
+        },
+        "name": "kg_query"
+      }
+    },
+    "recv": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "• conformance-api — depends_on → postgres\n• conformance-api — deployed_on → fly",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  }
+]
