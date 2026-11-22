@@ -804,15 +804,7 @@ func runRemoteSync(args []string) {
 		if kgErr != nil {
 			fmt.Fprintf(os.Stderr, "KG sync: warning: list triples failed: %v\n", kgErr)
 		} else if len(localTriples) > 0 {
-			syncTriples := make([]sync.SyncTriple, len(localTriples))
-			for i, t := range localTriples {
-				syncTriples[i] = sync.SyncTriple{
-					Subject:    t.Subject,
-					Predicate:  t.Predicate,
-					Object:     t.Object,
-					Confidence: t.Confidence,
-				}
-			}
+			syncTriples := sync.TriplesFromKG(localTriples)
 			// Resolve the remote project for the triples endpoint, which
 			// needs a concrete ID (no project_claim routing): prefer the
 			// ID the server resolved for this push (servers >= v0.4.4),
@@ -834,8 +826,11 @@ func runRemoteSync(args []string) {
 				fmt.Fprintf(os.Stderr, "KG sync: warning: push triples failed: %v\n", kgPushErr)
 			} else {
 				fmt.Printf("KG sync: %d accepted, %d rejected\n", kgResp.Accepted, kgResp.Rejected)
-				if kgResp.Withheld > 0 {
-					fmt.Printf("KG sync: %d kept local by the safety filter (secrets or local paths)\n", kgResp.Withheld)
+				if n := len(kgResp.Withheld); n > 0 {
+					fmt.Printf("KG sync: %d kept local by the safety filter (secrets or local paths)\n", n)
+					for _, w := range kgResp.Withheld {
+						fmt.Printf("  %s\n", w)
+					}
 				}
 				if len(kgResp.Errors) > 0 {
 					for _, e := range kgResp.Errors {

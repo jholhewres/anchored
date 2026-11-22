@@ -1,11 +1,14 @@
 package sync
 
 import (
+	"fmt"
 	"path"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jholhewres/anchored/pkg/config"
+	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
 )
 
@@ -28,11 +31,16 @@ type RemoteSafetyResult struct {
 }
 
 var (
-	linuxHomeRe    = regexp.MustCompile(`/home/[^/\s]+(?:/[\S]*)?`)
-	macOSHomeRe    = regexp.MustCompile(`/Users/[^/\s]+(?:/[\S]*)?`)
-	winHomeRe      = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\/\s]+(?:\\[^\s]*)?`)
-	tildeHomeRe    = regexp.MustCompile(`~/[\S]+`)
-	tmpPathsRe     = regexp.MustCompile(`(?:/tmp|/var/folders|/private/tmp)(?:/[\S]*)?`)
+	linuxHomeRe = regexp.MustCompile(`/home/[^/\s]+(?:/[\S]*)?`)
+	macOSHomeRe = regexp.MustCompile(`/Users/[^/\s]+(?:/[\S]*)?`)
+	winHomeRe   = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\/\s]+(?:\\[^\s]*)?`)
+	tildeHomeRe = regexp.MustCompile(`~/[\S]+`)
+	// tmpPathsRe and rootHomeRe match only where a path starts (the start of
+	// the text, or after a character a path cannot hold), so a folder named
+	// tmp or root inside another path is not taken for them. The path is
+	// group 1.
+	tmpPathsRe     = regexp.MustCompile(`(?:^|[^\w./~-])((?:/tmp|/var/folders|/private/tmp)(?:/[\S]*)?)`)
+	rootHomeRe     = regexp.MustCompile(`(?:^|[^\w./~-])((?:/root|/var/root)(?:/[\S]*)?)`)
 	awsAccessKeyRe = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
 	googleAPIKeyRe = regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`)
 	credURIRe      = regexp.MustCompile(`(?i)\b(mongodb|postgres|postgresql|mysql|redis)(\+srv)?:\/\/[^\s/@]*:[^\s/@]+@`)
@@ -100,26 +108,60 @@ func RemoteSafetyFilter(content string, metadata map[string]any, projectRoot str
 // many it held back. Subject, predicate and object are free text the model
 // writes, so each goes through RemoteSafetyFilter as a memory's content does:
 // a secret, or a local path outside projectRoot, holds the whole triple back,
-// and a path inside projectRoot is sent relative to it.
+// and a path inside projectRoot is sent relative to it. The triple is also
+// read as the sentences it states, since a secret rule may need the name in
+// the predicate and the value in the object ("db password: X").
 func SafeTriplesForRemote(triples []SyncTriple, projectRoot string) ([]SyncTriple, int) {
-	safe := make([]SyncTriple, 0, len(triples))
-	for _, t := range triples {
-		if out, ok := safeTriple(t, projectRoot); ok {
-			safe = append(safe, out)
-		}
-	}
-	return safe, len(triples) - len(safe)
+	safe, withheld := filterTriples(triples, projectRoot)
+	return safe, len(withheld)
 }
 
-func safeTriple(t SyncTriple, projectRoot string) (SyncTriple, bool) {
+// filterTriples is SafeTriplesForRemote that says, for each triple held back,
+// which one and why ("triple 2 blocked: secret_pattern"), numbered from 1 in
+// the order given.
+func filterTriples(triples []SyncTriple, projectRoot string) ([]SyncTriple, []string) {
+	safe := make([]SyncTriple, 0, len(triples))
+	var withheld []string
+	for i, t := range triples {
+		out, reason := SafeTriple(t, projectRoot)
+		if reason != "" {
+			withheld = append(withheld, fmt.Sprintf("triple %d blocked: %s", i+1, reason))
+			continue
+		}
+		safe = append(safe, out)
+	}
+	return safe, withheld
+}
+
+// SafeTriple is SafeTriplesForRemote for one triple: the triple to send, or
+// the reason it stays local ("" when it may go).
+func SafeTriple(t SyncTriple, projectRoot string) (SyncTriple, string) {
+	for _, sentence := range []string{
+		t.Subject + " " + t.Predicate + ": " + t.Object,
+		t.Predicate + ": " + t.Object,
+		t.Subject + ": " + t.Object,
+	} {
+		if r := RemoteSafetyFilter(sentence, nil, projectRoot); r.Blocked {
+			return SyncTriple{}, violationReason(r.Violations)
+		}
+	}
 	for _, field := range []*string{&t.Subject, &t.Predicate, &t.Object} {
 		r := RemoteSafetyFilter(*field, nil, projectRoot)
 		if r.Blocked {
-			return SyncTriple{}, false
+			return SyncTriple{}, violationReason(r.Violations)
 		}
 		*field = r.Content
 	}
-	return t, true
+	return t, ""
+}
+
+// TriplesFromKG is the wire form of local knowledge-graph triples.
+func TriplesFromKG(triples []kg.Triple) []SyncTriple {
+	out := make([]SyncTriple, len(triples))
+	for i, t := range triples {
+		out[i] = SyncTriple{Subject: t.Subject, Predicate: t.Predicate, Object: t.Object, Confidence: t.Confidence}
+	}
+	return out
 }
 
 func detectLocalPaths(content string, projectRoot string, violations []RemoteSafetyViolation) (string, []RemoteSafetyViolation) {
@@ -141,14 +183,18 @@ func detectLocalPaths(content string, projectRoot string, violations []RemoteSaf
 		}
 	}
 
-	tmpMatches := tmpPathsRe.FindAllString(rewritten, -1)
-	for _, m := range tmpMatches {
-		violations = append(violations, RemoteSafetyViolation{
-			Field:   "content",
-			Pattern: tmpPathsRe.String(),
-			Value:   truncate(m, maxViolationValue),
-			Reason:  "local_path",
-		})
+	for _, re := range []*regexp.Regexp{tmpPathsRe, rootHomeRe} {
+		for _, groups := range re.FindAllStringSubmatch(rewritten, -1) {
+			if underRoot(groups[1], projectRoot) {
+				continue
+			}
+			violations = append(violations, RemoteSafetyViolation{
+				Field:   "content",
+				Pattern: re.String(),
+				Value:   truncate(groups[1], maxViolationValue),
+				Reason:  "local_path",
+			})
+		}
 	}
 
 	if projectRoot != "" {
@@ -220,9 +266,26 @@ func isPathNameByte(c byte) bool {
 		('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
+// remoteSanitizer holds the secret rules the remote safety filter applies:
+// the built-in ones plus the user's own sanitizer patterns, which apply here
+// even when the local sanitizer is off, since what leaves the machine must
+// never be held to less than what is kept on it.
+var remoteSanitizer atomic.Pointer[memory.Sanitizer]
+
+func init() {
+	UseSecretPatterns(nil)
+}
+
+// UseSecretPatterns sets the user's own secret patterns (config
+// sanitizer.patterns) on top of the built-in rules for everything the remote
+// safety filter checks: memories, triples and pushes. A process that sends
+// to a remote calls it once its config is loaded.
+func UseSecretPatterns(patterns []string) {
+	remoteSanitizer.Store(memory.NewSanitizer(config.SanitizerConfig{Enabled: true, Patterns: patterns}))
+}
+
 func detectSecrets(content string) (string, []RemoteSafetyViolation) {
-	s := memory.NewSanitizer(config.SanitizerConfig{Enabled: true})
-	sanitized := s.Sanitize(content)
+	sanitized := remoteSanitizer.Load().Sanitize(content)
 
 	if label := knownSecretLabel(content); label != "" {
 		if sanitized == content {

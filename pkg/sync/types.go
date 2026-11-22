@@ -120,9 +120,9 @@ type SyncTripleResponse struct {
 	Accepted int      `json:"accepted"`
 	Rejected int      `json:"rejected"`
 	Errors   []string `json:"errors,omitempty"`
-	// Withheld counts the triples the client's safety filter kept local; the
-	// server never saw them.
-	Withheld int `json:"-"`
+	// Withheld says which triples the client's safety filter kept local, and
+	// why; the server never saw them.
+	Withheld []string `json:"-"`
 }
 
 type RemoteSearchResult struct {

@@ -14,6 +14,7 @@ import (
 	"github.com/jholhewres/anchored/pkg/importer"
 	"github.com/jholhewres/anchored/pkg/memory"
 	"github.com/jholhewres/anchored/pkg/project"
+	remotesync "github.com/jholhewres/anchored/pkg/sync"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -183,6 +184,7 @@ func initService(configPath string) (*config.Config, *slog.Logger, *memory.Servi
 	if err := config.EnsureDirs(cfg); err != nil {
 		return nil, nil, nil, fmt.Errorf("ensure dirs: %w", err)
 	}
+	remotesync.UseSecretPatterns(cfg.Sanitizer.Patterns)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc, err := memory.NewService(cfg, logger)

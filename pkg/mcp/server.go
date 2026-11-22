@@ -125,6 +125,9 @@ func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimi
 		logger = slog.Default()
 	}
 	server := &Server{mem: mem, kg: kg, sessions: sessions, optimizer: optimizer, cfg: cfg, logger: logger, version: version}
+	if cfg != nil {
+		remotesync.UseSecretPatterns(cfg.Sanitizer.Patterns)
+	}
 	if mem != nil {
 		mem.SetRemoteOutboxDeliverer(server.saveRemoteIdempotent)
 	}
@@ -1710,12 +1713,13 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// blocks never asks a remote at all.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
-			if _, withheld := remotesync.SafeTriplesForRemote([]remotesync.SyncTriple{syncTripleOf(*triple)}, p.CWD); withheld > 0 {
-				return result + " (local only — blocked by safety policy)", nil
+			root := p.CWD
+			if _, reason := remotesync.SafeTriple(remotesync.TriplesFromKG([]kg.Triple{*triple})[0], root); reason != "" {
+				return result + " (local only — blocked by safety policy: " + reason + ")", nil
 			}
 			r := s.resolveAutoRemoteWriteTarget(ctx, p.CWD, kgAddWriteBudget)
 			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" && target.AutoSyncEnabled() {
-				go s.pushTripleTo(*target, pid, p.CWD, *triple)
+				go s.pushTripleTo(*target, pid, root, *triple)
 				result += fmt.Sprintf(" (auto-sync → %s)", target.Name)
 			} else if r.Held() {
 				result += " (local only — " + r.HeldReason() + "; `anchored remote sync` sends it later)"
@@ -1896,18 +1900,8 @@ func (s *Server) pushTripleTo(entry config.RemoteEntry, remoteProjID, projectRoo
 	defer cancel()
 
 	client := remotesync.NewClientFromEntry(entry, "mcp")
-	syncTriples := []remotesync.SyncTriple{syncTripleOf(t)}
-	if _, err := client.PushTriples(ctx, remoteProjID, projectRoot, syncTriples); err != nil {
+	if _, err := client.PushTriples(ctx, remoteProjID, projectRoot, remotesync.TriplesFromKG([]kg.Triple{t})); err != nil {
 		s.logger.Warn("kg auto-sync push failed", "remote", entry.Name, "error", err)
-	}
-}
-
-func syncTripleOf(t kg.Triple) remotesync.SyncTriple {
-	return remotesync.SyncTriple{
-		Subject:    t.Subject,
-		Predicate:  t.Predicate,
-		Object:     t.Object,
-		Confidence: t.Confidence,
 	}
 }
 

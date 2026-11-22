@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 // those makes no request, and the response counts what was kept local.
 func TestPushTriples_SendsOnlyWhatTheSafetyFilterAllows(t *testing.T) {
 	var requests atomic.Int32
+	var mu sync.Mutex
 	var received []SyncTriple
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -25,7 +27,9 @@ func TestPushTriples_SendsOnlyWhatTheSafetyFilterAllows(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		mu.Lock()
 		received = append(received, req.Triples...)
+		mu.Unlock()
 		if err := json.NewEncoder(w).Encode(SyncTripleResponse{Accepted: len(req.Triples)}); err != nil {
 			t.Errorf("encode: %v", err)
 		}
@@ -39,18 +43,21 @@ func TestPushTriples_SendsOnlyWhatTheSafetyFilterAllows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Accepted != 1 || resp.Withheld != 1 {
-		t.Fatalf("response %+v, want 1 accepted and 1 withheld", resp)
+	if resp.Accepted != 1 || len(resp.Withheld) != 1 || resp.Withheld[0] != "triple 1 blocked: local_path" {
+		t.Fatalf("response %+v, want 1 accepted and triple 1 withheld for its local path", resp)
 	}
-	if len(received) != 1 || received[0] != clean {
-		t.Fatalf("the server received %+v, want only the clean triple", received)
+	mu.Lock()
+	got := append([]SyncTriple(nil), received...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != clean {
+		t.Fatalf("the server received %+v, want only the clean triple", got)
 	}
 
 	resp, err = c.PushTriples(context.Background(), "p1", "/home/dev/proj", []SyncTriple{unsafe})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Withheld != 1 || requests.Load() != 1 {
+	if len(resp.Withheld) != 1 || requests.Load() != 1 {
 		t.Fatalf("a push of only unsafe triples: response %+v after %d requests, want 1 withheld and no new request", resp, requests.Load())
 	}
 }

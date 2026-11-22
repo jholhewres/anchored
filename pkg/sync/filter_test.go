@@ -275,9 +275,10 @@ func TestSafeTriplesForRemote(t *testing.T) {
 		{Subject: "/Users/dev/notes", Predicate: "describes", Object: "api"},
 		{Subject: "build", Predicate: "writes", Object: "/home/dev/proj/bin/anchored"},
 	}
-	safe, withheld := SafeTriplesForRemote(in, root)
-	if withheld != 4 {
-		t.Fatalf("withheld %d triples, want 4; sent %+v", withheld, safe)
+	safe, withheld := filterTriples(in, root)
+	wantWithheld := []string{"triple 2 blocked: secret_pattern", "triple 3 blocked: secret_pattern", "triple 4 blocked: local_path", "triple 5 blocked: local_path"}
+	if strings.Join(withheld, "|") != strings.Join(wantWithheld, "|") {
+		t.Fatalf("withheld %q, want %q; sent %+v", withheld, wantWithheld, safe)
 	}
 	want := []SyncTriple{
 		{Subject: "api", Predicate: "uses", Object: "postgres", Confidence: 0.9},
@@ -334,5 +335,21 @@ func TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath(t *testing.T) {
 	}
 	if r := RemoteSafetyFilter("see /home/dev/proj/docs/../README.md", nil, "/home/dev/proj"); r.Blocked {
 		t.Fatalf("a path that stays inside the project was blocked: %+v", r.Violations)
+	}
+}
+
+// TestRemoteSafetyFilter_TmpPathsStartAPath locks the temporary-directory
+// rule to paths that start there: a tmp folder inside another path is not a
+// temporary directory, a temporary path inside the project root goes out
+// relative to it, and one outside it stays a blocked local path.
+func TestRemoteSafetyFilter_TmpPathsStartAPath(t *testing.T) {
+	if r := RemoteSafetyFilter("cache in /srv/proj/tmp/cache", nil, "/srv/proj"); r.Blocked || r.Content != "cache in ./tmp/cache" {
+		t.Fatalf("a tmp folder inside the project: %q blocked=%v, want it sent relative", r.Content, r.Blocked)
+	}
+	if r := RemoteSafetyFilter("build in /tmp/ws/proj/bin", nil, "/tmp/ws/proj"); r.Blocked || r.Content != "build in ./bin" {
+		t.Fatalf("a project under /tmp: %q blocked=%v, want it sent relative", r.Content, r.Blocked)
+	}
+	if r := RemoteSafetyFilter("scratch in /tmp/other/notes", nil, "/tmp/ws/proj"); !r.Blocked {
+		t.Fatalf("a temporary path outside the project went out as %q", r.Content)
 	}
 }

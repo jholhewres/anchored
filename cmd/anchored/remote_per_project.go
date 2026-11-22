@@ -318,22 +318,17 @@ func syncPerProject(opts perProjectOptions) {
 		if kgErr != nil {
 			fmt.Fprintf(os.Stderr, "  [%s] KG sync: warning: list triples failed: %v\n", b.name, kgErr)
 		} else if len(localTriples) > 0 {
-			syncTriples := make([]sync.SyncTriple, len(localTriples))
-			for i, t := range localTriples {
-				syncTriples[i] = sync.SyncTriple{
-					Subject:    t.Subject,
-					Predicate:  t.Predicate,
-					Object:     t.Object,
-					Confidence: t.Confidence,
-				}
-			}
+			syncTriples := sync.TriplesFromKG(localTriples)
 			kgResp, kgPushErr := target.client.PushTriples(ctx, projID, b.local.path, syncTriples)
 			if kgPushErr != nil {
 				fmt.Fprintf(os.Stderr, "  [%s] KG sync: warning: push triples failed: %v\n", b.name, kgPushErr)
 			} else {
 				fmt.Printf("  [%s] KG sync: %d accepted, %d rejected\n", b.name, kgResp.Accepted, kgResp.Rejected)
-				if kgResp.Withheld > 0 {
-					fmt.Printf("  [%s] KG sync: %d kept local by the safety filter (secrets or local paths)\n", b.name, kgResp.Withheld)
+				if n := len(kgResp.Withheld); n > 0 {
+					fmt.Printf("  [%s] KG sync: %d kept local by the safety filter (secrets or local paths)\n", b.name, n)
+					for _, w := range kgResp.Withheld {
+						fmt.Printf("  [%s]   %s\n", b.name, w)
+					}
 				}
 			}
 		}

@@ -602,43 +602,70 @@ func TestLocalProjectLabel_ShortIDs(t *testing.T) {
 	}
 }
 
-// TestRemoteSyncAll_KeepsUnsafeTriplesLocal locks the safety filter on the
-// knowledge graph: `remote sync --all` sends a project's clean triples and
-// keeps local the ones carrying a credential or a home path outside the
-// project, and says how many it kept.
-func TestRemoteSyncAll_KeepsUnsafeTriplesLocal(t *testing.T) {
-	f := newSyncFixture(t)
-	remote := newFakeRemote(t, "team")
-	cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
-		"team": {ServerURL: remote.URL, APIKey: "<REDACTED>", Default: true},
-	})
-	saveDecisions(t, cfgPath, map[string]string{f.apiDir: apiDecision})
-	_, logger, svc, err := initService(cfgPath)
-	if err != nil {
-		t.Fatalf("initService: %v", err)
-	}
-	pid := svc.ResolveProject(f.apiDir)
-	graph := kg.New(svc.StoreDB(), logger)
-	for _, tr := range [][3]string{
-		{"api", "uses", "postgres"},
-		{"staging-db", "connects_with", "postgres://app:not-a-real-pass@10.0.0.5/app"},
-		{"deploy", "reads", "/home/someone/secrets/db.env"},
+// TestRemoteSync_KeepsUnsafeTriplesLocal locks the safety filter on the
+// knowledge graph for both sync commands: `remote sync --all` and plain
+// `remote sync` from the repository send a project's clean triples, send a
+// path inside the project relative to it, keep local the ones carrying a
+// credential or a home path outside the project, and say which and why.
+func TestRemoteSync_KeepsUnsafeTriplesLocal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		inRepo bool
+	}{
+		{"sync --all", []string{"remote", "sync", "--all"}, false},
+		{"sync from the repository", []string{"remote", "sync"}, true},
 	} {
-		if _, err := graph.AddTriple(context.Background(), tr[0], tr[1], tr[2], &pid); err != nil {
-			t.Fatalf("add triple: %v", err)
-		}
-	}
-	svc.Close()
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSyncFixture(t)
+			remote := newFakeRemote(t, "team")
+			remote.projects = []remotesync.RemoteProject{{ID: "rp-api", Slug: "api", RemoteKey: f.apiKey}}
+			cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
+				"team": {ServerURL: remote.URL, APIKey: "<REDACTED>", Default: true},
+			})
+			saveDecisions(t, cfgPath, map[string]string{f.apiDir: apiDecision})
+			realAPI, err := filepath.EvalSymlinks(f.apiDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, logger, svc, err := initService(cfgPath)
+			if err != nil {
+				t.Fatalf("initService: %v", err)
+			}
+			pid := svc.ResolveProject(f.apiDir)
+			graph := kg.New(svc.StoreDB(), logger)
+			for _, tr := range [][3]string{
+				{"api", "uses", "postgres"},
+				{"staging-db", "connects_with", "postgres://app:not-a-real-pass@10.0.0.5/app"},
+				{"deploy", "reads", "/home/someone/secrets/db.env"},
+				{"api", "builds", filepath.Join(realAPI, "bin", "server")},
+			} {
+				if _, err := graph.AddTriple(context.Background(), tr[0], tr[1], tr[2], &pid); err != nil {
+					t.Fatalf("add triple: %v", err)
+				}
+			}
+			svc.Close()
 
-	out, code := runCLI(t, f.base, "remote", "sync", "--all", "--config", cfgPath)
-	if code != 0 {
-		t.Fatalf("remote sync --all exited %d\n%s", code, out)
-	}
-	got := remote.snapshot().triples
-	if len(got) != 1 || got[0].Object != "postgres" {
-		t.Fatalf("the remote received triples %+v, want only api uses postgres\n%s", got, out)
-	}
-	if !strings.Contains(out, "2 kept local by the safety filter") {
-		t.Fatalf("the output does not say two triples were kept local\n%s", out)
+			dir := f.base
+			if tc.inRepo {
+				dir = f.apiDir
+			}
+			out, code := runCLI(t, dir, append(tc.args, "--config", cfgPath)...)
+			if code != 0 {
+				t.Fatalf("%v exited %d\n%s", tc.args, code, out)
+			}
+			objects := map[string]bool{}
+			for _, tr := range remote.snapshot().triples {
+				objects[tr.Object] = true
+			}
+			if len(objects) != 2 || !objects["postgres"] || !objects["./bin/server"] {
+				t.Fatalf("the remote received objects %v, want postgres and ./bin/server\n%s", objects, out)
+			}
+			for _, want := range []string{"2 kept local by the safety filter", "blocked: secret_pattern", "blocked: local_path"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("the output does not say %q\n%s", want, out)
+				}
+			}
+		})
 	}
 }

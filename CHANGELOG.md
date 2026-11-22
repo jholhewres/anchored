@@ -21,9 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remote.** `kg_add` and `remote sync` sent every triple as it was, so a
   credential or a home path in a subject or object went to the team server.
   Each field now goes through the same filter as a memory: a triple with a
-  secret or a local path outside the project stays local (`kg_add` says so,
-  the sync commands count them), and a path inside the project is sent
-  relative to it.
+  secret or a local path outside the project stays local (`kg_add` says why,
+  the sync commands list which triples and why), and a path inside the
+  project is sent relative to it. A triple is also read as the sentence it
+  states, so a password named in the predicate with its value in the object
+  is caught as it would be in a memory.
+- **The remote safety filter applies your own sanitizer patterns**
+  (`sanitizer.patterns`) to everything it checks, on top of the built-in
+  rules, even with the local sanitizer off. Root's home (`/root`,
+  `/var/root`) counts as a local path, and a temporary path counts only
+  where a path starts and outside the project.
 - **A path beside the project no longer passes as inside it.** The safety
   filter allowed any path that started with the project root, so
   `/home/dev/proj-private/plan.txt` synced from `/home/dev/proj` (as

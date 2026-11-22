@@ -643,13 +643,14 @@ func isSemanticUnavailable(err error) bool {
 //
 // Caller is expected to have already resolved the remote projectID via a
 // memory sync (the server's project_claim flow). Every triple first passes
-// SafeTriplesForRemote against projectRoot, here and not in the callers, so no
-// path sends one unfiltered; those it holds back are counted in Withheld.
+// SafeTriplesForRemote against projectRoot here, so no caller needs to filter
+// first and none sends one unfiltered; those it holds back are listed in
+// Withheld.
 func (c *Client) PushTriples(ctx context.Context, projectID, projectRoot string, triples []SyncTriple) (*SyncTripleResponse, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("PushTriples: projectID is required")
 	}
-	triples, withheld := SafeTriplesForRemote(triples, projectRoot)
+	triples, withheld := filterTriples(triples, projectRoot)
 	if len(triples) == 0 {
 		return &SyncTripleResponse{Withheld: withheld}, nil
 	}
