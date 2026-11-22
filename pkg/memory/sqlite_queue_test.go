@@ -570,13 +570,16 @@ func TestDrainRemoteOutbox_HeldDeliveryKeepsItsAttempts(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := &Service{store: store, logger: logger, workerOwner: "worker", shutdown: make(chan struct{})}
 	var returned time.Time
-	svc.SetRemoteOutboxDeliverer(func(context.Context, RemoteOutboxItem) RemoteOutboxDeliveryResult {
+	// The deliverer is set without SetRemoteOutboxDeliverer, which also starts
+	// the durable workers: one of them would claim the item before the drain
+	// below, and outlive the store this test closes.
+	svc.remoteDeliverer = func(context.Context, RemoteOutboxItem) RemoteOutboxDeliveryResult {
 		// Resolving a held write can take a while; the retry counts from
 		// when it ended, not from the claim.
 		time.Sleep(50 * time.Millisecond)
 		returned = time.Now()
 		return RemoteOutboxDeliveryResult{Held: true}
-	})
+	}
 
 	svc.drainRemoteOutbox(ctx)
 
