@@ -1706,12 +1706,16 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// local-first contract as toolSave — the local add already succeeded, so
 	// a remote failure never affects the result. The target remote (and its
 	// auto_sync gate) is resolved inside via the cross-remote origin probe.
-	// Triples are entity strings, not free text, so no safety classification.
+	// The triple passes the same safety filter as a memory first; one it
+	// blocks never asks a remote at all.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
+			if _, withheld := remotesync.SafeTriplesForRemote([]remotesync.SyncTriple{syncTripleOf(*triple)}, p.CWD); withheld > 0 {
+				return result + " (local only — blocked by safety policy)", nil
+			}
 			r := s.resolveAutoRemoteWriteTarget(ctx, p.CWD, kgAddWriteBudget)
 			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" && target.AutoSyncEnabled() {
-				go s.pushTripleTo(*target, pid, *triple)
+				go s.pushTripleTo(*target, pid, p.CWD, *triple)
 				result += fmt.Sprintf(" (auto-sync → %s)", target.Name)
 			} else if r.Held() {
 				result += " (local only — " + r.HeldReason() + "; `anchored remote sync` sends it later)"
@@ -1887,20 +1891,23 @@ func (s *Server) hasAutoSyncRemote() bool {
 // pushTripleTo pushes a single triple to an already-resolved remote project.
 // The caller resolves the target (so the user-facing response can name it);
 // the push stays best-effort: failures are logged, never surfaced.
-func (s *Server) pushTripleTo(entry config.RemoteEntry, remoteProjID string, t kg.Triple) {
+func (s *Server) pushTripleTo(entry config.RemoteEntry, remoteProjID, projectRoot string, t kg.Triple) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	client := remotesync.NewClientFromEntry(entry, "mcp")
+	syncTriples := []remotesync.SyncTriple{syncTripleOf(t)}
+	if _, err := client.PushTriples(ctx, remoteProjID, projectRoot, syncTriples); err != nil {
+		s.logger.Warn("kg auto-sync push failed", "remote", entry.Name, "error", err)
+	}
+}
 
-	syncTriples := []remotesync.SyncTriple{{
+func syncTripleOf(t kg.Triple) remotesync.SyncTriple {
+	return remotesync.SyncTriple{
 		Subject:    t.Subject,
 		Predicate:  t.Predicate,
 		Object:     t.Object,
 		Confidence: t.Confidence,
-	}}
-	if _, err := client.PushTriples(ctx, remoteProjID, syncTriples); err != nil {
-		s.logger.Warn("kg auto-sync push failed", "remote", entry.Name, "error", err)
 	}
 }
 

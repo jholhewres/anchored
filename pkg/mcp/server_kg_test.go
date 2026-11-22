@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -91,5 +92,87 @@ func TestKGAddHoldsBehindASilentRemoteOnce(t *testing.T) {
 	}
 	if n := asked.Load(); n != 1 {
 		t.Fatalf("the silent remote was asked %d times for three kg_add calls, want 1", n)
+	}
+}
+
+// TestKGAddKeepsAnUnsafeTripleLocal locks kg_add's safety filter: a triple
+// carrying a credential and a home path stays local, the reply says so, and
+// the remote is neither asked about the repository nor sent the triple. A
+// clean triple on the same repository still goes out.
+func TestKGAddKeepsAnUnsafeTripleLocal(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		t.Fatalf("ResolveProjectInfo: proj=%v err=%v", proj, err)
+	}
+	var lookups atomic.Int32
+	objects := make(chan string, 4)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/triples"):
+			var req struct {
+				Triples []struct {
+					Object string `json:"object"`
+				} `json:"triples"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode triples: %v", err)
+			}
+			for _, tr := range req.Triples {
+				objects <- tr.Object
+			}
+			if _, err := w.Write([]byte(`{"accepted":1}`)); err != nil {
+				t.Errorf("write: %v", err)
+			}
+		case r.URL.Path == "/v1/projects":
+			lookups.Add(1)
+			if _, err := fmt.Fprintf(w, `[{"id":"rp-team","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(remote.Close)
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true},
+	}
+	srv := NewServer(svc, kg.New(svc.StoreDB(), slog.Default()), nil, nil, cfg, "test", slog.Default())
+	add := func(object string) string {
+		t.Helper()
+		args, err := json.Marshal(map[string]any{"subject": "staging-db", "predicate": "connects_with", "object": object, "cwd": repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := srv.toolKGAdd(context.Background(), args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	out := add("postgres://app:not-a-real-pass@10.0.0.5/app via /home/someone/secrets/db.env")
+	if !strings.Contains(out, "local only — blocked by safety policy") {
+		t.Fatalf("kg_add reply = %q, want it kept local by the safety policy", out)
+	}
+	if n := lookups.Load(); n != 0 {
+		t.Fatalf("the remote was asked about the repository %d times for a blocked triple", n)
+	}
+
+	if out := add("postgres"); !strings.Contains(out, "auto-sync → team") {
+		t.Fatalf("clean kg_add reply = %q, want it sent to team", out)
+	}
+	select {
+	case got := <-objects:
+		if got != "postgres" {
+			t.Fatalf("the remote received object %q, want only the clean one", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clean triple never reached the remote")
+	}
+	select {
+	case got := <-objects:
+		t.Fatalf("the remote received a second triple %q", got)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

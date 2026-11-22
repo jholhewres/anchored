@@ -81,7 +81,7 @@ func TestRemoteCallsCapTheBodiesTheyReadWhole(t *testing.T) {
 			return err
 		},
 		"triples": func(c *Client) error {
-			_, err := c.PushTriples(context.Background(), "p1", []SyncTriple{{Subject: "a", Predicate: "uses", Object: "b"}})
+			_, err := c.PushTriples(context.Background(), "p1", "", []SyncTriple{{Subject: "a", Predicate: "uses", Object: "b"}})
 			return err
 		},
 		"projects": func(c *Client) error {

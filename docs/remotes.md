@@ -63,6 +63,8 @@ anchored remote preview
 The preview runs offline and lists what would be sent. Blocked by default:
 secrets, local paths, preferences and events, anything in your personal
 (`user`) scope, episodic and operational memories, and low-quality ones.
+Knowledge-graph triples pass the same secret and path filter: one that
+carries either stays local, from `kg_add` and from `remote sync` alike.
 
 ## Sync
 

@@ -260,3 +260,35 @@ func TestRemoteSafetyFilter_NoHomePathInCleanContent(t *testing.T) {
 		t.Errorf("relative paths should be allowed, violations: %+v", result.Violations)
 	}
 }
+
+// TestSafeTriplesForRemote locks the safety filter on knowledge-graph
+// triples: a secret or a local path outside the project in any field keeps
+// the whole triple local, a path inside the project goes out relative to it,
+// and a clean triple goes out as it is.
+func TestSafeTriplesForRemote(t *testing.T) {
+	root := "/home/dev/proj"
+	in := []SyncTriple{
+		{Subject: "api", Predicate: "uses", Object: "postgres", Confidence: 0.9},
+		{Subject: "staging-db", Predicate: "connects_with", Object: "postgres://app:not-a-real-pass@10.0.0.5/app"},
+		{Subject: "ci", Predicate: "authenticates_with", Object: "ghp_" + strings.Repeat("a", 36)},
+		{Subject: "deploy", Predicate: "reads", Object: "/home/someone/secrets/db.env"},
+		{Subject: "/Users/dev/notes", Predicate: "describes", Object: "api"},
+		{Subject: "build", Predicate: "writes", Object: "/home/dev/proj/bin/anchored"},
+	}
+	safe, withheld := SafeTriplesForRemote(in, root)
+	if withheld != 4 {
+		t.Fatalf("withheld %d triples, want 4; sent %+v", withheld, safe)
+	}
+	want := []SyncTriple{
+		{Subject: "api", Predicate: "uses", Object: "postgres", Confidence: 0.9},
+		{Subject: "build", Predicate: "writes", Object: "./bin/anchored"},
+	}
+	if len(safe) != len(want) {
+		t.Fatalf("sent %+v, want %+v", safe, want)
+	}
+	for i := range want {
+		if safe[i] != want[i] {
+			t.Fatalf("triple %d sent as %+v, want %+v", i, safe[i], want[i])
+		}
+	}
+}

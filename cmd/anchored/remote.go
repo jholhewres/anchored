@@ -829,11 +829,14 @@ func runRemoteSync(args []string) {
 				fmt.Fprintln(os.Stderr, "KG sync: skipped: could not resolve the remote project ID (server did not return one and no remote_key match)")
 				return
 			}
-			kgResp, kgPushErr := client.PushTriples(ctx, remoteProjID, syncTriples)
+			kgResp, kgPushErr := client.PushTriples(ctx, remoteProjID, projectRoot, syncTriples)
 			if kgPushErr != nil {
 				fmt.Fprintf(os.Stderr, "KG sync: warning: push triples failed: %v\n", kgPushErr)
 			} else {
 				fmt.Printf("KG sync: %d accepted, %d rejected\n", kgResp.Accepted, kgResp.Rejected)
+				if kgResp.Withheld > 0 {
+					fmt.Printf("KG sync: %d kept local by the safety filter (secrets or local paths)\n", kgResp.Withheld)
+				}
 				if len(kgResp.Errors) > 0 {
 					for _, e := range kgResp.Errors {
 						fmt.Fprintf(os.Stderr, "  KG error: %s\n", e)

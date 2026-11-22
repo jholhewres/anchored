@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/jholhewres/anchored/pkg/config"
+	"github.com/jholhewres/anchored/pkg/kg"
 	"github.com/jholhewres/anchored/pkg/memory"
 	projectpkg "github.com/jholhewres/anchored/pkg/project"
 	remotesync "github.com/jholhewres/anchored/pkg/sync"
@@ -30,6 +31,7 @@ type fakeRemote struct {
 	lists    int
 	requests int
 	pushed   map[string][]string // project id -> memory contents
+	triples  []remotesync.SyncTriple
 }
 
 func newFakeRemote(t *testing.T, name string) *fakeRemote {
@@ -97,7 +99,15 @@ func newFakeRemote(t *testing.T, name string) *fakeRemote {
 		reply(w, remotesync.SyncPushResponse{Accepted: len(req.Memories), ProjectID: req.ProjectID})
 	})
 	mux.HandleFunc("POST /v1/projects/{id}/triples", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, remotesync.SyncTripleResponse{})
+		var req remotesync.SyncTripleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.triples = append(f.triples, req.Triples...)
+		f.mu.Unlock()
+		reply(w, remotesync.SyncTripleResponse{Accepted: len(req.Triples)})
 	})
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -115,6 +125,7 @@ type fakeRemoteState struct {
 	lists    int
 	requests int
 	pushed   map[string][]string
+	triples  []remotesync.SyncTriple
 }
 
 func (f *fakeRemote) snapshot() fakeRemoteState {
@@ -130,6 +141,7 @@ func (f *fakeRemote) snapshot() fakeRemoteState {
 		lists:    f.lists,
 		requests: f.requests,
 		pushed:   pushed,
+		triples:  append([]remotesync.SyncTriple(nil), f.triples...),
 	}
 }
 
@@ -587,5 +599,46 @@ func TestLocalProjectLabel_ShortIDs(t *testing.T) {
 		if got := localProjectLabel(c.pid, c.name); got != c.want {
 			t.Errorf("localProjectLabel(%q, %q) = %q, want %q", c.pid, c.name, got, c.want)
 		}
+	}
+}
+
+// TestRemoteSyncAll_KeepsUnsafeTriplesLocal locks the safety filter on the
+// knowledge graph: `remote sync --all` sends a project's clean triples and
+// keeps local the ones carrying a credential or a home path outside the
+// project, and says how many it kept.
+func TestRemoteSyncAll_KeepsUnsafeTriplesLocal(t *testing.T) {
+	f := newSyncFixture(t)
+	remote := newFakeRemote(t, "team")
+	cfgPath := newRemoteTestEnv(t, map[string]config.RemoteEntry{
+		"team": {ServerURL: remote.URL, APIKey: "<REDACTED>", Default: true},
+	})
+	saveDecisions(t, cfgPath, map[string]string{f.apiDir: apiDecision})
+	_, logger, svc, err := initService(cfgPath)
+	if err != nil {
+		t.Fatalf("initService: %v", err)
+	}
+	pid := svc.ResolveProject(f.apiDir)
+	graph := kg.New(svc.StoreDB(), logger)
+	for _, tr := range [][3]string{
+		{"api", "uses", "postgres"},
+		{"staging-db", "connects_with", "postgres://app:not-a-real-pass@10.0.0.5/app"},
+		{"deploy", "reads", "/home/someone/secrets/db.env"},
+	} {
+		if _, err := graph.AddTriple(context.Background(), tr[0], tr[1], tr[2], &pid); err != nil {
+			t.Fatalf("add triple: %v", err)
+		}
+	}
+	svc.Close()
+
+	out, code := runCLI(t, f.base, "remote", "sync", "--all", "--config", cfgPath)
+	if code != 0 {
+		t.Fatalf("remote sync --all exited %d\n%s", code, out)
+	}
+	got := remote.snapshot().triples
+	if len(got) != 1 || got[0].Object != "postgres" {
+		t.Fatalf("the remote received triples %+v, want only api uses postgres\n%s", got, out)
+	}
+	if !strings.Contains(out, "2 kept local by the safety filter") {
+		t.Fatalf("the output does not say two triples were kept local\n%s", out)
 	}
 }

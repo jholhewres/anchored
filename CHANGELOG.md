@@ -17,6 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   behind a remote that hangs.** The skill probe gave up before the remote
   lookup timed out, so the miss was never cached. Its deadline now covers the
   lookup, and only the first call waits.
+- **Knowledge-graph triples pass the safety filter before they reach a
+  remote.** `kg_add` and `remote sync` sent every triple as it was, so a
+  credential or a home path in a subject or object went to the team server.
+  Each field now goes through the same filter as a memory: a triple with a
+  secret or a local path outside the project stays local (`kg_add` says so,
+  the sync commands count them), and a path inside the project is sent
+  relative to it.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
   and any error body up to 64 KiB; a longer listing fails the lookup like a

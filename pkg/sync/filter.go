@@ -95,6 +95,32 @@ func RemoteSafetyFilter(content string, metadata map[string]any, projectRoot str
 	return result
 }
 
+// SafeTriplesForRemote returns the triples that may leave the machine and how
+// many it held back. Subject, predicate and object are free text the model
+// writes, so each goes through RemoteSafetyFilter as a memory's content does:
+// a secret, or a local path outside projectRoot, holds the whole triple back,
+// and a path inside projectRoot is sent relative to it.
+func SafeTriplesForRemote(triples []SyncTriple, projectRoot string) ([]SyncTriple, int) {
+	safe := make([]SyncTriple, 0, len(triples))
+	for _, t := range triples {
+		if out, ok := safeTriple(t, projectRoot); ok {
+			safe = append(safe, out)
+		}
+	}
+	return safe, len(triples) - len(safe)
+}
+
+func safeTriple(t SyncTriple, projectRoot string) (SyncTriple, bool) {
+	for _, field := range []*string{&t.Subject, &t.Predicate, &t.Object} {
+		r := RemoteSafetyFilter(*field, nil, projectRoot)
+		if r.Blocked {
+			return SyncTriple{}, false
+		}
+		*field = r.Content
+	}
+	return t, true
+}
+
 func detectLocalPaths(content string, projectRoot string, violations []RemoteSafetyViolation) (string, []RemoteSafetyViolation) {
 	rewritten := content
 

@@ -327,11 +327,14 @@ func syncPerProject(opts perProjectOptions) {
 					Confidence: t.Confidence,
 				}
 			}
-			kgResp, kgPushErr := target.client.PushTriples(ctx, projID, syncTriples)
+			kgResp, kgPushErr := target.client.PushTriples(ctx, projID, b.local.path, syncTriples)
 			if kgPushErr != nil {
 				fmt.Fprintf(os.Stderr, "  [%s] KG sync: warning: push triples failed: %v\n", b.name, kgPushErr)
 			} else {
 				fmt.Printf("  [%s] KG sync: %d accepted, %d rejected\n", b.name, kgResp.Accepted, kgResp.Rejected)
+				if kgResp.Withheld > 0 {
+					fmt.Printf("  [%s] KG sync: %d kept local by the safety filter (secrets or local paths)\n", b.name, kgResp.Withheld)
+				}
 			}
 		}
 	}
