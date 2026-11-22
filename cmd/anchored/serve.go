@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -156,59 +154,9 @@ func serveSTDIO(ctx context.Context, memSvc *memory.Service, cfg *config.Config,
 	}
 	server.SetDebugLogger(dlog)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	// The blocking stdin read cannot be interrupted by context cancellation
-	// (closing os.Stdin does not unblock an in-flight read on fd 0), so we run
-	// the scanner in its own goroutine and feed decoded lines over a channel.
-	// The main loop then selects between incoming lines and ctx.Done(), letting
-	// a signal or parent-death cancellation return immediately and run the
-	// deferred cleanup. The reader goroutine is abandoned on shutdown; it is
-	// reaped when the process exits.
-	lines := make(chan []byte)
-	scanErr := make(chan error, 1)
-	go func() {
-		defer close(lines)
-		for scanner.Scan() {
-			b := scanner.Bytes()
-			buf := make([]byte, len(b)) // scanner reuses its buffer; copy before handing off
-			copy(buf, b)
-			select {
-			case lines <- buf:
-			case <-ctx.Done():
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			scanErr <- err
-		}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Signal or parent death: stop serving and fall through to cleanup.
-			goto shutdown
-		case line, ok := <-lines:
-			if !ok {
-				// stdin EOF — the client closed the pipe. Surface a genuine read
-				// error, but treat a cancelled context as an expected shutdown.
-				if err := drainScanErr(scanErr); err != nil && ctx.Err() == nil {
-					return fmt.Errorf("stdin read: %w", err)
-				}
-				goto shutdown
-			}
-			if len(line) == 0 {
-				continue
-			}
-			if response := server.HandleMessage(ctx, line); response != nil {
-				fmt.Printf("%s\n", response)
-			}
-		}
+	if err := server.ServeStdio(ctx, os.Stdin, os.Stdout); err != nil {
+		return err
 	}
-
-shutdown:
 
 	if sessionMgr != nil {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
@@ -217,17 +165,6 @@ shutdown:
 	}
 
 	return nil
-}
-
-// drainScanErr returns the reader goroutine's scan error if one has already
-// been reported, without blocking when none is pending.
-func drainScanErr(scanErr <-chan error) error {
-	select {
-	case err := <-scanErr:
-		return err
-	default:
-		return nil
-	}
 }
 
 // runEventCleanup periodically deletes session_events rows older than
