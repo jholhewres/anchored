@@ -469,3 +469,64 @@ func TestResolveProjectAcrossRemotesForWrite_ExplicitGlobWins(t *testing.T) {
 		t.Fatalf("glob-routed read found %+v %q and asked the claimant %d times, want nothing and 0", entry, pid, asked.Load())
 	}
 }
+
+// TestResolveProjectAcrossRemotesForWriteWithin_BudgetHoldsTheWrite locks the
+// write budget against a remote that accepts the connection and never
+// answers: the write is held by that remote once the budget runs out, well
+// before its own probe deadline, and the caller's context is still live, so a
+// caller that caches holds keeps it. The budget covers the whole resolution,
+// not each remote: what a remote above spends is gone for the next one.
+func TestResolveProjectAcrossRemotesForWriteWithin_BudgetHoldsTheWrite(t *testing.T) {
+	const key = "abc123key"
+	const budget = 300 * time.Millisecond
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(silent.Close)
+	slowMiss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(budget * 2 / 3)
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write projects: %v", err)
+		}
+	}))
+	t.Cleanup(slowMiss.Close)
+
+	resolve := func(t *testing.T, remotes map[string]config.RemoteEntry) (ProjectResolution, time.Duration) {
+		t.Helper()
+		cfg := config.Defaults()
+		cfg.Remotes = remotes
+		ctx := context.Background()
+		start := time.Now()
+		r := ResolveProjectAcrossRemotesForWriteWithin(ctx, cfg, "/some/repo", "test", budget, key)
+		took := time.Since(start)
+		if ctx.Err() != nil {
+			t.Fatal("the caller's context ended; the budget must not be the caller's")
+		}
+		return r, took
+	}
+
+	t.Run("silent remote", func(t *testing.T) {
+		r, took := resolve(t, map[string]config.RemoteEntry{
+			"team": {Name: "team", ServerURL: silent.URL, APIKey: "k1", Default: true},
+		})
+		if !r.Held() || r.HeldBy != "team" || r.HeldStatus != 0 || r.Entry != nil {
+			t.Fatalf("behind a silent remote: %+v, want held by team with no status", r)
+		}
+		if took > 3*budget {
+			t.Fatalf("the write waited %s, want about the %s budget", took, budget)
+		}
+	})
+
+	t.Run("budget spans the remotes", func(t *testing.T) {
+		r, took := resolve(t, map[string]config.RemoteEntry{
+			"a-unaware": {Name: "a-unaware", ServerURL: slowMiss.URL, APIKey: "k1", Default: true},
+			"b-team":    {Name: "b-team", ServerURL: silent.URL, APIKey: "k2"},
+		})
+		if !r.Held() || r.HeldBy != "b-team" || r.Entry != nil {
+			t.Fatalf("behind a silent remote after a slow miss: %+v, want held by b-team", r)
+		}
+		if took > budget+budget/2 {
+			t.Fatalf("the write waited %s, want the %s budget across both remotes", took, budget)
+		}
+	})
+}

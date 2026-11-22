@@ -21,7 +21,8 @@ var remoteProbeTimeout = InteractiveProbeTimeout
 // It is generous, so a slow remote keeps its precedence, yet well below the
 // outbox worker's 30 s lease, so a remote that hangs cannot stall the queue.
 // Foreground writers (CLI save and sync) wait up to this per remote ranked
-// above the match; kg_add bounds the whole resolution with its own deadline.
+// above the match; kg_add gives the whole resolution a shorter budget
+// (ResolveProjectAcrossRemotesForWriteWithin).
 var remoteWriteProbeTimeout = 10 * time.Second
 
 // remoteHedgeDelay is how long the other remotes wait for the routed one
@@ -103,11 +104,35 @@ func ResolveProjectAcrossRemotes(ctx context.Context, cfg *config.Config, cwd, c
 // write (Held) instead of passing it to a remote ranked below, because it may
 // own the repository.
 func ResolveProjectAcrossRemotesForWrite(ctx context.Context, cfg *config.Config, cwd, clientID string, keys ...string) ProjectResolution {
+	return ResolveProjectAcrossRemotesForWriteWithin(ctx, cfg, cwd, clientID, 0, keys...)
+}
+
+// ResolveProjectAcrossRemotesForWriteWithin is ResolveProjectAcrossRemotesForWrite
+// with the whole resolution bounded by budget; zero leaves each remote its
+// full remoteWriteProbeTimeout. The budget belongs to the resolver, not to
+// ctx: a remote it cuts short holds the write exactly as one that timed out
+// on its own, so a caller that caches holds keeps this one. A caller that
+// bounded ctx instead would see its own deadline first and keep nothing.
+func ResolveProjectAcrossRemotesForWriteWithin(ctx context.Context, cfg *config.Config, cwd, clientID string, budget time.Duration, keys ...string) ProjectResolution {
 	if cfg == nil || !anyKey(keys) {
 		return ProjectResolution{}
 	}
+	var deadline time.Time
+	if budget > 0 {
+		deadline = time.Now().Add(budget)
+	}
 	for _, e := range remotesToAsk(cfg, cwd) {
-		pctx, cancel := context.WithTimeout(ctx, remoteWriteProbeTimeout)
+		timeout := remoteWriteProbeTimeout
+		if !deadline.IsZero() {
+			left := time.Until(deadline)
+			if left <= 0 {
+				// The remotes above used the budget up: this one, which may
+				// own the repository, was not asked in time.
+				return ProjectResolution{Degraded: true, HeldBy: e.Name}
+			}
+			timeout = min(timeout, left)
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
 		pid, matched, err := NewClientFromEntry(*e, clientID).lookupProjectIDByRemoteKeys(pctx, keys...)
 		cancel()
 		if err != nil {
@@ -125,6 +150,15 @@ func ResolveProjectAcrossRemotesForWrite(ctx context.Context, cfg *config.Config
 		}
 	}
 	return ProjectResolution{}
+}
+
+// ReadResolutionBound is the longest ResolveProjectAcrossRemotesDetailed takes
+// with probeTimeout: the first remote answers within probeTimeout, and the
+// others are asked once the hedge opens, remoteHedgeDelay in at the latest,
+// and answer within probeTimeout too. A caller whose own deadline is shorter
+// cuts the resolution short, and a resolver that caches keeps nothing then.
+func ReadResolutionBound(probeTimeout time.Duration) time.Duration {
+	return remoteHedgeDelay + probeTimeout
 }
 
 // ResolveProjectAcrossRemotesDetailed is ResolveProjectAcrossRemotes that also

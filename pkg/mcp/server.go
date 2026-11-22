@@ -213,12 +213,13 @@ func (s *Server) toolsForCWD(ctx context.Context, cwd string) []Tool {
 //
 // The timeout is deliberately not tightened below remoteSkillPriorityTimeout.
 // A probe that expires hides anchored_skill for the rest of the session, which
-// is a worse outcome than a bounded wait on a path clients call once.
+// is a worse outcome than a bounded wait on a path clients call once; the
+// answer is cached, so a silent remote costs that wait once per remoteMissTTL.
 func (s *Server) remoteSkillsAdvertisable(ctx context.Context, cwd string) bool {
 	if !s.hasAnyRemote() {
 		return false
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout())
 	defer cancel()
 	return s.hasReachableRemoteRepositoryProject(probeCtx, cwd)
 }
@@ -312,9 +313,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 const anchoredContextBudget = 4096
 
 // remoteSkillPriorityTimeout bounds the project-resolution probe performed by
-// anchored_context. Priority is advertised only for a remote project that is
-// actually reachable/resolved, never merely because a server exists in config.
-const remoteSkillPriorityTimeout = 2 * time.Second
+// anchored_context and tools/list. Priority is advertised only for a remote
+// project that is actually reachable/resolved, never merely because a server
+// exists in config. The deadline covers the read resolver's own bound, with a
+// margin: a shorter one ends the probe before a silent remote times out, so
+// the miss is never cached and every call waits on that remote again.
+func remoteSkillPriorityTimeout() time.Duration {
+	return remotesync.ReadResolutionBound(remoteReadProbeTimeout) + 500*time.Millisecond
+}
 
 // toolContext returns a structured bundle the model uses as the bootstrap
 // memory snapshot for a conversation:
@@ -365,7 +371,7 @@ func (s *Server) toolContext(ctx context.Context, args json.RawMessage) (string,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout)
+			probeCtx, cancel := context.WithTimeout(ctx, remoteSkillPriorityTimeout())
 			defer cancel()
 			remoteProjectResolved = s.hasReachableRemoteRepositoryProject(probeCtx, p.CWD)
 		}()
@@ -1662,6 +1668,10 @@ func (s *Server) toolKGQuery(ctx context.Context, args json.RawMessage) (string,
 	return joinLines(lines), nil
 }
 
+// kgAddWriteBudget bounds how long kg_add waits to learn which remote owns the
+// repository. A remote that has not answered by then holds the triple.
+var kgAddWriteBudget = 5 * time.Second
+
 func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, error) {
 	if s.kg == nil {
 		return "Knowledge graph not available.", nil
@@ -1700,9 +1710,7 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// Triples are entity strings, not free text, so no safety classification.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
-			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			r := s.resolveAutoRemoteWriteTarget(rctx, p.CWD)
-			rcancel()
+			r := s.resolveAutoRemoteWriteTargetWithin(ctx, p.CWD, kgAddWriteBudget)
 			if target, pid := r.Entry, r.ProjectID; target != nil && pid != "" && target.AutoSyncEnabled() {
 				go s.pushTripleTo(*target, pid, *triple)
 				result += fmt.Sprintf(" (auto-sync → %s)", target.Name)
@@ -1745,7 +1753,7 @@ func (s *Server) resolveRemoteProjectID(ctx context.Context, client *remotesync.
 // the path/default remote's linked project for non-repo contexts. Flows that
 // send data use resolveAutoRemoteWriteTarget.
 func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*config.RemoteEntry, string) {
-	r := s.autoRemoteTarget(ctx, cwd, false)
+	r := s.autoRemoteTarget(ctx, cwd, false, 0)
 	return r.Entry, r.ProjectID
 }
 
@@ -1754,7 +1762,15 @@ func (s *Server) resolveAutoRemoteTarget(ctx context.Context, cwd string) (*conf
 // precedence: a held result is a write waiting on a higher-precedence remote
 // that is not answering, which it never passes over.
 func (s *Server) resolveAutoRemoteWriteTarget(ctx context.Context, cwd string) remotesync.ProjectResolution {
-	return s.autoRemoteTarget(ctx, cwd, true)
+	return s.autoRemoteTarget(ctx, cwd, true, 0)
+}
+
+// resolveAutoRemoteWriteTargetWithin is resolveAutoRemoteWriteTarget with the
+// resolution bounded by budget, for a write a person waits on (kg_add). A
+// remote that does not answer within it holds the write, and the hold is kept
+// so the next writes for the repository do not wait on that remote again.
+func (s *Server) resolveAutoRemoteWriteTargetWithin(ctx context.Context, cwd string, budget time.Duration) remotesync.ProjectResolution {
+	return s.autoRemoteTarget(ctx, cwd, true, budget)
 }
 
 // routingMayBeStale reports whether a failed remote call suggests the remote
@@ -1818,12 +1834,12 @@ func (s *Server) holdAutoRemoteTarget(cwd string, held remotesync.ProjectResolut
 	}
 }
 
-func (s *Server) autoRemoteTarget(ctx context.Context, cwd string, write bool) remotesync.ProjectResolution {
+func (s *Server) autoRemoteTarget(ctx context.Context, cwd string, write bool, writeBudget time.Duration) remotesync.ProjectResolution {
 	if s.cfg == nil {
 		return remotesync.ProjectResolution{}
 	}
 	if canonicalKey, legacyKey, ok := s.repositoryRemoteKeys(cwd); ok {
-		return s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, write)
+		return s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, write, writeBudget)
 	}
 	if entry := s.cfg.ResolveRemote(cwd); entry != nil && len(entry.Projects) > 0 {
 		return remotesync.ProjectResolution{Entry: entry, ProjectID: entry.Projects[0]}
@@ -1860,7 +1876,7 @@ func (s *Server) resolveReachableRemoteRepositoryProject(ctx context.Context, cw
 	if !ok {
 		return nil, ""
 	}
-	r := s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, false)
+	r := s.resolveProjectAcrossRemotes(ctx, cwd, canonicalKey, legacyKey, false, 0)
 	return r.Entry, r.ProjectID
 }
 

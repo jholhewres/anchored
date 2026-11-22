@@ -105,8 +105,10 @@ func (c *remoteResolutionCache) forget(key string) {
 // interactive deadline and may fall back past a remote that did not answer.
 // Writes never reuse such a degraded answer: they resolve under strict
 // precedence, and a held write is kept for remoteMissTTL so the writes queued
-// behind it do not probe the same remote again.
-func (s *Server) resolveProjectAcrossRemotes(ctx context.Context, cwd, canonicalKey, legacyKey string, write bool) remotesync.ProjectResolution {
+// behind it do not probe the same remote again. writeBudget bounds a write's
+// whole resolution (zero for none); a caller bounds a write through it, never
+// through ctx, whose deadline would discard the hold. Reads ignore it.
+func (s *Server) resolveProjectAcrossRemotes(ctx context.Context, cwd, canonicalKey, legacyKey string, write bool, writeBudget time.Duration) remotesync.ProjectResolution {
 	key := remoteResolutionKey(s.cfg, cwd, canonicalKey, legacyKey)
 	c := &s.remoteResolutions
 	if write {
@@ -122,7 +124,7 @@ func (s *Server) resolveProjectAcrossRemotes(ctx context.Context, cwd, canonical
 
 	var r remotesync.ProjectResolution
 	if write {
-		r = remotesync.ResolveProjectAcrossRemotesForWrite(ctx, s.cfg, cwd, "mcp", canonicalKey, legacyKey)
+		r = remotesync.ResolveProjectAcrossRemotesForWriteWithin(ctx, s.cfg, cwd, "mcp", writeBudget, canonicalKey, legacyKey)
 	} else {
 		r = remotesync.ResolveProjectAcrossRemotesDetailed(ctx, s.cfg, cwd, "mcp", remoteReadProbeTimeout, canonicalKey, legacyKey)
 	}

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`kg_add` no longer waits 5 s on every call behind a remote that hangs.**
+  Against a remote that accepts the connection and never answers, the call's
+  own deadline ran out before the remote lookup did, so the hold was dropped
+  and the next call waited again. The lookup now has a 5 s budget of its own:
+  the hold is kept for a minute, and the calls after it return at once.
+- **`anchored_context` and `tools/list` no longer wait 2 s on every call
+  behind a remote that hangs.** The skill probe gave up before the remote
+  lookup timed out, so the miss was never cached. Its deadline now covers the
+  lookup, and only the first call waits.
+
 ## [0.20.2] - 2026-10-17
 
 Search latency and remote routing. On an 85k-memory database a search takes

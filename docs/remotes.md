@@ -45,8 +45,11 @@ remotes:
    repository, the other remotes are asked, and the one that lists a project
    under the repository's routing key (derived from its git origin) is used.
 4. **A write never passes over a remote that may own the repository.** If that
-   remote does not answer, or refuses the credentials, the write is held and
-   retried a minute later; a refusal asks you to log in again.
+   remote does not answer, or refuses the credentials, the write is held; a
+   refusal asks you to log in again. A held MCP save is retried a minute later.
+   A held `kg_add` triple stays local until `anchored remote sync`; `kg_add`
+   waits at most 5 s for the remote, and the writes after it for the same
+   repository are held for a minute without waiting on that remote again.
 
 `anchored remote status` shows where the current repository routes and why,
 and warns about two remotes marked default or a registration its glob ignores.
