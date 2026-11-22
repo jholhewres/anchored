@@ -37,12 +37,13 @@ var (
 	macOSHomeRe = regexp.MustCompile(`/Users/[^/\s:,;]+(?:/[^\s:,;]*)?`)
 	winHomeRe   = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\/\s:,;]+(?:\\[^\s:,;]*)?`)
 	tildeHomeRe = regexp.MustCompile(`~/[^\s:,;]+`)
-	// tmpPathsRe and rootHomeRe match only a whole first segment where a path
-	// starts (the start of the text, a URL's "//", or a character a path
-	// cannot hold), so a folder named tmp or root inside another path, or
-	// /rootfs, is not taken for them. The path is group 1.
-	tmpPathsRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/tmp|/var/folders|/private/tmp)(?:/[^\s:,;]*)?)(?:$|[^\w.-])`)
-	rootHomeRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/root|/var/root)(?:/[^\s:,;]*)?)(?:$|[^\w.-])`)
+	// tmpPathsRe and rootHomeRe match only where a path starts (the start of
+	// the text, a URL's "//", or a character a path cannot hold), so a folder
+	// named tmp or root inside another path is not taken for them. The path
+	// is group 1; startedPaths also drops a match that runs on into a longer
+	// name (/rootfs), without consuming the byte after it.
+	tmpPathsRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/tmp|/var/folders|/private/tmp)(?:/[^\s:,;]*)?)`)
+	rootHomeRe     = regexp.MustCompile(`(?:^|//|[^\w./~-])((?:/root|/var/root)(?:/[^\s:,;]*)?)`)
 	awsAccessKeyRe = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
 	googleAPIKeyRe = regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`)
 	credURIRe      = regexp.MustCompile(`(?i)\b(mongodb|postgres|postgresql|mysql|redis)(\+srv)?:\/\/[^\s/@]*:[^\s/@]+@`)
@@ -119,16 +120,16 @@ func SafeTriplesForRemote(triples []SyncTriple, projectRoot string) ([]SyncTripl
 }
 
 // filterTriples is SafeTriplesForRemote that says, for each triple held back,
-// which one and why ("triple 2 blocked: secret_pattern"), numbered from 1 in
-// the order given.
+// which one and why ("triple 2 (staging-db password) blocked:
+// secret_pattern"), numbered from 1 in the order given.
 func filterTriples(triples []SyncTriple, projectRoot string) ([]SyncTriple, []string) {
 	safe := make([]SyncTriple, 0, len(triples))
 	var withheld []string
 	for i, t := range triples {
 		out, reason := SafeTriple(t, projectRoot)
 		if reason != "" {
-			withheld = append(withheld, fmt.Sprintf("triple %d (%s %s) blocked: %s",
-				i+1, tripleLabel(t.Subject, projectRoot), tripleLabel(t.Predicate, projectRoot), reason))
+			withheld = append(withheld, fmt.Sprintf("triple %d (%s) blocked: %s",
+				i+1, tripleLabel(t.Subject+" "+t.Predicate, projectRoot), reason))
 			continue
 		}
 		safe = append(safe, out)
@@ -136,13 +137,14 @@ func filterTriples(triples []SyncTriple, projectRoot string) ([]SyncTriple, []st
 	return safe, withheld
 }
 
-// tripleLabel names a triple's field in the withheld list: as written when it
-// passes the filter alone, so no secret or path is echoed, and cut short.
-func tripleLabel(field, projectRoot string) string {
-	if RemoteSafetyFilter(field, nil, projectRoot).Blocked {
+// tripleLabel names a triple in the withheld list by its subject and
+// predicate, as printed together, only when together they pass the filter,
+// so no secret or path is echoed; cut short.
+func tripleLabel(label, projectRoot string) string {
+	if RemoteSafetyFilter(label, nil, projectRoot).Blocked {
 		return "[withheld]"
 	}
-	return truncate(field, 40)
+	return truncate(label, 60)
 }
 
 // SafeTriple is SafeTriplesForRemote for one triple: the triple to send, or
@@ -201,14 +203,14 @@ func detectLocalPaths(content string, projectRoot string, violations []RemoteSaf
 	}
 
 	for _, re := range []*regexp.Regexp{tmpPathsRe, rootHomeRe} {
-		for _, groups := range re.FindAllStringSubmatch(rewritten, -1) {
-			if underRoot(groups[1], projectRoot) {
+		for _, p := range startedPaths(re, rewritten) {
+			if underRoot(p, projectRoot) {
 				continue
 			}
 			violations = append(violations, RemoteSafetyViolation{
 				Field:   "content",
 				Pattern: re.String(),
-				Value:   truncate(groups[1], maxViolationValue),
+				Value:   truncate(p, maxViolationValue),
 				Reason:  "local_path",
 			})
 		}
@@ -219,6 +221,20 @@ func detectLocalPaths(content string, projectRoot string, violations []RemoteSaf
 	}
 
 	return rewritten, violations
+}
+
+// startedPaths returns re's group-1 paths in content, leaving out a match
+// that the next byte carries on into a longer name.
+func startedPaths(re *regexp.Regexp, content string) []string {
+	var paths []string
+	for _, m := range re.FindAllStringSubmatchIndex(content, -1) {
+		start, end := m[2], m[3]
+		if end < len(content) && isPathNameByte(content[end]) {
+			continue
+		}
+		paths = append(paths, content[start:end])
+	}
+	return paths
 }
 
 // trimRoot drops a project root's trailing separators; a root that is only
@@ -237,8 +253,9 @@ func underRoot(p, root string) bool {
 		return false
 	}
 	p = strings.TrimRight(p, ".,;:!?)]}>'\"`")
-	// As written, so the rewrite to "./" finds the root in it...
-	if !startsWithRoot(p, root) {
+	// As written, so the rewrite to "./" finds the root in it, and with no
+	// ".." segment, whose names would come from outside the project...
+	if !startsWithRoot(p, root) || strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") {
 		return false
 	}
 	// ...and once cleaned, so it does not climb back out with "..".

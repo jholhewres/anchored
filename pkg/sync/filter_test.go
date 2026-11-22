@@ -280,7 +280,7 @@ func TestSafeTriplesForRemote(t *testing.T) {
 		"triple 2 (staging-db connects_with) blocked: secret_pattern",
 		"triple 3 (ci authenticates_with) blocked: secret_pattern",
 		"triple 4 (deploy reads) blocked: local_path",
-		"triple 5 ([withheld] describes) blocked: local_path",
+		"triple 5 ([withheld]) blocked: local_path",
 	}
 	if strings.Join(withheld, "|") != strings.Join(wantWithheld, "|") {
 		t.Fatalf("withheld %q, want %q; sent %+v", withheld, wantWithheld, safe)
@@ -331,15 +331,19 @@ func TestRemoteSafetyFilter_ProjectRootIsAPathBoundary(t *testing.T) {
 	}
 }
 
-// TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath locks the cleaning
-// before the boundary check: a path that starts inside the project and climbs
-// out of it with .. is a local path outside the project.
+// TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath locks ".." at the
+// boundary: a path that starts inside the project and climbs out of it is a
+// local path outside the project, and so is one with any ".." segment, whose
+// names may come from outside it even when it lands back inside.
 func TestRemoteSafetyFilter_TraversalOutOfTheRootIsALocalPath(t *testing.T) {
 	if r := RemoteSafetyFilter("read /home/dev/proj/../secrets/db.env", nil, "/home/dev/proj"); !r.Blocked {
 		t.Fatalf("a path climbing out of the project passed as inside it and syncs as %q", r.Content)
 	}
-	if r := RemoteSafetyFilter("see /home/dev/proj/docs/../README.md", nil, "/home/dev/proj"); r.Blocked {
-		t.Fatalf("a path that stays inside the project was blocked: %+v", r.Violations)
+	if r := RemoteSafetyFilter("see /home/dev/proj/docs/../README.md", nil, "/home/dev/proj"); !r.Blocked {
+		t.Fatalf("a path with a .. segment went out as %q", r.Content)
+	}
+	if r := RemoteSafetyFilter("see /home/dev/proj/docs/README.md", nil, "/home/dev/proj"); r.Blocked || r.Content != "see ./docs/README.md" {
+		t.Fatalf("a plain path inside the project: %q blocked=%v, want it sent relative", r.Content, r.Blocked)
 	}
 }
 
@@ -377,6 +381,8 @@ func TestRemoteSafetyFilter_PathEdges(t *testing.T) {
 		{"open file:///tmp/report.html", true},
 		{"keys in /root/.ssh/id_ed25519", true},
 		{"build /home/dev/proj/bin:/home/dev/proj/tools", false},
+		{"scratch /tmp/a,/tmp/b", true},
+		{"from /home/dev/proj/sub/../../proj-other/x", true},
 	} {
 		if r := RemoteSafetyFilter(tc.content, nil, root); r.Blocked != tc.blocked {
 			t.Errorf("RemoteSafetyFilter(%q) blocked=%v (%q), want %v", tc.content, r.Blocked, r.Content, tc.blocked)
@@ -400,5 +406,17 @@ func TestUseSecretPatterns(t *testing.T) {
 	}
 	if _, withheld := SafeTriplesForRemote([]SyncTriple{{Subject: "billing", Predicate: "authenticates_with", Object: value}}, ""); withheld != 1 {
 		t.Fatal("a triple matching the user's pattern was not held back")
+	}
+}
+
+// TestRemoteSafetyFilter_SecondPathAfterAProjectPath locks the path rules on
+// lists: a temporary path right after one inside the project, joined by a
+// separator, is still checked.
+func TestRemoteSafetyFilter_SecondPathAfterAProjectPath(t *testing.T) {
+	if r := RemoteSafetyFilter("PATH=/tmp/ws/proj/bin:/tmp/other/bin", nil, "/tmp/ws/proj"); !r.Blocked {
+		t.Fatalf("a temporary path after a project path went out as %q", r.Content)
+	}
+	if r := RemoteSafetyFilter("PATH=/tmp/ws/proj/bin:/root/bin", nil, "/tmp/ws/proj"); !r.Blocked {
+		t.Fatalf("root's home after a project path went out as %q", r.Content)
 	}
 }

@@ -40,8 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   filter allowed any path that started with the project root, so
   `/home/dev/proj-private/plan.txt` synced from `/home/dev/proj` (as
   `.-private/plan.txt`), and `/home/dev/proj/../secrets` as `./../secrets`.
-  The root now has to end a path segment, the path is cleaned first, and a
-  sibling stays a blocked local path.
+  The root now has to end a path segment, a path with a `..` segment counts
+  as outside the project, each path of a `:`/`,`/`;` list is checked on its
+  own, and a sibling stays a blocked local path.
 - **A remote can no longer make the client buffer an endless project
   listing, save, search or triples response.** These are read up to 8 MiB,
   and any error body up to 64 KiB; a longer listing fails the lookup like a
