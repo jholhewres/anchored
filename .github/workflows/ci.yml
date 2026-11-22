@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Release branches (feat/v0.21, ...) are gated on every push before
+    # they reach main.
+    branches: [main, "feat/**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
