@@ -10,11 +10,25 @@ import "github.com/jholhewres/anchored/pkg/memory"
 // the original, so redactions aren't bypassed. ok is false for anything not
 // classified Syncable.
 func ClassifyForAutoSync(m memory.Memory, projectRoot string) (content string, ok bool) {
+	content, _, ok = ClassifyForRemote(m, projectRoot)
+	return content, ok
+}
+
+// ClassifyForRemote is ClassifyForAutoSync for any save that sends a memory to
+// a remote, automatic or asked for by name: a save that names its remote
+// gets no looser rules, so a user-scope or personal memory never leaves the
+// machine either way. reason is the preview's reason for a memory it blocks
+// ("user_scope_blocked", "secret_pattern", ...).
+func ClassifyForRemote(m memory.Memory, projectRoot string) (content, reason string, ok bool) {
 	res := ClassifyForPreview([]Memory{ToSyncMemory(m)}, projectRoot)
-	if len(res.Items) != 1 || res.Items[0].Classification != ClassificationSyncable {
-		return "", false
+	if len(res.Items) != 1 {
+		return "", "unclassified", false
 	}
-	return res.Items[0].Memory.Content, true
+	item := res.Items[0]
+	if item.Classification != ClassificationSyncable {
+		return "", item.Reason, false
+	}
+	return item.Memory.Content, "", true
 }
 
 // ToSyncMemory converts a local memory into the sync wire model. Exported so

@@ -70,7 +70,7 @@ func autoSyncRemote(ctx context.Context, cfg *config.Config, svc *memory.Service
 	if entry == nil || !entry.AutoSyncEnabled() {
 		return
 	}
-	redacted, ok := sync.ClassifyForAutoSync(*m, cwd)
+	redacted, ok := sync.ClassifyForAutoSync(*m, remoteFilterRoot(svc, cwd))
 	if !ok {
 		return
 	}
@@ -157,10 +157,18 @@ func pushRemote(ctx context.Context, cfg *config.Config, svc *memory.Service, m 
 		return
 	}
 
+	// Naming the remote loosens nothing: the memory passes the same
+	// classifier as auto-sync, and only its redacted content is sent.
+	cwd, _ := os.Getwd()
+	content, reason, ok := sync.ClassifyForRemote(*m, remoteFilterRoot(svc, cwd))
+	if !ok {
+		fmt.Fprintf(os.Stderr, "warning: remote save skipped: blocked by the safety policy (%s); the local save is kept\n", reason)
+		return
+	}
 	mem := sync.RemoteMemory{
 		ID:        m.ID,
 		Category:  m.Category,
-		Content:   m.Content,
+		Content:   content,
 		Source:    m.Source,
 		ProjectID: projectID,
 	}
@@ -176,6 +184,17 @@ func pushRemote(ctx context.Context, cfg *config.Config, svc *memory.Service, m 
 	}
 
 	fmt.Printf("Saved to remote %s [%s]\n", entry.Name, resp.ID)
+}
+
+// remoteFilterRoot is the project root the remote safety filter lets local
+// paths through under: the repository's root, or none outside a repository,
+// as the MCP server does.
+func remoteFilterRoot(svc *memory.Service, cwd string) string {
+	proj, err := svc.ResolveProjectInfo(cwd)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		return ""
+	}
+	return proj.Path
 }
 
 func hasExplicitFlag(args []string, name string) bool {

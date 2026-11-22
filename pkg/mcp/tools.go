@@ -111,7 +111,7 @@ func ToolDefinitions() []Tool {
 					},
 					"scope": map[string]any{
 						"type":        "string",
-						"description": "Optional scope for category=preference. Defaults to user. Use project for project conventions; use team only when explicitly shared.",
+						"description": "Optional. For category=preference: defaults to user; use project for project conventions, team only when explicitly shared. For any other category only user counts: it keeps the memory in your personal scope, never synced to a remote; leave it out otherwise.",
 						"enum":        []string{"user", "project", "team"},
 					},
 					"remote": map[string]any{

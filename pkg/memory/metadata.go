@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -345,13 +346,21 @@ func (m MemoryMetadata) IsRemoteSyncCandidate() bool {
 	return false
 }
 
+// WithPreferenceScope applies the scope a save was given. For a preference
+// it is the preference's scope. For any other category only "user" counts:
+// it narrows the memory to the personal scope, which never leaves the
+// machine; any other value leaves the scope to be inferred from the project.
 func WithPreferenceScope(metadata any, category, scope string) any {
 	if category != "preference" {
 		m := ParseMetadata(metadata)
-		if m.PreferenceScope == "" {
+		personal := strings.EqualFold(strings.TrimSpace(scope), ScopeUser)
+		if m.PreferenceScope == "" && !personal {
 			return metadata
 		}
 		m.PreferenceScope = ""
+		if personal {
+			m.Scope = ScopeUser
+		}
 		return m.ToAny()
 	}
 	m := ParseMetadata(metadata)

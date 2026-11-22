@@ -11,11 +11,8 @@ Then call the `anchored_save` MCP tool. You MUST pick the best category from: `f
 
 ## Remote Save
 
-When working in a project that has a remote server configured, you SHOULD also save to the remote by passing `--remote`. This makes the memory available to team members and other machines.
+Leave `remote` out. When the repository's remote has `auto_sync` on, the save is mirrored to it automatically, through the safety filter.
 
-- `--remote` (no value): save to the default remote server
-- `--remote=name`: save to a named remote server
+Pass `remote` only when the user asks to send this memory to a specific server (`""` or `"default"` for the default remote, or a remote's name). It runs the same filter as auto-sync: secrets, local paths, events, preferences and anything in the personal (`user`) scope never leave the machine, and the reply says why.
 
-The save always succeeds locally first. If the remote save fails (403, network error), the local save is preserved and a warning is printed — the flow never breaks.
-
-Categories `event` and `preference` are blocked from remote sync. Use `fact`, `decision`, `plan`, `summary`, or `learning` for team-shareable memories.
+The save always succeeds locally first. If the remote save fails or is blocked, the local save is preserved and the reply says so.

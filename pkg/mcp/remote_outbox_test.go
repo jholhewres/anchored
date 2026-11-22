@@ -360,10 +360,10 @@ func TestRemoteOutboxDestinationSurvivesConfigRename(t *testing.T) {
 }
 
 func TestRemoteSaveContentRedactsProjectRootBeforeSnapshot(t *testing.T) {
-	content, ok := remoteSaveContent(memory.Memory{
+	content, _, ok := remotesync.ClassifyForRemote(memory.Memory{
 		Category: "decision",
 		Content:  "use /home/test/work/repo/config.yaml for the local fixture",
-	}, "/home/test/work/repo", false)
+	}, "/home/test/work/repo")
 	if !ok {
 		t.Fatal("project-local path was unexpectedly blocked")
 	}
@@ -814,5 +814,106 @@ func TestRemoteOutboxStoresAnAbsoluteCWD(t *testing.T) {
 	}
 	if envelope.CWD != repo {
 		t.Fatalf("outbox envelope cwd = %q, want %q", envelope.CWD, repo)
+	}
+}
+
+// TestToolSaveExplicitRemoteRunsTheClassifier locks the explicit remote save
+// to the auto-sync classifier: naming the remote loosens nothing, so a
+// user-scope or personal memory, or one carrying a secret, stays local and
+// the reply says why, while a project decision still goes out.
+func TestToolSaveExplicitRemoteRunsTheClassifier(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "remote", "add", "origin", "https://github.com/test/classifier-fixture.git"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	scratch := t.TempDir()
+
+	cfg := config.Defaults()
+	cfg.Memory.StorageDir = dir
+	cfg.Memory.DatabasePath = filepath.Join(dir, "classifier.db")
+	cfg.Embedding.Provider = "none"
+	svc, err := memory.NewService(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	proj, err := svc.ResolveProjectInfo(repo)
+	if err != nil || proj == nil {
+		t.Fatalf("resolve project = (%#v, %v)", proj, err)
+	}
+
+	var mu sync.Mutex
+	var sent []string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/projects":
+			if _, err := fmt.Fprintf(w, `[{"id":"remote-project","name":"x","slug":"x","remote_key":%q}]`, proj.RemoteKey); err != nil {
+				t.Errorf("write projects: %v", err)
+			}
+		case "/v1/memories":
+			var m remotesync.RemoteMemory
+			if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+				t.Errorf("decode memory: %v", err)
+			}
+			mu.Lock()
+			sent = append(sent, m.Content)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			if _, err := w.Write([]byte(`{"id":"remote-memory","created":true}`)); err != nil {
+				t.Errorf("write: %v", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer remote.Close()
+	cfg.Remotes = map[string]config.RemoteEntry{
+		"team": {Name: "team", ServerURL: remote.URL, APIKey: "k1", Default: true, Projects: []string{"remote-project"}},
+	}
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+	save := func(fields map[string]any) string {
+		t.Helper()
+		fields["remote"] = "team"
+		args, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := srv.toolSave(context.Background(), args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name   string
+		fields map[string]any
+		reason string
+	}{
+		{"scope user on a fact in a repository", map[string]any{"content": "The payment migration review with my manager happens on Fridays and its notes stay with me", "category": "fact", "scope": "user", "cwd": repo}, "user_scope_blocked"},
+		{"user scope outside a repository", map[string]any{"content": "the staging cluster restarts every night at three", "category": "fact", "cwd": scratch}, "user_scope_blocked"},
+		{"secret", map[string]any{"content": "the deploy bot uses ghp_" + strings.Repeat("a", 36), "category": "decision", "cwd": repo}, "secret_pattern"},
+	} {
+		if out := save(tc.fields); !strings.Contains(out, "remote: blocked by safety policy: "+tc.reason) {
+			t.Errorf("%s: save output = %q, want it blocked as %s", tc.name, out, tc.reason)
+		}
+	}
+	const decision = "decision: explicit remote saves run the auto-sync classifier"
+	if out := save(map[string]any{"content": decision, "category": "decision", "cwd": repo}); !strings.Contains(out, "(remote: saved to team)") {
+		t.Fatalf("project decision: save output = %q, want it sent", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 || sent[0] != decision {
+		t.Fatalf("the remote received %q, want only the project decision", sent)
 	}
 }

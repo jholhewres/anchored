@@ -1365,7 +1365,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 				if !s.hasAutoSyncRemote() {
 					return nil, nil
 				}
-				content, ok := remoteSaveContent(m, s.projectFilterRoot(ctx, m.ProjectID), true)
+				content, _, ok := remotesync.ClassifyForRemote(m, s.projectFilterRoot(ctx, m.ProjectID))
 				if !ok {
 					autoSyncSafetyBlocked = true
 					return nil, nil
@@ -1415,9 +1415,9 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 		case projectID == "":
 			result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
 		default:
-			content, ok := remoteSaveContent(*m, s.projectFilterRoot(ctx, m.ProjectID), false)
+			content, reason, ok := remotesync.ClassifyForRemote(*m, s.projectFilterRoot(ctx, m.ProjectID))
 			if !ok {
-				result += " (remote: blocked by safety policy, local save preserved)"
+				result += fmt.Sprintf(" (remote: blocked by safety policy: %s, local save preserved)", reason)
 				break
 			}
 			remoteMemory := remotesync.RemoteMemory{
@@ -1470,20 +1470,6 @@ func remoteOutboxName(entry config.RemoteEntry) string {
 		return entry.ServerURL
 	}
 	return entry.Name
-}
-
-func remoteSaveContent(m memory.Memory, cwd string, automatic bool) (string, bool) {
-	if automatic {
-		return remotesync.ClassifyForAutoSync(m, cwd)
-	}
-	if m.Category == "event" || m.Category == "preference" {
-		return "", false
-	}
-	result := remotesync.RemoteSafetyFilter(m.Content, nil, cwd)
-	if result.Blocked {
-		return "", false
-	}
-	return result.Content, true
 }
 
 func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, error) {
