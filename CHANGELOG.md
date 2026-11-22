@@ -26,6 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   project is sent relative to it. A triple is also read as the sentence it
   states, so a password named in the predicate with its value in the object
   is caught as it would be in a memory.
+- **What leaves the machine is checked against the repository's root, not
+  the directory a tool was called from.** From your home directory, every
+  home path counted as inside the project and went out relative to it. A
+  tool called inside a repository now uses the repository's root, and one
+  called outside any repository allows no local path at all.
 - **The remote safety filter applies your own sanitizer patterns**
   (`sanitizer.patterns`) to everything it checks, on top of the built-in
   rules, even with the local sanitizer off. Root's home (`/root`,

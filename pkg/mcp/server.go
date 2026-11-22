@@ -1365,7 +1365,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 				if !s.hasAutoSyncRemote() {
 					return nil, nil
 				}
-				content, ok := remoteSaveContent(m, p.CWD, true)
+				content, ok := remoteSaveContent(m, s.remoteFilterRoot(p.CWD), true)
 				if !ok {
 					autoSyncSafetyBlocked = true
 					return nil, nil
@@ -1415,7 +1415,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 		case projectID == "":
 			result += " (remote: no remote project resolved, skipped — link one with `anchored remote link <id>` or create it on the server)"
 		default:
-			content, ok := remoteSaveContent(*m, p.CWD, false)
+			content, ok := remoteSaveContent(*m, s.remoteFilterRoot(p.CWD), false)
 			if !ok {
 				result += " (remote: blocked by safety policy, local save preserved)"
 				break
@@ -1713,7 +1713,7 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// blocks never asks a remote at all.
 	if s.cfg != nil {
 		if s.hasAnyRemote() {
-			root := p.CWD
+			root := s.remoteFilterRoot(p.CWD)
 			if _, reason := remotesync.SafeTriple(remotesync.TriplesFromKG([]kg.Triple{*triple})[0], root); reason != "" {
 				return result + " (local only — blocked by safety policy: " + reason + ")", nil
 			}
@@ -1797,6 +1797,21 @@ func (s *Server) repositoryRemoteKeys(cwd string) (canonicalKey, legacyKey strin
 	}
 	canonicalKey, legacyKey = project.RemoteKeysFromDir(proj.Path)
 	return canonicalKey, legacyKey, true
+}
+
+// remoteFilterRoot is the project root the remote safety filter lets local
+// paths through under, for what a tool sends from cwd: the repository's root,
+// or none outside a repository. A cwd such as the home directory must never
+// make every home path look like a project path.
+func (s *Server) remoteFilterRoot(cwd string) string {
+	if s.mem == nil {
+		return ""
+	}
+	proj, err := s.mem.ResolveProjectInfo(cwd)
+	if err != nil || proj == nil || proj.RemoteKey == "" {
+		return ""
+	}
+	return proj.Path
 }
 
 // forgetAutoRemoteTarget drops what the cache holds for cwd's repository.

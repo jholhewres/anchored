@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -174,5 +176,31 @@ func TestKGAddKeepsAnUnsafeTripleLocal(t *testing.T) {
 	case got := <-objects:
 		t.Fatalf("the remote received a second triple %q", got)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestRemoteFilterRoot locks the root the safety filter allows local paths
+// under: the repository's root from anywhere inside it, and none outside a
+// repository, so a cwd like the home directory never passes home paths as
+// project paths.
+func TestRemoteFilterRoot(t *testing.T) {
+	repo, svc, cfg := newRemoteSearchFixture(t)
+	srv := NewServer(svc, nil, nil, nil, cfg, "test", slog.Default())
+	sub := filepath.Join(repo, "pkg", "deep")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{repo, sub} {
+		got, err := filepath.EvalSymlinks(srv.remoteFilterRoot(cwd))
+		if err != nil || got != want {
+			t.Errorf("remoteFilterRoot(%q) = %q (%v), want the repository root %q", cwd, got, err, want)
+		}
+	}
+	if got := srv.remoteFilterRoot(t.TempDir()); got != "" {
+		t.Errorf("remoteFilterRoot outside a repository = %q, want none", got)
 	}
 }
