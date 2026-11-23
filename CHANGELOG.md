@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The MCP server runs on the official go-sdk.** Requests are handled
+  concurrently, so a slow call no longer holds a ping or any other call. The
+  protocol version is negotiated: a client that asks for 2025-06-18 or
+  2025-11-25 gets it. A tool's own failure comes back as a result with
+  `isError`, which the model reads, instead of a JSON-RPC error; an unknown
+  tool is `-32602`. A line that is not JSON gets `-32700` with `id: null`, a
+  JSON-RPC batch gets `-32600`, and a line over 16 MiB is refused; the session
+  keeps serving after each, where a line over 1 MiB used to end it. Tool
+  names, schemas and instructions are unchanged.
+- **Each MCP session has its own root.** An omitted or relative `cwd`, and a
+  relative file path, resolve against the directory the client started in,
+  and the `anchored_ctx_search` throttle counts per session. At most four
+  sandbox executions or fetches run at once per session.
+
 ### Fixed
+
+- **Two saves at once in a new repository both land in its project.** The
+  second detection of a repository nobody had registered yet failed on the
+  unique path and the memory was saved with no project, visible from every
+  project. Concurrent requests made this reachable from one client.
+- **`anchored_session_end` saves its summary in the session's project**, not
+  the process's working directory.
+- **`anchored_batch_execute` runs a command without `language` as shell**, as
+  its schema says, instead of failing with "unsupported language".
 
 - **A path glob written through a symlinked directory matches.** Routing
   compares resolved paths, so on macOS, where `/var` is `/private/var`, a
