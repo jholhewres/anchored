@@ -5,6 +5,7 @@ package ctx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,9 +16,9 @@ import (
 )
 
 const (
-	defaultTimeout    = 30 * time.Second
-	defaultMaxOutput  = 1 << 20
-	tempDirPrefix     = "anchored-exec-"
+	defaultTimeout   = 30 * time.Second
+	defaultMaxOutput = 1 << 20
+	tempDirPrefix    = "anchored-exec-"
 )
 
 type Sandbox struct {
@@ -70,6 +71,9 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// sandboxWaitDelay bounds the wait for pipes an escaped descendant keeps open.
+const sandboxWaitDelay = time.Second
+
 func (s *Sandbox) Execute(parent context.Context, language string, code string) (*ExecuteResult, error) {
 	tmpDir, err := os.MkdirTemp("", tempDirPrefix)
 	if err != nil {
@@ -95,10 +99,16 @@ func (s *Sandbox) Execute(parent context.Context, language string, code string) 
 	cmd.Env = sanitizedEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// Both streams are capped: an execution that floods stderr must not hold
+	// it all in memory.
 	stdoutWriter := newLimitedWriter(s.maxOutputBytes)
-	var stderrBuf bytes.Buffer
+	stderrWriter := newLimitedWriter(s.maxOutputBytes)
 	cmd.Stdout = stdoutWriter
-	cmd.Stderr = &stderrBuf
+	cmd.Stderr = stderrWriter
+	// A descendant that escapes the process group (setsid) can keep the
+	// pipes open after the command exits or is killed; Wait gives up on
+	// them this long after, so the execution ends on time.
+	cmd.WaitDelay = sandboxWaitDelay
 
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
@@ -125,12 +135,15 @@ func (s *Sandbox) Execute(parent context.Context, language string, code string) 
 
 	result := &ExecuteResult{
 		Stdout:    stdoutWriter.buf.String(),
-		Stderr:    stderrBuf.String(),
+		Stderr:    stderrWriter.buf.String(),
 		Duration:  duration,
 		TimedOut:  ctx.Err() == context.DeadlineExceeded,
 		Truncated: stdoutWriter.truncated,
 	}
 
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		waitErr = nil // the command exited; only an escaped descendant held its pipes
+	}
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
@@ -229,51 +242,51 @@ func findRuntime(candidates []string) string {
 // envDenylist names environment variables that can hijack interpreters or
 // pollute sandbox stdout. They are stripped before launching the subprocess.
 var envDenylist = map[string]struct{}{
-	"BASH_ENV":           {},
-	"ENV":                {},
-	"PROMPT_COMMAND":     {},
-	"PS4":                {},
-	"NODE_OPTIONS":       {},
-	"NODE_PATH":          {},
-	"NODE_DISABLE_COLORS": {},
-	"PYTHONSTARTUP":      {},
+	"BASH_ENV":                {},
+	"ENV":                     {},
+	"PROMPT_COMMAND":          {},
+	"PS4":                     {},
+	"NODE_OPTIONS":            {},
+	"NODE_PATH":               {},
+	"NODE_DISABLE_COLORS":     {},
+	"PYTHONSTARTUP":           {},
 	"PYTHONDONTWRITEBYTECODE": {},
-	"PYTHONOPTIMIZE":     {},
-	"PYTHONPATH":         {},
-	"RUBYOPT":            {},
-	"RUBYLIB":            {},
-	"RUBYLIB_PREFIX":     {},
-	"GEM_HOME":           {},
-	"GEM_PATH":           {},
-	"PERL5OPT":           {},
-	"PERL5LIB":           {},
-	"PHPRC":              {},
-	"R_PROFILE":          {},
-	"R_PROFILE_USER":     {},
-	"R_ENVIRON":          {},
-	"R_ENVIRON_USER":     {},
-	"GOFLAGS":            {},
-	"GOENV":              {},
-	"RUSTFLAGS":          {},
-	"RUSTC_WRAPPER":      {},
-	"CARGO_HOME":         {},
-	"LD_PRELOAD":         {},
-	"LD_AUDIT":           {},
-	"LD_LIBRARY_PATH":    {},
-	"DYLD_INSERT_LIBRARIES": {},
-	"DYLD_LIBRARY_PATH":  {},
-	"DYLD_FRAMEWORK_PATH": {},
-	"GIT_SSH_COMMAND":    {},
-	"GIT_EXTERNAL_DIFF":  {},
-	"GIT_PAGER":          {},
-	"PAGER":              {},
-	"EDITOR":             {},
-	"VISUAL":             {},
-	"MANPAGER":           {},
-	"LESS":               {},
-	"DEBUGINFOD_URLS":    {},
-	"PIP_INDEX_URL":      {},
-	"PIP_EXTRA_INDEX_URL": {},
+	"PYTHONOPTIMIZE":          {},
+	"PYTHONPATH":              {},
+	"RUBYOPT":                 {},
+	"RUBYLIB":                 {},
+	"RUBYLIB_PREFIX":          {},
+	"GEM_HOME":                {},
+	"GEM_PATH":                {},
+	"PERL5OPT":                {},
+	"PERL5LIB":                {},
+	"PHPRC":                   {},
+	"R_PROFILE":               {},
+	"R_PROFILE_USER":          {},
+	"R_ENVIRON":               {},
+	"R_ENVIRON_USER":          {},
+	"GOFLAGS":                 {},
+	"GOENV":                   {},
+	"RUSTFLAGS":               {},
+	"RUSTC_WRAPPER":           {},
+	"CARGO_HOME":              {},
+	"LD_PRELOAD":              {},
+	"LD_AUDIT":                {},
+	"LD_LIBRARY_PATH":         {},
+	"DYLD_INSERT_LIBRARIES":   {},
+	"DYLD_LIBRARY_PATH":       {},
+	"DYLD_FRAMEWORK_PATH":     {},
+	"GIT_SSH_COMMAND":         {},
+	"GIT_EXTERNAL_DIFF":       {},
+	"GIT_PAGER":               {},
+	"PAGER":                   {},
+	"EDITOR":                  {},
+	"VISUAL":                  {},
+	"MANPAGER":                {},
+	"LESS":                    {},
+	"DEBUGINFOD_URLS":         {},
+	"PIP_INDEX_URL":           {},
+	"PIP_EXTRA_INDEX_URL":     {},
 }
 
 // sanitizedEnv returns os.Environ() with denylisted vars removed and forced
@@ -304,8 +317,8 @@ func sanitizedEnv() []string {
 // content to user code via well-known variables. The user code is then
 // concatenated after this prelude and executed.
 //
-//   FILE_PATH      — absolute path to the file (string).
-//   FILE_CONTENT   — the file's contents read as text (string).
+//	FILE_PATH      — absolute path to the file (string).
+//	FILE_CONTENT   — the file's contents read as text (string).
 //
 // For shell, FILE_PATH is exported and FILE_CONTENT is loaded into the variable.
 func FilePrelude(language, path string) string {
