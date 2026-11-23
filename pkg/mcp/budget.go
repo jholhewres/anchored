@@ -47,7 +47,7 @@ const (
 
 // defaultCWD substitutes the process's working directory for an omitted cwd
 // in a call made outside any MCP session; a session resolves it against its
-// root instead (Server.sessionCWD). An empty cwd must not silently mean "no
+// root instead (Server.rootedCWD). An empty cwd must not silently mean "no
 // team memory". Explicit cwd always wins.
 func defaultCWD(cwd string) string {
 	if cwd == "" {

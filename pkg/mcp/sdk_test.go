@@ -402,3 +402,38 @@ func TestSDK_ARelativeFilePathResolvesAgainstTheCallsCWD(t *testing.T) {
 		t.Fatalf("execute_file notes.md with cwd %s: %+v %s", fx.repo, msg.Error, res.text())
 	}
 }
+
+func TestSDK_ABatchHoldsAnExecutionSlotPerConcurrentCommand(t *testing.T) {
+	fx := newConformanceFixture(t)
+	restore := maxConcurrentExecutions
+	maxConcurrentExecutions = 2
+	t.Cleanup(func() { maxConcurrentExecutions = restore })
+	client := startConformanceClient(t, fx.server)
+	client.handshake()
+
+	start := time.Now()
+	batch, _ := client.request("tools/call", `{"name":"anchored_batch_execute","arguments":{"concurrency":8,"queries":["x"],"commands":[{"command":"sleep 1"},{"command":"sleep 1"}]}}`, false)
+	client.send(batch)
+	time.Sleep(200 * time.Millisecond)
+	single, _ := client.request("tools/call", `{"name":"anchored_execute","arguments":{"language":"shell","code":"sleep 1"}}`, false)
+	client.send(single)
+	for range 2 {
+		if client.recv(30*time.Second) == nil {
+			t.Fatal("a call never answered")
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Fatalf("a batch of 2 concurrent commands and one execution finished in %v with 2 slots: they ran at once", elapsed)
+	}
+}
+
+func TestSDK_IndexReadsARelativePathAgainstTheCallsCWD(t *testing.T) {
+	fx := newConformanceFixture(t)
+	t.Chdir(t.TempDir())
+	client := startConformanceClientAt(t, fx.server, t.TempDir())
+	client.handshake()
+	res, msg := client.callTool("anchored_index", map[string]any{"source": "notes", "path": "notes.md", "cwd": fx.repo})
+	if msg.Error != nil || res.IsError || !strings.Contains(res.text(), "Indexed file") {
+		t.Fatalf("anchored_index notes.md with cwd %s: %+v %s", fx.repo, msg.Error, res.text())
+	}
+}

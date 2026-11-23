@@ -1,9 +1,5 @@
 package mcp
 
-import (
-	"sort"
-)
-
 func ToolDefinitions() []Tool {
 	return []Tool{
 		{
@@ -563,10 +559,4 @@ func FindTool(name string) *Tool {
 		}
 	}
 	return nil
-}
-
-func SortTools(tools []Tool) {
-	sort.Slice(tools, func(i, j int) bool {
-		return tools[i].Name < tools[j].Name
-	})
 }

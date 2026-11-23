@@ -200,6 +200,13 @@ func (f *frameWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// writeLine writes one whole message; a failure is kept for err.
+func (f *frameWriter) writeLine(line []byte) {
+	if _, err := f.Write(line); err != nil {
+		return // kept in firstErr
+	}
+}
+
 func (f *frameWriter) Close() error { return nil }
 
 func (f *frameWriter) err() error {
@@ -224,11 +231,3 @@ func (f *frameWriter) writeError(id json.RawMessage, code int, message string) {
 	f.writeLine(append(data, '\n'))
 }
 
-// writeLine writes one whole message; a failure is kept for err.
-func (f *frameWriter) writeLine(line []byte) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, err := f.w.Write(line); err != nil && f.firstErr == nil {
-		f.firstErr = err
-	}
-}

@@ -208,7 +208,9 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 		}
 	}
 	s.resetSearchThrottle(ctx)
-	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent, projectID, p.Concurrency)
+	// The batch holds one execution slot per command it runs at once; it
+	// cannot run more than the session's limit (see executionWeight).
+	result, err := s.optimizer.ExecuteBatch(ctx, cmds, p.Queries, p.Intent, projectID, min(p.Concurrency, executionLimit()))
 	if err != nil {
 		return "", err
 	}
@@ -366,7 +368,7 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 		for i, r := range p.Requests {
 			reqs[i] = OptimizerFetchRequest{URL: r.URL, Source: r.Source}
 		}
-		entries, err := s.optimizer.FetchAndIndexBatch(ctx, reqs, p.Concurrency, projectID, p.Force)
+		entries, err := s.optimizer.FetchAndIndexBatch(ctx, reqs, min(p.Concurrency, executionLimit()), projectID, p.Force)
 		if err != nil {
 			return "", err
 		}

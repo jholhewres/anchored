@@ -12,6 +12,7 @@ import (
 	"github.com/jholhewres/anchored/pkg/debuglog"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/semaphore"
 )
 
 // toolAliases are old tool names tools/call still answers to. They never
@@ -37,7 +38,7 @@ type mcpSession struct {
 	searchCalls atomic.Int32
 
 	slotsOnce sync.Once
-	slots     chan struct{} // see maxConcurrentExecutions
+	slots     *semaphore.Weighted // see maxConcurrentExecutions
 }
 
 type mcpSessionKey struct{}
@@ -191,7 +192,7 @@ func (s *Server) visibleTools(ctx context.Context, cwd string, tools []*sdk.Tool
 // so the model reads it; JSON-RPC errors are left to the protocol.
 func (s *Server) toolResult(ctx context.Context, name string, args json.RawMessage) *sdk.CallToolResult {
 	if boundedTools[name] {
-		release, err := s.mcpState(ctx).executionSlot(ctx)
+		release, err := s.mcpState(ctx).executionSlots(ctx, executionWeight(args))
 		if err != nil {
 			return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}}}
 		}
@@ -256,9 +257,10 @@ func (h minLevelHandler) WithGroup(name string) slog.Handler {
 	return minLevelHandler{Handler: h.Handler.WithGroup(name), min: h.min}
 }
 
-// maxConcurrentExecutions bounds the tools one session runs at once that
-// start a sandbox process or fetch a URL. Requests run concurrently, so
-// without a bound a prompt-injected model could fire any number of them.
+// maxConcurrentExecutions bounds the sandbox processes and fetches one
+// session runs at once. Requests run concurrently, so without a bound a
+// prompt-injected model could fire any number of them. A batch call holds
+// one slot per command it runs at once.
 var maxConcurrentExecutions = 4
 
 // boundedTools are the tools maxConcurrentExecutions applies to.
@@ -269,14 +271,29 @@ var boundedTools = map[string]bool{
 	"anchored_fetch_and_index": true,
 }
 
-// executionSlot waits for one of the session's execution slots and returns
-// its release, or the context's error when the call is cancelled first.
-func (m *mcpSession) executionSlot(ctx context.Context) (release func(), err error) {
-	m.slotsOnce.Do(func() { m.slots = make(chan struct{}, max(maxConcurrentExecutions, 1)) })
-	select {
-	case m.slots <- struct{}{}:
-		return func() { <-m.slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+// executionSlots waits for n of the session's execution slots, all at once,
+// and returns their release, or the context's error when the call is
+// cancelled first.
+func (m *mcpSession) executionSlots(ctx context.Context, n int) (release func(), err error) {
+	m.slotsOnce.Do(func() { m.slots = semaphore.NewWeighted(int64(executionLimit())) })
+	weight := int64(min(max(n, 1), executionLimit()))
+	if err := m.slots.Acquire(ctx, weight); err != nil {
+		return nil, err
 	}
+	return func() { m.slots.Release(weight) }, nil
+}
+
+// executionLimit is maxConcurrentExecutions, at least 1.
+func executionLimit() int { return max(maxConcurrentExecutions, 1) }
+
+// executionWeight is how many slots a call holds: the commands or fetches
+// a batch runs at once, 1 for anything else.
+func executionWeight(args json.RawMessage) int {
+	var p struct {
+		Concurrency int `json:"concurrency"`
+	}
+	if json.Unmarshal(args, &p) != nil {
+		return 1
+	}
+	return min(max(p.Concurrency, 1), executionLimit())
 }
