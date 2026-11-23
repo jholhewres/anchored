@@ -230,4 +230,3 @@ func (f *frameWriter) writeError(id json.RawMessage, code int, message string) {
 	}
 	f.writeLine(append(data, '\n'))
 }
-

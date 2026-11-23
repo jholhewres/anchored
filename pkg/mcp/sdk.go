@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -39,6 +40,7 @@ type mcpSession struct {
 
 	slotsOnce sync.Once
 	slots     *semaphore.Weighted // see maxConcurrentExecutions
+	waiting   atomic.Int32        // calls waiting for a slot; see maxWaitingExecutions
 }
 
 type mcpSessionKey struct{}
@@ -263,6 +265,11 @@ func (h minLevelHandler) WithGroup(name string) slog.Handler {
 // one slot per command it runs at once.
 var maxConcurrentExecutions = 4
 
+// maxWaitingExecutions bounds the calls of one session waiting for an
+// execution slot. Past it a call fails at once instead of parking, so a flood
+// of calls cannot grow the server without bound.
+var maxWaitingExecutions = 8
+
 // boundedTools are the tools maxConcurrentExecutions applies to.
 var boundedTools = map[string]bool{
 	"anchored_execute":         true,
@@ -277,8 +284,16 @@ var boundedTools = map[string]bool{
 func (m *mcpSession) executionSlots(ctx context.Context, n int) (release func(), err error) {
 	m.slotsOnce.Do(func() { m.slots = semaphore.NewWeighted(int64(executionLimit())) })
 	weight := int64(min(max(n, 1), executionLimit()))
-	if err := m.slots.Acquire(ctx, weight); err != nil {
-		return nil, err
+	if !m.slots.TryAcquire(weight) {
+		if m.waiting.Add(1) > int32(maxWaitingExecutions) {
+			m.waiting.Add(-1)
+			return nil, errors.New("too many executions waiting in this session; retry when one finishes")
+		}
+		err := m.slots.Acquire(ctx, weight)
+		m.waiting.Add(-1)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return func() { m.slots.Release(weight) }, nil
 }
