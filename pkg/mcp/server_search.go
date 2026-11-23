@@ -49,8 +49,8 @@ func (s *Server) toolSearch(ctx context.Context, args json.RawMessage) (string, 
 	// Remote routing needs a real directory. An omitted cwd means "global
 	// LOCAL search", but it must not also silently mean "no team memory" —
 	// fall back to the session's root, the same convention toolSave uses.
-	p.CWD = s.sessionPath(ctx, p.CWD)
-	remoteCWD := s.sessionCWD(ctx, p.CWD)
+	p.CWD = s.rootedPath(ctx, p.CWD)
+	remoteCWD := s.rootedCWD(ctx, p.CWD)
 
 	// Explicit remote: query ONLY the remote server. A failure here must be
 	// VISIBLE in the output — falling back to local silently makes the agent

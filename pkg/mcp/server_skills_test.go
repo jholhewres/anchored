@@ -1,8 +1,6 @@
 package mcp
 
 import (
-	"slices"
-
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,16 +10,16 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"github.com/jholhewres/anchored/pkg/config"
 	"github.com/jholhewres/anchored/pkg/memory"
 	remotesync "github.com/jholhewres/anchored/pkg/sync"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func newSkillTestServer(t *testing.T, handler http.Handler) (string, *Server) {
@@ -170,7 +168,7 @@ func TestToolsList_AdvertisesSkillOnlyForReachableRemoteRepositoryProject(t *tes
 	}
 	remoteKey = project.RemoteKey
 
-	if !containsTool(srv.toolsForCWD(context.Background(), repo), "anchored_skill") {
+	if !listsSkill(t, srv, repo) {
 		t.Fatal("resolved remote project must advertise anchored_skill")
 	}
 
@@ -194,7 +192,7 @@ func TestToolsList_AdvertisesSkillOnlyForReachableRemoteRepositoryProject(t *tes
 	entry := srv.cfg.Remotes["team"]
 	entry.Projects = []string{"stale-project"}
 	srv.cfg.Remotes["team"] = entry
-	if containsTool(srv.toolsForCWD(context.Background(), repo), "anchored_skill") {
+	if listsSkill(t, srv, repo) {
 		t.Fatal("stale remote configuration advertised anchored_skill")
 	}
 	// Direct calls obey the same strict resolver and must not use the stale
@@ -207,18 +205,9 @@ func TestToolsList_AdvertisesSkillOnlyForReachableRemoteRepositoryProject(t *tes
 
 func TestToolsList_OmitsSkillWithoutRemoteProject(t *testing.T) {
 	srv := NewServer(nil, nil, nil, nil, config.Defaults(), "test", slog.Default())
-	if containsTool(srv.toolsForCWD(context.Background(), "."), "anchored_skill") {
+	if listsSkill(t, srv, t.TempDir()) {
 		t.Fatal("unresolved repository advertised anchored_skill")
 	}
-}
-
-func containsTool(tools []Tool, name string) bool {
-	for _, tool := range tools {
-		if tool.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // TestRemoteSkillProbeCachesASilentRemote locks the skill probe of tools/list
@@ -273,11 +262,30 @@ func sdkClientSession(t *testing.T, srv *Server, root string) *sdk.ClientSession
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	t.Cleanup(func() { _ = serverSession.Close() })
+	t.Cleanup(func() {
+		if err := serverSession.Close(); err != nil {
+			t.Errorf("close the server session: %v", err)
+		}
+	})
 	clientSession, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { _ = clientSession.Close() })
+	t.Cleanup(func() {
+		if err := clientSession.Close(); err != nil {
+			t.Errorf("close the client session: %v", err)
+		}
+	})
 	return clientSession
+}
+
+// listsSkill reports whether tools/list, in a session rooted at root,
+// advertises anchored_skill.
+func listsSkill(t *testing.T, srv *Server, root string) bool {
+	t.Helper()
+	listed, err := sdkClientSession(t, srv, root).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	return slices.ContainsFunc(listed.Tools, func(tool *sdk.Tool) bool { return tool.Name == "anchored_skill" })
 }

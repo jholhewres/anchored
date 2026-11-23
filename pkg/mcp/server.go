@@ -35,11 +35,11 @@ type Server struct {
 // resetSearchThrottle is called whenever a tool repopulates / extends the
 // indexed corpus, so the session's next round of follow-up searches starts
 // at zero.
-func (s *Server) resetSearchThrottle(ctx context.Context) { s.session(ctx).searchCalls.Store(0) }
+func (s *Server) resetSearchThrottle(ctx context.Context) { s.mcpState(ctx).searchCalls.Store(0) }
 
 // nextSearchCall returns the 1-based count of the session's current call,
 // from which the throttling decision is derived.
-func (s *Server) nextSearchCall(ctx context.Context) int32 { return s.session(ctx).searchCalls.Add(1) }
+func (s *Server) nextSearchCall(ctx context.Context) int32 { return s.mcpState(ctx).searchCalls.Add(1) }
 
 func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimizer OptimizerFacade, cfg *config.Config, version string, logger *slog.Logger) *Server {
 	if logger == nil {
@@ -60,24 +60,6 @@ func NewServer(mem *memory.Service, kg *kg.KG, sessions *session.Manager, optimi
 // "did the model actually call anchored?" after the fact. Safe with nil.
 func (s *Server) SetDebugLogger(d *debuglog.Logger) {
 	s.dlog = d
-}
-
-// toolsForCWD conditionally exposes anchored_skill only after this repository
-// is proven to resolve to a reachable remote project. A configured remote or
-// stale linked-project ID alone must not advertise an unusable tool.
-func (s *Server) toolsForCWD(ctx context.Context, cwd string) []Tool {
-	tools := ToolDefinitions()
-	if !s.remoteSkillsAdvertisable(ctx, cwd) {
-		filtered := tools[:0]
-		for _, tool := range tools {
-			if tool.Name != "anchored_skill" {
-				filtered = append(filtered, tool)
-			}
-		}
-		tools = filtered
-	}
-	SortTools(tools)
-	return tools
 }
 
 // remoteSkillsAdvertisable answers the tools/list question without paying for

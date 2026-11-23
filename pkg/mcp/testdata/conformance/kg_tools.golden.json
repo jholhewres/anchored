@@ -61,11 +61,9 @@
       "params": {
         "arguments": {
           "cwd": "<TMP>/repo",
-          "object": "fly",
-          "predicate": "deployed_on",
-          "subject": "conformance-worker"
+          "entity": "conformance-api"
         },
-        "name": "kg_add"
+        "name": "kg_query"
       }
     },
     "recv": {
@@ -74,7 +72,7 @@
       "result": {
         "content": [
           {
-            "text": "Added relationship: conformance-worker — deployed_on → fly (id: <id>)",
+            "text": "• conformance-api — depends_on → postgres",
             "type": "text"
           }
         ]
@@ -89,13 +87,41 @@
       "params": {
         "arguments": {
           "cwd": "<TMP>/repo",
-          "entity": "conformance-worker"
+          "object": "fly",
+          "predicate": "deployed_on",
+          "subject": "conformance-worker"
         },
-        "name": "kg_query"
+        "name": "kg_add"
       }
     },
     "recv": {
       "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "Added relationship: conformance-worker — deployed_on → fly (id: <id>)",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "send": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "arguments": {
+          "cwd": "<TMP>/repo",
+          "entity": "conformance-worker"
+        },
+        "name": "anchored_kg_query"
+      }
+    },
+    "recv": {
+      "id": 6,
       "jsonrpc": "2.0",
       "result": {
         "content": [

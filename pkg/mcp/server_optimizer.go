@@ -88,10 +88,7 @@ func (s *Server) toolCtxExecute(ctx context.Context, args json.RawMessage) (stri
 		p.Timeout = 30000
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.Execute(ctx, p.Code, p.Language, p.Timeout, projectID)
 	if err != nil {
@@ -156,14 +153,11 @@ func (s *Server) toolCtxExecuteFile(ctx context.Context, args json.RawMessage) (
 		p.Timeout = 30000
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	// Optimizer.ExecuteFile injects FILE_PATH and FILE_CONTENT preludes per
 	// language; we just forward the user's path and code as-is.
-	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, s.sessionFile(ctx, p.CWD, p.Path), p.Language, p.Code, p.Timeout, projectID)
+	stdout, stderr, exitCode, dur, timedOut, truncated, err := s.optimizer.ExecuteFile(ctx, s.rootedFile(ctx, p.CWD, p.Path), p.Language, p.Code, p.Timeout, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -203,10 +197,7 @@ func (s *Server) toolCtxBatchExecute(ctx context.Context, args json.RawMessage) 
 		p.Timeout = 60000
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	cmds := make([]OptimizerBatchCommand, len(p.Commands))
 	for i, c := range p.Commands {
@@ -252,10 +243,7 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	if p.Content != "" {
 		id, err := s.optimizer.IndexContent(ctx, p.Content, p.Source, "manual", projectID)
@@ -266,7 +254,7 @@ func (s *Server) toolCtxIndex(ctx context.Context, args json.RawMessage) (string
 		return fmt.Sprintf("Indexed content from '%s' (id: %s)", p.Source, id), nil
 	}
 	if p.Path != "" {
-		p.Path = s.sessionFile(ctx, p.CWD, p.Path)
+		p.Path = s.rootedFile(ctx, p.CWD, p.Path)
 		data, err := os.ReadFile(p.Path)
 		if err != nil {
 			return "", fmt.Errorf("read file: %w", err)
@@ -316,10 +304,7 @@ func (s *Server) toolCtxSearch(ctx context.Context, args json.RawMessage) (strin
 		throttleNote = fmt.Sprintf("\n\n[throttle] call #%d — results reduced to 1/query. Batch follow-ups via anchored_batch_execute(queries=[...]).", call)
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	seen := make(map[string]bool)
 	var lines []string
@@ -372,10 +357,7 @@ func (s *Server) toolCtxFetchAndIndex(ctx context.Context, args json.RawMessage)
 		return "", fmt.Errorf("provide either 'url' or 'requests', not both")
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	s.resetSearchThrottle(ctx)
 

@@ -101,10 +101,12 @@ func conformanceCases() []conformanceCase {
 		{Name: "kg_tools", Handshake: true, Steps: []conformanceStep{
 			{Method: "tools/call", Params: `{"name":"anchored_kg_add","arguments":{"subject":"conformance-api","predicate":"depends_on","object":"postgres","cwd":"{{repo}}"}}`},
 			{Method: "tools/call", Params: `{"name":"anchored_kg_query","arguments":{"entity":"conformance-api","cwd":"{{repo}}"}}`},
-			// The aliases use their own entity: triples saved in the same second
+			// Each alias reads what the canonical name wrote, and the other way
+			// round. One triple per entity: triples saved in the same second
 			// have no defined order.
+			{Method: "tools/call", Params: `{"name":"kg_query","arguments":{"entity":"conformance-api","cwd":"{{repo}}"}}`},
 			{Method: "tools/call", Params: `{"name":"kg_add","arguments":{"subject":"conformance-worker","predicate":"deployed_on","object":"fly","cwd":"{{repo}}"}}`},
-			{Method: "tools/call", Params: `{"name":"kg_query","arguments":{"entity":"conformance-worker","cwd":"{{repo}}"}}`},
+			{Method: "tools/call", Params: `{"name":"anchored_kg_query","arguments":{"entity":"conformance-worker","cwd":"{{repo}}"}}`},
 		}},
 		{Name: "task_tools", Handshake: true, Steps: []conformanceStep{
 			{Method: "tools/call", Params: `{"name":"anchored_task","arguments":{"action":"start","key":"conf-1","session_id":"conformance-session","cwd":"{{repo}}"}}`},
@@ -222,7 +224,9 @@ func startConformanceClientWith(t *testing.T, serve func(ctx context.Context, in
 	done := make(chan error, 1)
 	go func() {
 		err := serve(ctx, inR, outW)
-		_ = outW.Close()
+		if cerr := outW.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
 		done <- err
 	}()
 	lines := make(chan []byte, 16)
@@ -240,7 +244,9 @@ func startConformanceClientWith(t *testing.T, serve func(ctx context.Context, in
 		}
 	}()
 	t.Cleanup(func() {
-		_ = inW.Close()
+		if err := inW.Close(); err != nil {
+			t.Errorf("close the server's input: %v", err)
+		}
 		select {
 		case err := <-done:
 			if err != nil {

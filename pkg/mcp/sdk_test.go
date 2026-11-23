@@ -298,8 +298,107 @@ func TestSDK_ConcurrentToolCallsInOneSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := res.Content[0].(*sdk.TextContent).Text
+	if len(res.Content) == 0 {
+		t.Fatal("anchored_context returned no content")
+	}
+	content, ok := res.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("anchored_context returned %T, want text", res.Content[0])
+	}
+	text := content.Text
 	if !strings.Contains(text, fmt.Sprintf(`memories="%d"`, workers)) {
 		t.Fatalf("after %d concurrent saves the session root's project shows: %q", workers, text)
+	}
+}
+
+func TestSDK_SessionEndSavesItsSummaryUnderTheSessionRoot(t *testing.T) {
+	fx := newConformanceFixture(t)
+	t.Chdir(t.TempDir()) // the process cwd is unrelated to the session
+	sid, err := fx.server.sessions.StartSession(t.Context(), "test", "sdk-test", "", fx.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startConformanceClientAt(t, fx.server, fx.repo)
+	client.handshake()
+	if res, msg := client.callTool("anchored_session_end", map[string]any{"session_id": sid, "summary": "Session summary about the ledger migration."}); msg.Error != nil || res.IsError {
+		t.Fatalf("session_end: %+v %s", msg.Error, res.text())
+	}
+	res, _ := client.callTool("anchored_context", map[string]any{})
+	if !strings.Contains(res.text(), `memories="1"`) {
+		t.Fatalf("the summary did not land in the session root's project:\n%s", res.text())
+	}
+}
+
+func TestSDK_BatchesAreRefusedAndTheSessionGoesOn(t *testing.T) {
+	fx := newConformanceFixture(t)
+	client := startConformanceClient(t, fx.server)
+	client.call("initialize", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"sdk-test","version":"1"}}`)
+	line, _ := client.request("notifications/initialized", "", true)
+	client.send(line)
+	for _, batch := range []string{
+		`[{"jsonrpc":"2.0","id":901,"method":"ping"},{"jsonrpc":"2.0","id":902,"method":"ping"}]`,
+		`[{"jsonrpc":"2.0","id":903,"method":"ping"},{"jsonrpc":"2.0","id":903,"method":"ping"}]`,
+	} {
+		client.send([]byte(batch))
+		msg := decodeSDKMessage(t, client.recv(10*time.Second))
+		if msg.Error == nil || msg.Error.Code != -32600 {
+			t.Fatalf("batch %s got %+v, want -32600", batch, msg.Error)
+		}
+		if pong := client.call("ping", `{}`); pong.Error != nil {
+			t.Fatalf("ping after a batch: %+v", pong.Error)
+		}
+	}
+}
+
+func TestSDK_ALineOverTheFrameLimitIsRefusedAndTheSessionGoesOn(t *testing.T) {
+	fx := newConformanceFixture(t)
+	client := startConformanceClient(t, fx.server)
+	client.handshake()
+	client.send([]byte(`{"jsonrpc":"2.0","id":77,"method":"ping","params":{"pad":"` + strings.Repeat("x", maxFrameBytes) + `"}}`))
+	msg := decodeSDKMessage(t, client.recv(30*time.Second))
+	if msg.Error == nil || msg.Error.Code != -32600 || string(msg.ID) != "null" {
+		t.Fatalf("over-limit line got id %s error %+v, want -32600 with id null", msg.ID, msg.Error)
+	}
+	if pong := client.call("ping", `{}`); pong.Error != nil {
+		t.Fatalf("ping after an over-limit line: %+v", pong.Error)
+	}
+}
+
+func TestSDK_ExecutionsRunAtMostTheSessionLimitAtOnce(t *testing.T) {
+	fx := newConformanceFixture(t)
+	restore := maxConcurrentExecutions
+	maxConcurrentExecutions = 1
+	t.Cleanup(func() { maxConcurrentExecutions = restore })
+	client := startConformanceClient(t, fx.server)
+	client.handshake()
+
+	start := time.Now()
+	for range 2 {
+		line, _ := client.request("tools/call", `{"name":"anchored_execute","arguments":{"language":"shell","code":"sleep 1"}}`, false)
+		client.send(line)
+	}
+	if pong := client.call("ping", `{}`); pong.Error != nil || time.Since(start) > 900*time.Millisecond {
+		t.Fatalf("ping waited behind the executions (%v, %+v)", time.Since(start), pong.Error)
+	}
+	for range 2 {
+		if client.recv(30*time.Second) == nil {
+			t.Fatal("an execution never answered")
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Fatalf("two 1 s executions with a limit of 1 finished in %v: they ran at once", elapsed)
+	}
+}
+
+func TestSDK_ARelativeFilePathResolvesAgainstTheCallsCWD(t *testing.T) {
+	fx := newConformanceFixture(t)
+	t.Chdir(t.TempDir())
+	client := startConformanceClientAt(t, fx.server, t.TempDir())
+	client.handshake()
+	res, msg := client.callTool("anchored_execute_file", map[string]any{
+		"path": "notes.md", "cwd": fx.repo, "language": "shell", "code": `wc -l < "$FILE_PATH" | tr -d ' '`,
+	})
+	if msg.Error != nil || res.IsError || !strings.Contains(res.text(), "3") {
+		t.Fatalf("execute_file notes.md with cwd %s: %+v %s", fx.repo, msg.Error, res.text())
 	}
 }

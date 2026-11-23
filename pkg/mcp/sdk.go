@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,9 @@ type mcpSession struct {
 	//   4-8: limit=1 with a warning appended
 	//   9+:  blocked, redirected to anchored_batch_execute
 	searchCalls atomic.Int32
+
+	slotsOnce sync.Once
+	slots     chan struct{} // see maxConcurrentExecutions
 }
 
 type mcpSessionKey struct{}
@@ -42,9 +46,10 @@ func withMCPSession(ctx context.Context, sess *mcpSession) context.Context {
 	return context.WithValue(ctx, mcpSessionKey{}, sess)
 }
 
-// session is the MCP session a call runs in, or the server's own state for a
-// call made outside any session.
-func (s *Server) session(ctx context.Context) *mcpSession {
+// mcpState is the state of the MCP session a call runs in, or the server's
+// own for a call made outside any session. (Server.sessions, by contrast, is
+// Anchored's record of the tools' session_id.)
+func (s *Server) mcpState(ctx context.Context) *mcpSession {
 	if sess, ok := ctx.Value(mcpSessionKey{}).(*mcpSession); ok && sess != nil {
 		return sess
 	}
@@ -52,12 +57,12 @@ func (s *Server) session(ctx context.Context) *mcpSession {
 	return s.noSession
 }
 
-// sessionCWD is the directory a tool argument names: an omitted cwd is the
+// rootedCWD is the directory a tool argument names: an omitted cwd is the
 // session's root and a relative one is resolved against it, never against
 // the process's working directory. Outside a session the old "." default
 // stands.
-func (s *Server) sessionCWD(ctx context.Context, cwd string) string {
-	root := s.session(ctx).root
+func (s *Server) rootedCWD(ctx context.Context, cwd string) string {
+	root := s.mcpState(ctx).root
 	switch {
 	case root == "":
 		return defaultCWD(cwd)
@@ -70,24 +75,33 @@ func (s *Server) sessionCWD(ctx context.Context, cwd string) string {
 	}
 }
 
-// sessionPath resolves a relative cwd or path against the session's root and
+// rootedPath resolves a relative cwd or path against the session's root and
 // keeps an omitted one omitted, for arguments where "" has its own meaning
 // (a global search, a call with no project).
-func (s *Server) sessionPath(ctx context.Context, path string) string {
+func (s *Server) rootedPath(ctx context.Context, path string) string {
 	if path == "" {
 		return ""
 	}
-	return s.sessionCWD(ctx, path)
+	return s.rootedCWD(ctx, path)
 }
 
-// sessionFile resolves a relative file path against the cwd the call names,
+// optionalProjectID is the project of an optional cwd argument, resolved
+// against the session's root, or "" when the call names none.
+func (s *Server) optionalProjectID(ctx context.Context, cwd string) string {
+	if cwd = s.rootedPath(ctx, cwd); cwd == "" {
+		return ""
+	}
+	return s.mem.ResolveProject(cwd)
+}
+
+// rootedFile resolves a relative file path against the cwd the call names,
 // itself resolved against the session's root. Outside a session the path is
 // left to the process's working directory, as before.
-func (s *Server) sessionFile(ctx context.Context, cwd, path string) string {
-	if path == "" || filepath.IsAbs(path) || s.session(ctx).root == "" {
+func (s *Server) rootedFile(ctx context.Context, cwd, path string) string {
+	if path == "" || filepath.IsAbs(path) || s.mcpState(ctx).root == "" {
 		return path
 	}
-	return filepath.Join(s.sessionCWD(ctx, cwd), path)
+	return filepath.Join(s.rootedCWD(ctx, cwd), path)
 }
 
 // newSDKServer builds the go-sdk server for one session: every tool and
@@ -110,13 +124,18 @@ func (s *Server) newSDKServer(sess *mcpSession) *sdk.Server {
 				return s.toolResult(ctx, name, req.Params.Arguments), nil
 			})
 	}
+	texts := s.resourceTexts()
 	for _, resource := range ResourceDefinitions() {
+		text, ok := texts[resource.URI]
+		if !ok {
+			continue
+		}
 		server.AddResource(&sdk.Resource{
 			URI:         resource.URI,
 			Name:        resource.Name,
 			Description: resource.Description,
 			MIMEType:    resource.MIMEType,
-		}, s.readResource)
+		}, readResource(text))
 	}
 	server.AddReceivingMiddleware(s.sessionMiddleware(sess))
 	return server
@@ -139,15 +158,9 @@ func (s *Server) sessionMiddleware(sess *mcpSession) sdk.Middleware {
 				}
 			case "tools/list":
 				res, err := next(ctx, method, req)
-				if list, ok := res.(*sdk.ListToolsResult); ok && err == nil && !s.remoteSkillsAdvertisable(ctx, s.sessionCWD(ctx, "")) {
-					visible := make([]*sdk.Tool, 0, len(list.Tools))
-					for _, tool := range list.Tools {
-						if tool.Name != "anchored_skill" {
-							visible = append(visible, tool)
-						}
-					}
+				if list, ok := res.(*sdk.ListToolsResult); ok && err == nil {
 					filtered := *list
-					filtered.Tools = visible
+					filtered.Tools = s.visibleTools(ctx, s.rootedCWD(ctx, ""), list.Tools)
 					return &filtered, nil
 				}
 				return res, err
@@ -157,9 +170,33 @@ func (s *Server) sessionMiddleware(sess *mcpSession) sdk.Middleware {
 	}
 }
 
+// visibleTools is tools as cwd's session sees them: anchored_skill only once
+// the repository is proven to resolve to a reachable remote project. A
+// configured remote or a stale linked-project id alone must not advertise an
+// unusable tool.
+func (s *Server) visibleTools(ctx context.Context, cwd string, tools []*sdk.Tool) []*sdk.Tool {
+	if s.remoteSkillsAdvertisable(ctx, cwd) {
+		return tools
+	}
+	visible := make([]*sdk.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Name != "anchored_skill" {
+			visible = append(visible, tool)
+		}
+	}
+	return visible
+}
+
 // toolResult runs one tool. A tool's own failure is a result with isError,
 // so the model reads it; JSON-RPC errors are left to the protocol.
 func (s *Server) toolResult(ctx context.Context, name string, args json.RawMessage) *sdk.CallToolResult {
+	if boundedTools[name] {
+		release, err := s.mcpState(ctx).executionSlot(ctx)
+		if err != nil {
+			return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}}}
+		}
+		defer release()
+	}
 	start := time.Now()
 	text, err := s.callTool(ctx, name, args)
 	latencyMs := time.Since(start).Milliseconds()
@@ -184,13 +221,15 @@ func (s *Server) toolResult(ctx context.Context, name string, args json.RawMessa
 	return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}}
 }
 
-func (s *Server) readResource(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
-	uri := req.Params.URI
-	text, err := s.resourceText(ctx, uri)
-	if err != nil {
-		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: err.Error()}
+// readResource serves one resource from the function that renders its text.
+func readResource(text func(context.Context) (string, error)) sdk.ResourceHandler {
+	return func(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		content, err := text(ctx)
+		if err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: err.Error()}
+		}
+		return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{{URI: req.Params.URI, MIMEType: "text/plain", Text: content}}}, nil
 	}
-	return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{{URI: uri, MIMEType: "text/plain", Text: text}}}, nil
 }
 
 // sdkLogger keeps the SDK's routine lifecycle lines out of stderr, which MCP
@@ -215,4 +254,29 @@ func (h minLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h minLevelHandler) WithGroup(name string) slog.Handler {
 	return minLevelHandler{Handler: h.Handler.WithGroup(name), min: h.min}
+}
+
+// maxConcurrentExecutions bounds the tools one session runs at once that
+// start a sandbox process or fetch a URL. Requests run concurrently, so
+// without a bound a prompt-injected model could fire any number of them.
+var maxConcurrentExecutions = 4
+
+// boundedTools are the tools maxConcurrentExecutions applies to.
+var boundedTools = map[string]bool{
+	"anchored_execute":         true,
+	"anchored_execute_file":    true,
+	"anchored_batch_execute":   true,
+	"anchored_fetch_and_index": true,
+}
+
+// executionSlot waits for one of the session's execution slots and returns
+// its release, or the context's error when the call is cancelled first.
+func (m *mcpSession) executionSlot(ctx context.Context) (release func(), err error) {
+	m.slotsOnce.Do(func() { m.slots = make(chan struct{}, max(maxConcurrentExecutions, 1)) })
+	select {
+	case m.slots <- struct{}{}:
+		return func() { <-m.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

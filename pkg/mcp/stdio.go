@@ -44,7 +44,9 @@ func (s *Server) ServeIO(ctx context.Context, root string, in io.Reader, out io.
 	go func() {
 		err := s.forwardFrames(ctx, in, toSDK, w)
 		readErr <- err
-		_ = toSDK.CloseWithError(err)
+		if cerr := toSDK.CloseWithError(err); cerr != nil {
+			s.logger.Debug("mcp: close the SDK's input", "error", cerr)
+		}
 	}()
 
 	session, err := s.newSDKServer(&mcpSession{root: root}).Connect(ctx, &sdk.IOTransport{
@@ -59,13 +61,17 @@ func (s *Server) ServeIO(ctx context.Context, root string, in io.Reader, out io.
 	// precisely.
 	waited := make(chan struct{})
 	go func() {
-		_ = session.Wait()
+		if err := session.Wait(); err != nil {
+			s.logger.Debug("mcp session ended", "error", err)
+		}
 		close(waited)
 	}()
 
 	select {
 	case <-ctx.Done():
-		_ = session.Close()
+		if err := session.Close(); err != nil {
+			s.logger.Debug("mcp: close the session", "error", err)
+		}
 		<-waited
 		return nil
 	case <-waited:
@@ -137,23 +143,18 @@ func readFrame(r *bufio.Reader, limit int) (line []byte, tooLong bool, err error
 }
 
 // checkFrame is the JSON-RPC error a line earns before it reaches the SDK:
-// -32700 for a line that is not JSON, -32600 for JSON that is not a JSON-RPC
-// message. It returns code 0 for a line the SDK can read.
+// -32700 for a line that is not JSON, -32600 for JSON that is not a single
+// JSON-RPC message. It returns code 0 for a line the SDK can read.
+//
+// Batches are refused whole: MCP dropped them in 2025-06-18, the old server
+// never read them, and the SDK's reader ends the session on a batch it
+// rejects (one after 2025-06-18, or with a repeated id).
 func checkFrame(line []byte) (code int, id json.RawMessage, msg string) {
 	if !json.Valid(line) {
 		return jsonrpc.CodeParseError, nil, "parse error: invalid JSON"
 	}
 	if line[0] == '[' {
-		var batch []json.RawMessage
-		if err := json.Unmarshal(line, &batch); err != nil || len(batch) == 0 {
-			return jsonrpc.CodeInvalidRequest, nil, "invalid request: empty or malformed batch"
-		}
-		for _, raw := range batch {
-			if _, err := jsonrpc.DecodeMessage(raw); err != nil {
-				return jsonrpc.CodeInvalidRequest, nil, "invalid request: " + err.Error()
-			}
-		}
-		return 0, nil, ""
+		return jsonrpc.CodeInvalidRequest, nil, "invalid request: JSON-RPC batches are not supported"
 	}
 	if _, err := jsonrpc.DecodeMessage(line); err != nil {
 		var envelope struct {
@@ -220,5 +221,14 @@ func (f *frameWriter) writeError(id json.RawMessage, code int, message string) {
 	if err != nil {
 		return
 	}
-	_, _ = f.Write(append(data, '\n'))
+	f.writeLine(append(data, '\n'))
+}
+
+// writeLine writes one whole message; a failure is kept for err.
+func (f *frameWriter) writeLine(line []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.w.Write(line); err != nil && f.firstErr == nil {
+		f.firstErr = err
+	}
 }

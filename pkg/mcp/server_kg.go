@@ -23,7 +23,7 @@ func (s *Server) toolKGQuery(ctx context.Context, args json.RawMessage) (string,
 	}
 
 	var projectID *string
-	if pid := s.mem.ResolveProject(s.sessionPath(ctx, p.CWD)); pid != "" {
+	if pid := s.mem.ResolveProject(s.rootedPath(ctx, p.CWD)); pid != "" {
 		projectID = &pid
 	}
 
@@ -65,7 +65,7 @@ func (s *Server) toolKGAdd(ctx context.Context, args json.RawMessage) (string, e
 	// Same convention as toolSave: an omitted cwd resolves to the session's
 	// root so the triple lands project-scoped and the auto write-through
 	// below can find the linked remote.
-	p.CWD = s.sessionCWD(ctx, p.CWD)
+	p.CWD = s.rootedCWD(ctx, p.CWD)
 
 	var projectID *string
 	if pid := s.mem.ResolveProject(p.CWD); pid != "" {

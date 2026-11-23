@@ -28,7 +28,7 @@ func (s *Server) toolSave(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	p.CWD = s.sessionCWD(ctx, p.CWD)
+	p.CWD = s.rootedCWD(ctx, p.CWD)
 	category, ok := memory.NormalizeCategory(p.Category)
 	if !ok {
 		return "", fmt.Errorf("unknown category %q: use one of %s", p.Category, strings.Join(memory.Categories, ", "))
@@ -177,10 +177,7 @@ func (s *Server) toolList(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	var projectID string
-	if cwd := s.sessionPath(ctx, p.CWD); cwd != "" {
-		projectID = s.mem.ResolveProject(cwd)
-	}
+	projectID := s.optionalProjectID(ctx, p.CWD)
 
 	memories, err := s.mem.List(ctx, memory.ListOptions{
 		Category:  p.Category,
@@ -306,7 +303,7 @@ func (s *Server) toolSessionEnd(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	if p.Summary != "" {
-		_, err := s.mem.Save(ctx, p.Summary, "summary", "session_end", ".")
+		_, err := s.mem.Save(ctx, p.Summary, "summary", "session_end", s.rootedCWD(ctx, ""))
 		if err != nil {
 			return fmt.Sprintf("Session %s ended (summary save failed: %v)", p.SessionID, err), nil
 		}

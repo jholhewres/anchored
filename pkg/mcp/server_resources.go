@@ -9,68 +9,72 @@ import (
 	"github.com/jholhewres/anchored/pkg/memory"
 )
 
-// resourceText is the text of the resource at uri.
-func (s *Server) resourceText(ctx context.Context, uri string) (string, error) {
-	var content string
-	switch uri {
-	case "anchored://memory/stats":
-		stats, err := s.mem.Stats(ctx)
-		if err != nil {
-			return "", err
-		}
-		content = fmt.Sprintf("Total: %d\nCategories: %v\nProjects: %v",
-			stats.TotalMemories, stats.ByCategory, stats.ByProject)
-	case "anchored://memory/recent":
-		memories, err := s.mem.List(ctx, memory.ListOptions{Limit: 10})
-		if err != nil {
-			return "", err
-		}
-		if len(memories) == 0 {
-			content = "No memories yet."
-		} else {
-			var lines []string
-			for _, m := range memories {
-				lines = append(lines, fmt.Sprintf("[%s] %s", m.Category, m.Content))
-			}
-			content = joinLines(lines)
-		}
-	case "anchored://identity":
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		identityPath := filepath.Join(homeDir, ".anchored", "identity.md")
-		data, err := os.ReadFile(identityPath)
-		if err != nil {
-			content = "No identity file configured. Use 'anchored identity edit' to create one."
-		} else {
-			content = string(data)
-		}
-	case "anchored://projects":
-		db := s.mem.StoreDB()
-		rows, err := db.QueryContext(ctx, "SELECT id, name, path FROM projects ORDER BY name")
-		if err != nil {
-			return "", err
-		}
-		defer rows.Close()
-		var lines []string
-		for rows.Next() {
-			var pid, name, ppath string
-			if err := rows.Scan(&pid, &name, &ppath); err != nil {
-				return "", err
-			}
-			lines = append(lines, fmt.Sprintf("%s\t%s\t%s", pid, name, ppath))
-		}
-		if err := rows.Err(); err != nil {
-			return "", err
-		}
-		if len(lines) == 0 {
-			content = "No projects registered."
-		} else {
-			content = "ID\tName\tPath\n" + joinLines(lines)
-		}
-	default:
-		return "", fmt.Errorf("unknown resource: %s", uri)
+// resourceTexts renders each resource's text, by URI. The SDK answers a URI
+// that is not here itself.
+func (s *Server) resourceTexts() map[string]func(context.Context) (string, error) {
+	return map[string]func(context.Context) (string, error){
+		"anchored://memory/stats":  s.statsResource,
+		"anchored://memory/recent": s.recentResource,
+		"anchored://identity":      identityResource,
+		"anchored://projects":      s.projectsResource,
 	}
-	return content, nil
+}
+
+func (s *Server) statsResource(ctx context.Context) (string, error) {
+	stats, err := s.mem.Stats(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Total: %d\nCategories: %v\nProjects: %v",
+		stats.TotalMemories, stats.ByCategory, stats.ByProject), nil
+}
+
+func (s *Server) recentResource(ctx context.Context) (string, error) {
+	memories, err := s.mem.List(ctx, memory.ListOptions{Limit: 10})
+	if err != nil {
+		return "", err
+	}
+	if len(memories) == 0 {
+		return "No memories yet.", nil
+	}
+	var lines []string
+	for _, m := range memories {
+		lines = append(lines, fmt.Sprintf("[%s] %s", m.Category, m.Content))
+	}
+	return joinLines(lines), nil
+}
+
+func identityResource(context.Context) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(homeDir, ".anchored", "identity.md"))
+	if err != nil {
+		return "No identity file configured. Use 'anchored identity edit' to create one.", nil
+	}
+	return string(data), nil
+}
+
+func (s *Server) projectsResource(ctx context.Context) (string, error) {
+	rows, err := s.mem.StoreDB().QueryContext(ctx, "SELECT id, name, path FROM projects ORDER BY name")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var pid, name, ppath string
+		if err := rows.Scan(&pid, &name, &ppath); err != nil {
+			return "", err
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", pid, name, ppath))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "No projects registered.", nil
+	}
+	return "ID\tName\tPath\n" + joinLines(lines), nil
 }
